@@ -22,7 +22,12 @@ import {
   INCIDENT_LIMITS,
   IP_PREFIX_PATTERN,
   isBroadPattern,
+  LIMIT_COUNTS,
+  LIMIT_KEYS,
+  LIMIT_LIMITS,
   LIMITS,
+  type LimitCount,
+  type LimitKey,
   type Organization,
   PATCH_ID_PATTERN,
   PATH_PATTERN,
@@ -30,12 +35,14 @@ import {
   type PolicyRule,
   type PolicyRuleInput,
   parseCidr,
+  type RuleLimit,
 } from "@antireverse/protocol";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { suggestCidr } from "@/features/containment/format.ts";
 import { untilFromDate } from "@/features/findings/format.ts";
 import { isBroadEnforce, newlyBroad } from "@/features/policy/broad.ts";
+import { LIMIT_FIELDS, type LimitDraft, wholeNumber } from "@/features/policy/limit.ts";
 import { RULE_METHODS } from "@/features/policy/methods.ts";
 import {
   ApiError,
@@ -99,6 +106,9 @@ function nameError(name: string): FieldError | null {
   if (name.length > LIMITS.nameMax) return { path: "name", message: t("error.name.long") };
   return null;
 }
+
+const isLimitKey = (value: string): value is LimitKey => (LIMIT_KEYS as readonly string[]).includes(value);
+const isLimitCount = (value: string): value is LimitCount => (LIMIT_COUNTS as readonly string[]).includes(value);
 
 function isEnvironment(value: string): value is Environment {
   return (ENVIRONMENTS as readonly string[]).includes(value);
@@ -200,8 +210,18 @@ export async function createAppAction(_previous: CreateAppState, formData: FormD
 export type PublishRuleState = null | {
   ok: false;
   errors: FieldError[];
-  /** What was typed, so the form can show it again; `requires` is true when Require a signed request was checked. */
-  values: { name: string; path: string; methods: string[]; requires?: boolean };
+  /**
+   * What was typed, so the form can show it again; `requires` is true when Require a signed request was checked.
+   * Slice 08: `action` is the chosen action and `limit` the limit fields as typed, when Throttle was chosen.
+   */
+  values: {
+    name: string;
+    path: string;
+    methods: string[];
+    requires?: boolean;
+    action?: "block" | "throttle";
+    limit?: LimitDraft;
+  };
 };
 
 export type PolicyChangeState = null | { ok: false; errors: FieldError[] };
@@ -275,6 +295,9 @@ function acknowledgement(
 }
 
 const RULE_ERROR_PATH = /^rules\.(\d+)\.([A-Za-z_]+)(?:\.|$)/;
+/** A refusal of one number of a Rule's limit (slice 08), and the form field that holds it. */
+const LIMIT_ERROR_PATH = /^rules\.(\d+)\.limit\.(requests|window_s)$/;
+const LIMIT_ERROR_FIELD = { requests: LIMIT_FIELDS.requests, window_s: LIMIT_FIELDS.window } as const;
 
 /**
  * What to tell the person when a publish was refused or failed. `own` is the position of the Rule this
@@ -290,13 +313,21 @@ function policyErrors(
   if (error instanceof ValidationError) {
     const errors = new Map<string, FieldError>();
     for (const entry of error.errors) {
+      const [, limitIndex, member] = LIMIT_ERROR_PATH.exec(entry.path) ?? [];
+      if (member !== undefined) {
+        const name = LIMIT_ERROR_FIELD[member as keyof typeof LIMIT_ERROR_FIELD];
+        if (own && Number(limitIndex) === own.index && own.fields.includes(name)) {
+          errors.set(name, { path: name, message: t("error.field") });
+        }
+        continue;
+      }
       const [, index, field] = RULE_ERROR_PATH.exec(entry.path) ?? [];
       if (field === undefined) continue;
       // The API's guardrail and its refusal of an unacknowledged broad pattern speak through the mode of a Rule.
       if (field === "mode") {
         const rule = sent[Number(index)];
         const broad = rule !== undefined && rule.path !== BLOCKS_EVERYTHING && isBroadPattern(rule.path);
-        errors.set("mode", { path: "mode", message: t(broad ? "policy.broad.unconfirmed" : "policy.guardrail") });
+        errors.set("mode", { path: "mode", message: broad ? t("policy.broad.unconfirmed") : guardrail(rule) });
       } else if (own && Number(index) === own.index && own.fields.includes(field)) {
         errors.set(field, { path: field, message: t(field === "path" ? "error.path.invalid" : "error.field") });
       }
@@ -311,6 +342,10 @@ function policyErrors(
 
 /** A Rule in Enforce mode on this pattern would block every request: the API refuses it, and so does the Console. */
 const BLOCKS_EVERYTHING = "/**";
+
+/** The guardrail in the words of the Rule it stopped: a limit Rule limits every request, any other blocks it. */
+const guardrail = (rule: { limit?: unknown } | undefined): string =>
+  t(rule?.limit === undefined ? "policy.guardrail" : "policy.guardrail.limit");
 
 /** What a change makes of the Rules: the next list, the position of the Rule it changed, and whether the person confirmed a broad pattern. */
 type Change = { rules: PolicyRuleInput[]; index?: number; broadConfirmed?: boolean } | "unchanged" | FieldError[];
@@ -363,12 +398,33 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
   // The one requirement the form offers (slice 04). Any other value was not sent by this screen.
   const requirement = formData.get("requires");
   const requires = requirement === "signature";
-  const values = { name, path, methods, requires };
+  // Slice 08: Block (also when the form names no action) or Throttle, which comes with the four limit fields.
+  const chosenAction = formData.get("action");
+  const throttle = chosenAction === "throttle";
+  const limitFields = Object.values(LIMIT_FIELDS);
+  const draft: LimitDraft = {
+    requests: text(formData, LIMIT_FIELDS.requests),
+    window: text(formData, LIMIT_FIELDS.window),
+    key: text(formData, LIMIT_FIELDS.key),
+    count: text(formData, LIMIT_FIELDS.count),
+  };
+  const values: NonNullable<PublishRuleState>["values"] = throttle
+    ? { name, path, methods, requires, action: "throttle", limit: draft }
+    : { name, path, methods, requires };
 
   const target = policyTarget(formData);
   const shown = shownVersion(formData);
   if (!target || shown === null) return { ...stale(), values };
   if (requirement !== null && !requires) return { ...stale(), values };
+  // What this screen never sends: another action, a limit without Throttle, Throttle without every limit
+  // field or beside a requirement, and a key or a count it does not offer.
+  if (chosenAction !== null && chosenAction !== "block" && !throttle) return { ...stale(), values };
+  if (throttle) {
+    if (requires || limitFields.some((field) => typeof formData.get(field) !== "string")) return { ...stale(), values };
+    if (!isLimitKey(draft.key) || !isLimitCount(draft.count)) return { ...stale(), values };
+  } else if (limitFields.some((field) => formData.has(field))) {
+    return { ...stale(), values };
+  }
 
   const invalid: FieldError[] = [];
   const badName = nameError(name);
@@ -377,6 +433,15 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
   else if (!PATH_PATTERN.test(path)) invalid.push({ path: "path", message: t("error.path.invalid") });
   if (methods.some((method) => !(RULE_METHODS as readonly string[]).includes(method))) {
     invalid.push({ path: "methods", message: t("error.methods") });
+  }
+  // The limit mirrors the protocol: whole numbers, 1 to 100,000 requests per window of 1 to 3,600 seconds.
+  let limit: RuleLimit | undefined;
+  if (throttle && isLimitKey(draft.key) && isLimitCount(draft.count)) {
+    const requests = wholeNumber(draft.requests, LIMIT_LIMITS.requestsMax);
+    const window_s = wholeNumber(draft.window, LIMIT_LIMITS.windowSecondsMax);
+    if (requests === null) invalid.push({ path: LIMIT_FIELDS.requests, message: t("error.limit.requests") });
+    if (window_s === null) invalid.push({ path: LIMIT_FIELDS.window, message: t("error.limit.window") });
+    if (requests !== null && window_s !== null) limit = { requests, window_s, key: draft.key, count: draft.count };
   }
   if (invalid.length > 0) return { ok: false, errors: invalid, values };
 
@@ -388,11 +453,14 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
       if (rules.length >= POLICY_LIMITS.rulesMax) return [{ path: "", message: t("error.rules.max") }];
       // The mode is not read from the form: a new Rule observes first, whatever its pattern.
       // A requirement keeps the action block: the Rule blocks only the requests that do not meet it.
-      const rule: PolicyRuleInput = { name, path, methods, action: "block", mode: "monitor" };
+      // A limit makes the action throttle; the two never go together with a requirement (checked above).
+      const rule: PolicyRuleInput = limit
+        ? { name, path, methods, action: "throttle", mode: "monitor", limit }
+        : { name, path, methods, action: "block", mode: "monitor" };
       if (requires) rule.requires = "signature";
       return { rules: [...rules, rule], index: rules.length };
     },
-    ["name", "path", "methods"],
+    ["name", "path", "methods", LIMIT_FIELDS.requests, LIMIT_FIELDS.window],
   );
   if (errors) return { ok: false, errors, values };
   published(target);
@@ -421,7 +489,7 @@ export async function setRuleModeAction(_previous: PolicyChangeState, formData: 
     if (rule.mode === mode) return "unchanged";
     let broadConfirmed = false;
     if (mode === "enforce") {
-      if (rule.path === BLOCKS_EVERYTHING) return [{ path: "mode", message: t("policy.guardrail") }];
+      if (rule.path === BLOCKS_EVERYTHING) return [{ path: "mode", message: guardrail(rule) }];
       if (isBroadPattern(rule.path)) {
         const typed = typedError(formData, target);
         if (typed) return [typed];

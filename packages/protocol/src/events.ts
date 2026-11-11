@@ -36,6 +36,11 @@ const RequestSchema = z.object({
 });
 
 const DecisionSchema = z.object({
+  /**
+   * `throttle` (slice 08) is the decision of a limit Rule whose client is over the limit: `rule_id` names the Rule,
+   * `mode` is the Rule's (enforce: answered 429; monitor: the response is unchanged), and `containment_id` and
+   * `patch_id` are null. The value has been part of `DECISION_ACTIONS` since slice 01, so Events of every age parse.
+   */
   action: z.enum(DECISION_ACTIONS),
   mode: z.enum(DECISION_MODES),
   rule_id: text(64).min(1).nullable(),
@@ -61,6 +66,16 @@ const DecisionSchema = z.object({
    * null.
    */
   patch_body: z.enum(PATCH_BODY_STATES).nullable().default(null),
+  /**
+   * The failure-counting limit Rule (a `limit_rules` entry with `count: "failures"`, slice 08 amendment A7) that
+   * matched the request; null otherwise. Set whether or not it throttled: on a request the application answered (a
+   * 401 or 403 it counted, or any other status) and on a request that Rule refused (then also `rule_id`). With more
+   * than one such Rule matching, the first in bundle order. Detection counts Credential stuffing from it (D-064).
+   * Shield sends it always (an id or null). Absent — a Shield from before amendment A7 — stays absent when parsed,
+   * so that Detection can tell an older Shield (it falls back to its coverage guess) from a Shield that found no
+   * such Rule (null).
+   */
+  limit_rule_id: z.string().regex(ID_PATTERNS.rul).nullable().optional(),
 });
 
 const ActorSchema = z.object({
@@ -142,6 +157,7 @@ export const EXAMPLE_SHIELD_EVENT: ShieldEvent = deepFreeze({
     containment_id: null,
     patch_id: null,
     patch_body: null,
+    limit_rule_id: null,
   },
   actor: { ip_prefix: "203.0.113.0/24", ip_hash: null },
   signals: [],

@@ -105,8 +105,7 @@ describe("createOrganizationAction", () => {
       errors: [
         {
           path: "",
-          message:
-            "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.",
+          message: "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.",
         },
       ],
       values: { name: "Acme" },
@@ -148,7 +147,7 @@ describe("signInAction", () => {
     expect(state).toEqual({
       ok: false,
       message:
-        "The Anti Reverse API did not answer, so the key could not be checked. Check that it is running, then try again.",
+        "The Airverse API did not answer, so the key could not be checked. Check that it is running, then try again.",
     });
     expect(session.writeSession).not.toHaveBeenCalled();
   });

@@ -11,6 +11,14 @@ import { createHash, createPublicKey, type KeyObject, verify } from "node:crypto
 import type { BundlePayload, BundleRule, SignedBundle } from "@antireverse/protocol";
 import { type ParsedCidr, parseCidr } from "../address.ts";
 import { APP_ID_PATTERN, KEYS_MAX, KID_PATTERN, PUBLIC_KEY_PATTERN } from "../attestation.ts";
+import {
+  LIMIT_COUNTS,
+  LIMIT_KEYS,
+  LIMIT_LIMITS,
+  type LimitCount,
+  type LimitKey,
+  type LimitRuleInput,
+} from "../limits.ts";
 import { type PatchInput, readPatches } from "../patches.ts";
 import { compilePattern } from "./match.ts";
 import { type AppliedPolicy, type AttestationKey, type BlockInput, buildPolicy } from "./store.ts";
@@ -125,10 +133,16 @@ function timeOf(value: unknown): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
-/** The member of the Rule that breaks a bound, or the Rule ready to compile. */
-function readRule(value: unknown): Parameters<typeof buildPolicy>[0]["rules"][number] | string {
+/**
+ * The member of the Rule that breaks a bound, or the Rule ready to compile. `action` is the one action the member
+ * the Rule sits in allows: `block` in `rules` and `signature_rules`, `throttle` in `limit_rules`.
+ */
+function readRule(
+  value: unknown,
+  action: "block" | "throttle" = "block",
+): Parameters<typeof buildPolicy>[0]["rules"][number] | string {
   if (!isObject(value)) return "is not an object";
-  const rule = value as { [K in keyof BundleRule]?: unknown };
+  const rule = value as { [K in keyof BundleRule]?: unknown } & { limit?: unknown };
   if (typeof rule.id !== "string" || !RULE_ID.test(rule.id)) return "id is not a Rule identifier";
   const pattern = compilePattern(rule.path);
   if (pattern === null) return "path is not a path pattern";
@@ -139,9 +153,78 @@ function readRule(value: unknown): Parameters<typeof buildPolicy>[0]["rules"][nu
     if (typeof method !== "string" || !METHOD.test(method)) return "methods holds something that is not a method";
     if (methods.indexOf(method) !== i) return "methods lists a method twice";
   }
-  if (rule.action !== "block") return "action is not known";
+  if (rule.action !== action) return "action is not known";
+  // A Rule with a limit belongs in `limit_rules` (slice 08): in `rules` or `signature_rules` it is refused, as the
+  // protocol refuses it, so that a limit Rule in the wrong member is never enforced as a plain block.
+  if (action === "block" && rule.limit !== undefined) return "has a limit, which belongs in limit_rules";
   if (rule.mode !== "monitor" && rule.mode !== "enforce") return "mode is not known";
   return { id: rule.id, path: rule.path as string, methods: methods as string[], mode: rule.mode, pattern };
+}
+
+/** A whole number from 1 to `max`. */
+function isCount(value: unknown, max: number): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1 && value <= max;
+}
+
+/**
+ * One entry of `limit_rules`: what makes it unreadable, or the limit Rule. The checks of a bundle Rule with the
+ * action `throttle`, and a complete `limit` — a bundle has no defaults, so `count` is always written. Members this
+ * Shield does not know are ignored, as in a Rule.
+ */
+export function readLimitRule(value: unknown): LimitRuleInput | string {
+  const rule = readRule(value, "throttle");
+  if (typeof rule === "string") return rule;
+  const limit = (value as { limit?: unknown }).limit;
+  if (!isObject(limit)) return "limit is not an object";
+  if (!isCount(limit.requests, LIMIT_LIMITS.requestsMax)) return "limit.requests is out of bounds";
+  if (!isCount(limit.window_s, LIMIT_LIMITS.windowSecondsMax)) return "limit.window_s is out of bounds";
+  if (typeof limit.key !== "string" || !(LIMIT_KEYS as readonly string[]).includes(limit.key)) {
+    return "limit.key is not known";
+  }
+  if (typeof limit.count !== "string" || !(LIMIT_COUNTS as readonly string[]).includes(limit.count)) {
+    return "limit.count is not known";
+  }
+  return {
+    ...rule,
+    requests: limit.requests,
+    windowS: limit.window_s,
+    key: limit.key as LimitKey,
+    count: limit.count as LimitCount,
+  };
+}
+
+export interface ReadLimitRules {
+  /** The limit Rules that were read, in the order of the bundle. */
+  readonly rules: LimitRuleInput[];
+  /** Entries skipped: unreadable, an id listed again, or beyond the room the other Rules leave. */
+  readonly skipped: number;
+  /** Why the member was ignored as a whole (not a list), or null. Never repeats a value. */
+  readonly ignored: string | null;
+}
+
+/**
+ * The bundle's `limit_rules` member, read with the tolerance of an older Shield for a newer API (as `patches`,
+ * slice 20): entry by entry, each one this Shield cannot read — an unknown key or count, a bound it does not accept,
+ * a bad shape — is skipped and counted, and the others are kept in order; so is an id listed again (the first
+ * stands) and every entry beyond `room`, what `rules` and `signature_rules` leave of the 50 Rules of a bundle. A
+ * member that is not a list is ignored as a member. It never refuses the bundle: a limit Shield cannot read is a
+ * limit it does not apply (fail open), and the Rules, Containments and patches of the bundle still do.
+ */
+export function readLimitRules(value: unknown, room: number = RULES_MAX): ReadLimitRules {
+  if (!Array.isArray(value)) return { rules: [], skipped: 0, ignored: "limit_rules is not a list" };
+  const rules: LimitRuleInput[] = [];
+  const ids = new Set<string>();
+  let skipped = 0;
+  for (let i = 0; i < value.length; i++) {
+    const rule = rules.length < room ? readLimitRule(value[i]) : "beyond the limit";
+    if (typeof rule === "string" || ids.has(rule.id)) {
+      skipped += 1;
+      continue;
+    }
+    ids.add(rule.id);
+    rules.push(rule);
+  }
+  return { rules, skipped, ignored: null };
 }
 
 type CanaryInput = NonNullable<Parameters<typeof buildPolicy>[0]["canaries"]>[number];
@@ -367,6 +450,15 @@ export function verifyBundle(envelope: unknown, context: VerifyContext): Verifie
     patches = read.patches;
     patchesSkipped = read.skipped + (read.ignored === null ? 0 : 1);
   }
+  // Optional (slice 08): a bundle from before slice 08 has no limit Rules. Read with the same tolerance as `patches`:
+  // an entry this Shield cannot read is skipped and counted, never a reason to refuse the bundle.
+  let limitRules: LimitRuleInput[] = [];
+  let limitRulesSkipped = 0;
+  if (payload.limit_rules !== undefined) {
+    const read = readLimitRules(payload.limit_rules, Math.max(0, RULES_MAX - rules.length - signatureRules.length));
+    limitRules = read.rules;
+    limitRulesSkipped = read.skipped + (read.ignored === null ? 0 : 1);
+  }
   return {
     ok: true,
     policy: buildPolicy({
@@ -383,6 +475,8 @@ export function verifyBundle(envelope: unknown, context: VerifyContext): Verifie
       attestationKeys,
       patches,
       patchesSkipped,
+      limitRules,
+      limitRulesSkipped,
     }),
   };
 }

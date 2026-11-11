@@ -861,6 +861,189 @@ describe("Policies", () => {
     });
   });
 
+  describe("limit Rules (slice 08)", () => {
+    const loginLimit = {
+      name: "Login protection",
+      path: "/login",
+      methods: ["POST"],
+      limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+    };
+
+    function publishWith(appId: string, body: Record<string, unknown>): Promise<Response> {
+      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))));
+    }
+
+    it("publishes, reads, lists and rolls back a Rule with a limit, and stores it complete", async () => {
+      const appId = await freshApp();
+      const burst = { name: "Search", path: "/api/search", limit: { requests: 100, window_s: 60, key: "device" } };
+      const first = await publishPolicy(api, adminA, appId, "development", [monitorRule, loginLimit, burst]);
+      expect(first.rules[1]).toEqual({
+        id: expect.stringMatching(ID_PATTERNS.rul),
+        name: "Login protection",
+        path: "/login",
+        methods: ["POST"],
+        action: "throttle",
+        mode: "monitor",
+        limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+      });
+      // The members in the documented order, the limit last; `count` defaults to requests.
+      expect(Object.keys(first.rules[1] ?? {})).toEqual(["id", "name", "path", "methods", "action", "mode", "limit"]);
+      expect(Object.keys(first.rules[1]?.limit ?? {})).toEqual(["requests", "window_s", "key", "count"]);
+      expect(first.rules[2]).toMatchObject({
+        action: "throttle",
+        methods: [],
+        limit: { requests: 100, window_s: 60, key: "device", count: "requests" },
+      });
+      // A Rule without a limit has no limit member at all, as before slice 08.
+      expect("limit" in (first.rules[0] ?? {})).toBe(false);
+      expect(first.rules[0]).toMatchObject({ action: "block" });
+      expect(await readPolicy(appId)).toEqual(first);
+      expect(Object.keys((await readPolicy(appId)).rules[1] ?? {})).toEqual(Object.keys(first.rules[1] ?? {}));
+
+      const stored = (await storedVersions(appId))[0]?.rules as Record<string, unknown>[];
+      expect(stored[1]?.limit).toEqual({ requests: 10, window_s: 300, key: "ip", count: "failures" });
+      expect(stored[2]?.limit).toEqual({ requests: 100, window_s: 60, key: "device", count: "requests" });
+      expect("limit" in (stored[0] ?? {})).toBe(false);
+
+      // An explicit action throttle is the same Rule; promoting to Enforce keeps the id and the limit.
+      const promoted = await publishPolicy(api, adminA, appId, "development", [
+        { ...first.rules[1], action: "throttle", mode: "enforce" },
+      ]);
+      expect(promoted.rules[0]).toEqual({ ...first.rules[1], mode: "enforce" });
+
+      const one = await api.app.request(policyPath(appId, "development", "/versions/1"), { headers: bearer(adminA) });
+      expect(PolicyResponseSchema.parse(await one.json()).policy).toEqual(first);
+      expect(
+        (await readVersions(appId)).map((entry) => [entry.version, entry.rule_count, entry.enforced_count]),
+      ).toEqual([
+        [2, 1, 1],
+        [1, 3, 0],
+      ]);
+
+      const res = await api.app.request(
+        policyPath(appId, "development", "/rollback"),
+        json({ version: 1, expected_version: 2 }, bearer(adminA)),
+      );
+      expect(res.status).toBe(201);
+      const rolledBack = PolicyResponseSchema.parse(await res.json()).policy;
+      expect(rolledBack).toMatchObject({ version: 3, rules: first.rules });
+      expect((await storedVersions(appId))[2]?.rules).toEqual(first.rules);
+      expect(await readPolicy(appId)).toEqual(rolledBack);
+    });
+
+    it.each([
+      ["a limit with the action block", { ...loginLimit, action: "block" }, "rules.1.action", /throttle/],
+      [
+        "the action throttle without a limit",
+        { name: "No limit", path: "/x", action: "throttle" },
+        "rules.1.limit",
+        /limit/,
+      ],
+      ["a limit beside a requirement", { ...loginLimit, requires: "signature" }, "rules.1.requires", /requirement/],
+      ["0 requests", { ...loginLimit, limit: { ...loginLimit.limit, requests: 0 } }, "rules.1.limit.requests", /./],
+      [
+        "more than 100,000 requests",
+        { ...loginLimit, limit: { ...loginLimit.limit, requests: 100_001 } },
+        "rules.1.limit.requests",
+        /./,
+      ],
+      [
+        "a fraction of a request",
+        { ...loginLimit, limit: { ...loginLimit.limit, requests: 1.5 } },
+        "rules.1.limit.requests",
+        /./,
+      ],
+      [
+        "a window of 0 seconds",
+        { ...loginLimit, limit: { ...loginLimit.limit, window_s: 0 } },
+        "rules.1.limit.window_s",
+        /./,
+      ],
+      [
+        "a window over an hour",
+        { ...loginLimit, limit: { ...loginLimit.limit, window_s: 3_601 } },
+        "rules.1.limit.window_s",
+        /./,
+      ],
+      ["an unknown key", { ...loginLimit, limit: { ...loginLimit.limit, key: "account" } }, "rules.1.limit.key", /./],
+      [
+        "an unknown count",
+        { ...loginLimit, limit: { ...loginLimit.limit, count: "errors" } },
+        "rules.1.limit.count",
+        /./,
+      ],
+      ["a limit without a key", { ...loginLimit, limit: { requests: 10, window_s: 300 } }, "rules.1.limit.key", /./],
+      ["a limit that is not an object", { ...loginLimit, limit: 10 }, "rules.1.limit", /./],
+    ])("refuses %s with 400 at that member, and stores nothing", async (_what, rule, path, message) => {
+      const appId = await freshApp();
+      const problem = await expectProblem(await publishWith(appId, { rules: [monitorRule, rule] }), 400);
+      expect(problem.type).toBe("https://antireverse.dev/problems/validation");
+      expect(problem.errors).toEqual([{ path, message: expect.stringMatching(message) }]);
+      expect(await storedVersions(appId)).toEqual([]);
+    });
+
+    it("asks for allow_broad for an Enforce limit Rule with a wildcard first segment, as for a block Rule", async () => {
+      const appId = await freshApp();
+      const broad = { ...loginLimit, path: "/*/login", mode: "enforce" };
+      for (const body of [{ rules: [monitorRule, broad] }, { rules: [monitorRule, broad], allow_broad: false }]) {
+        const refused = await expectProblem(await publishWith(appId, body), 400);
+        expect(refused.errors).toEqual([
+          { path: "rules.1.mode", message: expect.stringMatching(/most of the App's traffic.*allow_broad/) },
+        ]);
+      }
+      expect(await storedVersions(appId)).toEqual([]);
+
+      // Every path in Enforce mode is refused even when acknowledged.
+      const everything = await expectProblem(
+        await publishWith(appId, { rules: [{ ...loginLimit, path: "/**", mode: "enforce" }], allow_broad: true }),
+        400,
+      );
+      expect(everything.errors?.[0]?.path).toBe("rules.0.mode");
+
+      // In Monitor mode a broad limit Rule needs nothing, also for every path.
+      expect((await publishWith(appId, { rules: [{ ...broad, mode: "monitor" }] })).status).toBe(201);
+      expect((await publishWith(appId, { rules: [{ ...loginLimit, path: "/**" }] })).status).toBe(201);
+      const accepted = await publishWith(appId, { rules: [broad], allow_broad: true });
+      expect(accepted.status).toBe(201);
+      expect(PolicyResponseSchema.parse(await accepted.json()).policy.rules[0]).toMatchObject({
+        path: "/*/login",
+        action: "throttle",
+        mode: "enforce",
+        limit: loginLimit.limit,
+      });
+
+      // A rollback to the broad Enforce limit Rule asks again.
+      await publishPolicy(api, adminA, appId, "development", [monitorRule]);
+      const rollback = await expectProblem(
+        await api.app.request(policyPath(appId, "development", "/rollback"), json({ version: 3 }, bearer(adminA))),
+        400,
+      );
+      expect(rollback.errors?.[0]?.path).toBe("rules.0.mode");
+      const acknowledged = await api.app.request(
+        policyPath(appId, "development", "/rollback"),
+        json({ version: 3, allow_broad: true }, bearer(adminA)),
+      );
+      expect(acknowledged.status).toBe(201);
+      expect(PolicyResponseSchema.parse(await acknowledged.json()).policy.rules[0]).toMatchObject({
+        limit: loginLimit.limit,
+      });
+    });
+
+    it("keeps the limit Rules of one Organization from every other", async () => {
+      const appId = await freshApp();
+      await publishPolicy(api, adminA, appId, "development", [loginLimit]);
+      for (const res of [
+        await api.app.request(policyPath(appId, "development"), { headers: bearer(adminB) }),
+        await api.app.request(policyPath(appId, "development", "/versions/1"), { headers: bearer(adminB) }),
+        await api.app.request(policyPath(appId, "development"), put({ rules: [loginLimit] }, bearer(adminB))),
+      ]) {
+        const problem = await expectProblem(res, 404);
+        expect(JSON.stringify(problem)).not.toContain("limit");
+      }
+      expect(await storedVersions(appId)).toHaveLength(1);
+    });
+  });
+
   describe("one version", () => {
     it("reads the Rules of a published version, and 404 for one that is not there", async () => {
       const appId = await freshApp();

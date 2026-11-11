@@ -271,6 +271,7 @@ describe("data directory", () => {
         { version: "0016_exposure_review.sql" },
         { version: "0017_exposure_review2.sql" },
         { version: "0018_patches.sql" },
+        { version: "0019_credential_stuffing.sql" },
       ]);
     } finally {
       await second.close();

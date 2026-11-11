@@ -140,6 +140,12 @@ For some advisories Anti Reverse ships a virtual patch: Shield recognises the kn
 - Body checks need `shield.verifyBody` on your body parsers; a body Shield never saw is recorded as "body not checked" and is never blocked. Under an enforced patch, a body in a character set Shield cannot read is refused.
 - **Honest limits:** a patch stops the known shape of an exploit, not every variant; some patterns can match ordinary text, so read the hits in monitor before enforcing. Upgrading is the fix.
 
+## Rate limits and login protection
+
+A Rule can throttle: a limit of requests (or of failed responses, 401 and 403) per window, counted per address or per attested device. Over the limit an enforced Rule answers `429` with `Retry-After`; in monitor nothing changes. The Console's **Login protection** preset limits a login route to 10 failed responses per 5 minutes per address. A wave of failed logins from one network opens a High "Credential stuffing" Incident.
+
+- **Honest limits:** counters are per Shield instance (several instances multiply the limit until a shared store exists); people behind one address share a counter; an attacker spread over many addresses stays under per-address limits.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

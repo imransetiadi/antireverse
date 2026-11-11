@@ -80,9 +80,9 @@ const EXPIRED: { status: "expired" } = Object.freeze({ status: "expired" });
 export const MISSING_RESULT: AttestationResult = Object.freeze({ status: "missing", verdict: null, risk: null });
 export const INVALID_RESULT: AttestationResult = Object.freeze({ status: "invalid", verdict: null, risk: null });
 export const EXPIRED_RESULT: AttestationResult = Object.freeze({ status: "expired", verdict: null, risk: null });
-const MISSING_BOUND = Object.freeze({ result: MISSING_RESULT, binding: null });
-const INVALID_BOUND = Object.freeze({ result: INVALID_RESULT, binding: null });
-const EXPIRED_BOUND = Object.freeze({ result: EXPIRED_RESULT, binding: null });
+const MISSING_BOUND = Object.freeze({ result: MISSING_RESULT, binding: null, device: null });
+const INVALID_BOUND = Object.freeze({ result: INVALID_RESULT, binding: null, device: null });
+const EXPIRED_BOUND = Object.freeze({ result: EXPIRED_RESULT, binding: null, device: null });
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -216,6 +216,8 @@ interface CacheEntry {
   readonly result: AttestationResult;
   /** What a request signature is verified against: jti, jkt and the session key (slice 04). */
   readonly binding: SessionBinding;
+  /** The attested device (`sub`): what a device-keyed limit counts by (slice 08). Never recorded. */
+  readonly device: string;
 }
 
 export interface AttestationStats {
@@ -234,12 +236,15 @@ export interface AttestationChecker {
    * token's verification under `context` at `nowS`. Valid tokens are cached by the hash of the token string.
    */
   check(context: AttestationContext, header: unknown, nowS: number): AttestationResult;
-  /** `check`, and for a valid token also what a request signature binds to; null for any other result. */
+  /**
+   * `check`, and for a valid token also what a request signature binds to and the attested device (`sub`); both
+   * null for any other result.
+   */
   checkBound(
     context: AttestationContext,
     header: unknown,
     nowS: number,
-  ): { result: AttestationResult; binding: SessionBinding | null };
+  ): { result: AttestationResult; binding: SessionBinding | null; device: string | null };
   stats(): AttestationStats;
   /** The cache keys (token hashes), least recently used first. For tests. */
   keys(): string[];
@@ -269,7 +274,7 @@ export function createAttestationChecker(options: { maxEntries?: number } = {}):
     context: AttestationContext,
     header: unknown,
     nowS: number,
-  ): { result: AttestationResult; binding: SessionBinding | null } {
+  ): { result: AttestationResult; binding: SessionBinding | null; device: string | null } {
     if (header === undefined) return MISSING_BOUND;
     if (typeof header !== "string" || header.length === 0 || header.length > TOKEN_MAX) return INVALID_BOUND;
     const hash = hashOf(header);
@@ -307,6 +312,7 @@ export function createAttestationChecker(options: { maxEntries?: number } = {}):
       exp: claims.exp,
       result,
       binding,
+      device: claims.sub,
     });
     cache.delete(hash);
     cache.set(hash, fresh);

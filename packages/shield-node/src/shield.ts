@@ -1,6 +1,7 @@
 import { createAttestationChecker, HEADER_NAME } from "./attestation.ts";
 import { canarySignals } from "./canary.ts";
 import { containmentOf, describeClient, resolveActorKey } from "./containment.ts";
+import { type CounterStore, MemoryCounterStore } from "./counters.ts";
 import { decide } from "./decide.ts";
 import { createEmitter, type Emitter } from "./emitter.ts";
 import { createErrorHandler, createExpressMiddleware } from "./express.ts";
@@ -11,6 +12,7 @@ import {
   type InventorySender,
   readInventory,
 } from "./inventory.ts";
+import { createLimiter } from "./limits.ts";
 import { createPatchChecker } from "./patches.ts";
 import { createPoller, type Poller } from "./policy/poller.ts";
 import { BUILT_IN_POLICY, createPolicyStore, routeOfDecision } from "./policy/store.ts";
@@ -249,6 +251,30 @@ function activeShield(
   const patchChecker = createPatchChecker();
   /** The binding of each request's token, from `attest` to `signature` of the same request. */
   const bindings = new WeakMap<object, SessionBinding>();
+  /** The attested device of each request with a valid token, from `attest` to `limits` of the same request. */
+  const devices = new WeakMap<object, string>();
+  // Limit Rules (slice 08): counted in the store of this instance, or in the one the host gave.
+  let counterStore: CounterStore | undefined;
+  const givenStore: unknown = config.counterStore;
+  if (givenStore !== undefined && givenStore !== null) {
+    const candidate = givenStore as Partial<CounterStore>;
+    if (typeof candidate.hit === "function" && typeof candidate.peek === "function") {
+      counterStore = givenStore as CounterStore;
+    } else {
+      warn(
+        "counter-store",
+        '"counterStore" is not a counter store (it needs hit and peek functions): limit Rules count in memory, per instance.',
+      );
+    }
+  }
+  const limiter = createLimiter(counterStore ?? new MemoryCounterStore(), {
+    // Never the address itself: only that one could not be parsed.
+    onUnparsedAddress: () =>
+      warn(
+        "limit-address",
+        "a client address could not be parsed (check clientAddress: it should return one IPv4 or IPv6 address): limit Rules count such a client by the text of its address, which is never logged or sent.",
+      ),
+  });
 
   let internalErrors = 0;
   let middleware: ShieldMiddleware | undefined;
@@ -271,14 +297,32 @@ function activeShield(
         client: (address) => describeClient(actorKey, address),
         contain: (client) => containmentOf(store.current(), client, now),
         attest: (request) => {
-          const { result, binding } = attestation.checkBound(
+          const { result, binding, device } = attestation.checkBound(
             store.current(),
             request.headers?.[HEADER_NAME],
             Math.floor(now() / 1000),
           );
           if (binding !== null) bindings.set(request, binding);
+          if (device !== null) devices.set(request, device);
           return result;
         },
+        limits: (request, input) => {
+          const policy = store.current();
+          if (policy.limitRules.length === 0) return null;
+          return limiter.evaluate(policy, { ...input, device: devices.get(request) ?? null }, now());
+        },
+        settleLimits: (outcome, status) => {
+          // Released even when the clock throws: the slots never stay held.
+          let at: number;
+          try {
+            at = now();
+          } catch (error) {
+            limiter.release(outcome);
+            throw error;
+          }
+          limiter.settle(outcome, status, at);
+        },
+        releaseLimits: (outcome) => limiter.release(outcome),
         signature: (request) => signatures.check(request, bindings.get(request) ?? null, now()),
         patches: (request, method, recordMonitor) =>
           patchChecker.evaluate(store.current(), request, method, hasBody(request), recordMonitor),
@@ -334,7 +378,7 @@ function activeShield(
         disabledReason: null,
         policyVersion: policy.version,
         policyStale: policyStale(),
-        policyRules: policy.rules.length + policy.signatureRules.length,
+        policyRules: policy.rules.length + policy.signatureRules.length + policy.limitRules.length,
         lastPolicyError: poller?.lastError() ?? policyConfigError,
         actorHashing: actorKey !== null,
         inventory: inventory?.state() ?? "off",

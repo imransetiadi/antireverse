@@ -3,8 +3,8 @@
 // their capital letter: Organization (in running text), App, Environment, Event, Decision, Shield.
 export const en = {
   // Brand and chrome
-  brand: "Anti Reverse",
-  "meta.title": "Anti Reverse Console",
+  brand: "Airverse",
+  "meta.title": "Airverse Console",
   "nav.skip": "Skip to content",
   "nav.main": "Main",
   "nav.apps": "Apps",
@@ -158,6 +158,35 @@ export const en = {
   "policy.rule.requires.help":
     "Requests on this route must come from Guard with a valid signature. For routes that take a body, add shield.verifyBody to your body parser.",
   "policy.rule.requires.tag": "Signed requests required",
+  "policy.rule.action": "Action",
+  "policy.rule.action.block": "Block",
+  "policy.rule.action.throttle": "Throttle",
+  "policy.rule.action.help": "Block refuses every matching request. Throttle refuses only the requests over a limit.",
+  "policy.rule.limit.requests": "Limit",
+  "policy.rule.limit.requests.help": "The number allowed in one window, from 1 to 100,000.",
+  "policy.rule.limit.window": "Window in seconds",
+  "policy.rule.limit.window.help": "From 1 to 3,600 seconds.",
+  "policy.rule.limit.key": "Counted per",
+  "policy.rule.limit.key.ip": "Address",
+  "policy.rule.limit.key.device": "Device",
+  "policy.rule.limit.key.help":
+    "Device uses Guard's attestation; requests without a valid token are counted per address.",
+  "policy.rule.limit.count": "Count",
+  "policy.rule.limit.count.requests": "All requests",
+  "policy.rule.limit.count.failures": "Failed responses (401, 403)",
+  "policy.rule.requires.unavailable": "Not available with Throttle.",
+  "policy.rule.preset.login": "Login protection",
+  "policy.rule.preset.login.help":
+    "Fills in POST, Throttle and 10 failed responses per 5 min per address. Enter the path of your login route.",
+  "policy.limit.tag": "{count} / {window} per {key}",
+  "policy.limit.tag.approx": "About {count} / {window} per {key}",
+  "policy.limit.count.requests.one": "1 request",
+  "policy.limit.count.requests": "{n} requests",
+  "policy.limit.count.failures.one": "1 failed response",
+  "policy.limit.count.failures": "{n} failed responses",
+  "policy.limit.key.ip": "address",
+  "policy.limit.key.device": "device",
+  "policy.limit.instance": "Counted per Shield instance.",
   "policy.rule.add.title": "Add a Rule",
   "policy.rule.add.lead": "A new Rule starts in monitor mode: it marks matching requests and blocks nothing.",
   "policy.rule.add": "Add Rule",
@@ -167,6 +196,8 @@ export const en = {
   "policy.rule.remove": "Remove",
   "policy.publishing": "Publishing…",
   "policy.confirm.promote": "Promote to enforce in {environment}? Requests matching {path} will be blocked.",
+  "policy.confirm.promote.throttle":
+    "Promote to enforce in {environment}? Requests matching {path} over the limit will be refused.",
   "policy.confirm.rollback": "Roll back {environment} to the Rules of version {version}?",
   "policy.confirm.undo": "This publishes a new version. Roll back returns to an earlier one.",
   "policy.confirm.required": "Nothing was published. Confirm the change first.",
@@ -192,6 +223,7 @@ export const en = {
   "policy.key.env": "Give your server the policy public key",
   "policy.key.unavailable": "The policy public key could not be loaded. Reload this page to see it.",
   "policy.guardrail": "A Rule that blocks every request cannot be enforced.",
+  "policy.guardrail.limit": "A Rule that limits every request cannot be enforced.",
 
   // Builds (/apps/[appId]/builds and /apps/[appId]/builds/[buildId])
   "builds.title": "Builds",
@@ -310,7 +342,7 @@ export const en = {
 
   // Alert channels (/settings/alerts)
   "alerts.title": "Alert channels",
-  "alerts.lead": "When a new Incident opens, Anti Reverse sends an alert to every channel below.",
+  "alerts.lead": "When a new Incident opens, Airverse sends an alert to every channel below.",
   "alerts.caption": "Alert channels of the organization",
   "alerts.count": "{count} of {max} channels",
   "alerts.col.name": "Name",
@@ -473,14 +505,16 @@ export const en = {
   "error.path.invalid":
     "Start with / and use only letters, digits and . _ ~ - in a segment. * stands for one whole segment; ** is allowed only at the end.",
   "error.methods": "Choose from GET, POST, PUT, PATCH and DELETE.",
+  "error.limit.requests": "Enter a whole number from 1 to 100,000.",
+  "error.limit.window": "Enter a whole number of seconds from 1 to 3,600.",
   "error.rules.max": "A Policy holds at most 50 Rules. Remove one before adding another.",
   "error.policy.stale":
     "This Policy changed while you were editing it, so nothing was saved. Reload the page and try again.",
   "error.field": "The API did not accept this value. Change it and try again.",
-  "error.api": "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.",
-  "error.api.failed": "The Anti Reverse API reported a problem, so nothing was saved. Try again in a moment.",
+  "error.api": "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.",
+  "error.api.failed": "The Airverse API reported a problem, so nothing was saved. Try again in a moment.",
   "error.api.signin":
-    "The Anti Reverse API did not answer, so the key could not be checked. Check that it is running, then try again.",
+    "The Airverse API did not answer, so the key could not be checked. Check that it is running, then try again.",
   "error.incident.stale":
     "This Incident changed since the page was loaded, so nothing was saved. Reload the page and try again.",
   "error.alerts.kind": "Choose Webhook or Slack.",
@@ -490,9 +524,9 @@ export const en = {
   "error.alerts.url.refused": "This address cannot receive alerts. Use an https:// URL on a public host.",
   "error.alerts.max": "An organization holds at most 10 alert channels. Remove one before adding another.",
   "error.alerts.gone": "This channel no longer exists. Reload the page to see the current list.",
-  "error.alerts.test": "The Anti Reverse API reported a problem, so no test alert was sent. Try again in a moment.",
+  "error.alerts.test": "The Airverse API reported a problem, so no test alert was sent. Try again in a moment.",
   "error.alerts.test.api":
-    "The Anti Reverse API did not answer, so no test alert was sent. Check that it is running, then try again.",
+    "The Airverse API did not answer, so no test alert was sent. Check that it is running, then try again.",
   "error.containment.cap": "This App already has 150 active blocks in {environment}. Lift one first.",
   "error.containment.overlap": "This network overlaps your never block list.",
   "error.containment.notApplicable": "Containment does not apply to this Incident.",
@@ -511,7 +545,7 @@ export const en = {
     "The never block list changed since the page was loaded, so nothing was added. Reload the page and try again.",
   "error.allowlist.gone": "This range is no longer on the list. Reload the page to see the current list.",
   "error.page.title": "This page could not be loaded",
-  "error.page.body": "The Anti Reverse API did not answer. Check that it is running, then try again.",
+  "error.page.body": "The Airverse API did not answer. Check that it is running, then try again.",
   "error.page.retry": "Try again",
   "notfound.title": "Page not found",
   "notfound.body": "That page does not exist, or it belongs to another organization.",
@@ -530,7 +564,7 @@ export const en = {
   "findings.scope.advisory": "Showing the Findings of advisory {advisory}.",
   "findings.scope.build": "Showing the Findings of Build {build}.",
   "findings.empty":
-    "No findings. Anti Reverse checks the packages your builds ship and your servers run against known advisories.",
+    "No findings. Airverse checks the packages your builds ship and your servers run against known advisories.",
   "findings.empty.how":
     "To send components, run antireverse harden with --register next to your lockfile, or start Shield: it reports the packages it runs with once at start.",
   "findings.empty.filtered": "No Findings match these filters.",

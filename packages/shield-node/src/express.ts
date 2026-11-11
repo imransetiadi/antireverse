@@ -4,6 +4,7 @@ import { type AttestationResult, INVALID_RESULT } from "./attestation.ts";
 import type { Signal } from "./canary.ts";
 import { type Client, type ContainmentHit, UNKNOWN_CLIENT } from "./containment.ts";
 import { truncateIp } from "./ip.ts";
+import { type LimitInput, type LimitOutcome, RATE_LIMITED_BODY, type ThrottleDecision } from "./limits.ts";
 import { type PatchBody, type PatchState, recordedPatch } from "./patches.ts";
 import { trackRoute } from "./route.ts";
 import type { SignatureState } from "./signature.ts";
@@ -48,7 +49,24 @@ export interface AdapterDeps {
    */
   bodyTypes?: ReadonlySet<string>;
   /**
-   * The Virtual patches of the request (slice 20), evaluated after Containments and Rules, when neither blocked it.
+   * The limit Rules of the request (slice 08), counted after Containments and Rules, when neither blocked it, and
+   * before the Virtual patches. Synchronous, no I/O. `device` is absent here: the Shield adds it from the request's
+   * attestation. Left out, or null: no limit applies. A throw is counted and the request proceeds (fail open).
+   */
+  limits?(request: IncomingMessage, input: Omit<LimitInput, "device">): LimitOutcome | null;
+  /**
+   * Called once when the response of a request with a limit outcome closed with the application's own status:
+   * counts a failed response (401, 403) on the failure limits of the request and releases its slots. A throw is
+   * counted.
+   */
+  settleLimits?(outcome: LimitOutcome, status: number): void;
+  /**
+   * Releases the failure slots of a request without counting anything: Shield itself answered it (a patch, a body
+   * the signature hook refused), or its Event could not be registered. A throw is counted.
+   */
+  releaseLimits?(outcome: LimitOutcome): void;
+  /**
+   * The Virtual patches of the request (slice 20), evaluated after Containments, Rules and limits, when none refused it.
    * `recordMonitor` is false when a Rule in monitor already decided: only an enforced patch can still change the
    * outcome. Synchronous, no I/O. The state is read again when the response closes, so that the body hook's result
    * is recorded. Left out, or null: no patches. A throw is counted and the request proceeds (fail open).
@@ -153,6 +171,21 @@ function statusOf(response: ServerResponse): number {
   return Math.min(Math.max(status, 100), 599);
 }
 
+/**
+ * Answers a throttled request (slice 08): 429, `content-type: application/json` as a block response has it,
+ * `retry-after` in whole seconds, the rate-limited body. Nothing else is added.
+ */
+function throttle(response: ServerResponse, retryAfterS: number): void {
+  if (response.headersSent) throw new Error("the response has already started");
+  response.statusCode = 429;
+  response.setHeader("content-type", "application/json");
+  response.setHeader("retry-after", String(Math.max(1, Math.ceil(retryAfterS))));
+  response.end(RATE_LIMITED_BODY);
+}
+
+/** What an Event records as its decision: a Decision of `decide`, a Containment or a patch, or a limit Rule's. */
+type RecordedDecision = Decision | ThrottleDecision;
+
 /** Answers a blocked request: 403, `content-type: application/json`, the block body. Nothing else is added. */
 function block(response: ServerResponse): void {
   if (response.headersSent) throw new Error("the response has already started");
@@ -172,6 +205,10 @@ function block(response: ServerResponse): void {
  *   recorded;
  * - answers a request that a Rule in Enforce mode blocks with 403 and the block body, and calls neither `next()`
  *   nor anything of the application. Every other request it leaves alone: the response is never touched;
+ * - then counts the request on the limit Rules that match it (slice 08), unless it was refused already: a client
+ *   over an enforced limit is answered 429 with `Retry-After` and the rate-limited body, before the handler; over a
+ *   limit in monitor the request proceeds untouched and its Event records `throttle`. When the response closes with
+ *   the application's 401 or 403, the failure limits of the request count it;
  * - never throws and fails open: everything that can fail is inside try/catch, and when no Decision can be made,
  *   or the block response cannot be written, the request proceeds and the error is counted;
  * - records exactly one Event, on the response's 'close' — the only event that also fires when the client aborts;
@@ -201,7 +238,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
     request: IncomingMessage,
     response: ServerResponse,
     started: number,
-    decision: Decision,
+    decision: RecordedDecision,
     blockedBy: string | undefined,
     containmentId: string | null,
     signals: Signal[],
@@ -210,6 +247,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
     attestation: AttestationResult | null,
     signature: SignatureState | null,
     patches: PatchState | null,
+    limits: LimitOutcome | null,
   ): void {
     const startedAt = deps.now();
     const eventId = uuidv7(startedAt);
@@ -217,6 +255,23 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
     const routeOf = blockedBy === undefined ? trackRoute(request) : undefined;
 
     response.once("close", () => {
+      // The failure limits (slice 08) count the application's own 401 or 403: not a response Shield answered — a
+      // throttle, a patch that refused the request, a body the signature hook refused. Either way the request's
+      // slots are released now (A7 F1) — 'close' fires also when the client went away.
+      if (limits !== null && limits.pending.length > 0) {
+        try {
+          if (
+            (patches !== null && patches.blocked !== null) ||
+            (signature?.refuse === true && signature.body === "mismatch")
+          ) {
+            deps.releaseLimits?.(limits);
+          } else {
+            deps.settleLimits?.(limits, response.statusCode);
+          }
+        } catch {
+          contained();
+        }
+      }
       try {
         const latency = performance.now() - started;
         // A requirement deferred to the body hook and not met after all — the hook refused the body, or never ran
@@ -232,6 +287,8 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
           patchId = patches.blocked.id;
           patchBody = patches.blockedBody;
         } else if (
+          // A throttled request never reached the body hook: the limit decided it, not the requirement.
+          !(limits !== null && limits.throttled !== null) &&
           signature !== null &&
           deferred !== undefined &&
           (signature.body === "mismatch" || signature.body === "unchecked")
@@ -267,6 +324,8 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
             containment_id: containmentId,
             patch_id: patchId,
             patch_body: patchBody,
+            // The failure-counting limit Rule that matched (A7, D-064): always sent, null when there is none.
+            limit_rule_id: limits?.failureRule?.id ?? null,
           },
           actor: { ip_prefix: ipPrefix, ip_hash: client.hash },
           signals,
@@ -285,7 +344,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
   /** Decides, blocks if a Rule says so, and registers the Event. True when the request was answered here. */
   function handle(request: IncomingMessage, response: ServerResponse): boolean {
     const started = performance.now();
-    let decision = FAIL_OPEN;
+    let decision: RecordedDecision = FAIL_OPEN;
     let blockedBy: string | undefined;
     let containmentId: string | null = null;
     let path: string | undefined;
@@ -293,8 +352,11 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
     // The address is read once, now: at 'close' the socket may be gone. It never leaves the process.
     let ipPrefix: string | null = null;
     let client = UNKNOWN_CLIENT;
+    /** The address as given, for a limit to count by when it cannot be parsed (A7 F7). Never recorded. */
+    let rawAddress: unknown;
     try {
       const address = deps.clientAddress ? deps.clientAddress(request) : request.socket?.remoteAddress;
+      rawAddress = address;
       ipPrefix = truncateIp(address);
       if (deps.client !== undefined) client = deps.client(address);
     } catch {
@@ -378,8 +440,41 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
       blockedBy = undefined;
       containmentId = null;
     }
-    // The Virtual patches, after Containments and Rules, unless one of them refused the request already. Whatever
-    // fails here fails open: the request proceeds as the Rules decided.
+    // The limit Rules (slice 08), after Containments and Rules, unless one of them refused the request already: every
+    // matching limit counts the request, the first enforced one over its threshold answers 429, and a limit in
+    // monitor marks a request nothing else decided. Whatever fails here fails open: the request proceeds as the
+    // Rules decided, and nothing of the limits is recorded.
+    let limits: LimitOutcome | null = null;
+    if (blockedBy === undefined && deps.limits !== undefined && path !== undefined) {
+      const ruled = decision;
+      try {
+        const method = methodOf(request);
+        limits = deps.limits(request, { method, path, preflight: isPreflight(request, method), client, rawAddress });
+        if (limits !== null) {
+          if (limits.throttled !== null) {
+            throttle(response, limits.retryAfterS);
+            decision = limits.throttled.decision;
+            blockedBy = limits.throttled.path;
+          } else if (limits.marked !== null && decision.action === "allow") {
+            decision = limits.marked.decision;
+          }
+        }
+      } catch {
+        contained();
+        if (limits !== null) {
+          try {
+            deps.releaseLimits?.(limits);
+          } catch {
+            contained();
+          }
+        }
+        limits = null;
+        decision = ruled;
+        blockedBy = undefined;
+      }
+    }
+    // The Virtual patches, after Containments, Rules and limits, unless one of them refused the request already.
+    // Whatever fails here fails open: the request proceeds as the Rules decided.
     let patches: PatchState | null = null;
     if (blockedBy === undefined && deps.patches !== undefined) {
       const ruled = decision;
@@ -411,9 +506,18 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
         attestation,
         signature,
         patches,
+        limits,
       );
     } catch {
       contained(); // the Event is lost; the Decision stands
+      // No 'close' listener: the request's slots are released now rather than held for good.
+      if (limits !== null) {
+        try {
+          deps.releaseLimits?.(limits);
+        } catch {
+          contained();
+        }
+      }
     }
     return blockedBy !== undefined;
   }

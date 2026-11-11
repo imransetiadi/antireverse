@@ -1,6 +1,6 @@
-import { EXAMPLE_POLICY, type PolicyRule, type PolicyVersionSummary } from "@antireverse/protocol";
+import { EXAMPLE_LIMIT_RULE, EXAMPLE_POLICY, type PolicyRule, type PolicyVersionSummary } from "@antireverse/protocol";
 import { generateKey, newId } from "@antireverse/protocol/server";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The screens are rendered with the Server Actions replaced by fakes: what a form sends is the contract.
@@ -139,6 +139,102 @@ describe("RuleList", () => {
     expect(within(row(signedOnly.id)).getByTestId("rule-promote").getAttribute("href")).toBe(
       ROUTES.policy(appId, "production", { promote: signedOnly.id }),
     );
+  });
+
+  describe("a Rule with a limit (slice 08)", () => {
+    const login: PolicyRule = { ...EXAMPLE_LIMIT_RULE, methods: [...EXAMPLE_LIMIT_RULE.methods] };
+    const api: PolicyRule = {
+      id: newId("rul"),
+      name: "API rate",
+      path: "/api/**",
+      methods: [],
+      action: "throttle",
+      mode: "enforce",
+      limit: { requests: 100, window_s: 60, key: "device", count: "requests" },
+    };
+    const show = (confirmRuleId?: string) =>
+      render(
+        <RuleList
+          version={3}
+          appId={appId}
+          appName="shop-web"
+          environment="production"
+          rules={[enforced, login, api]}
+          confirmRuleId={confirmRuleId}
+        />,
+      );
+
+    it("tags the Rule with the throttle icon and its limit in words, and only that Rule", () => {
+      show();
+      const tag = within(row(login.id)).getByTestId("rule-limit");
+      expect(tag.textContent).toBe("10 failed responses / 5 min per address");
+      expect(tag.querySelector("svg")?.getAttribute("data-shape")).toBe("hourglass-medium");
+      expect(tag.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+      expect(within(row(api.id)).getByTestId("rule-limit").textContent).toBe("100 requests / 1 min per device");
+      expect(row(login.id).getAttribute("data-action")).toBe("throttle");
+      expect(row(enforced.id).getAttribute("data-action")).toBe("block");
+      expect(within(row(enforced.id)).queryByTestId("rule-limit")).toBeNull();
+      expect(within(row(login.id)).queryByTestId("rule-requires")).toBeNull();
+    });
+
+    it("tags a limit above 1,000 with About: Shield counts it approximately", () => {
+      const wide: PolicyRule = {
+        ...login,
+        id: newId("rul"),
+        limit: { requests: 5_000, window_s: 60, key: "ip", count: "requests" },
+      };
+      render(<RuleList version={3} appId={appId} appName="shop-web" environment="production" rules={[wide]} />);
+      expect(within(row(wide.id)).getByTestId("rule-limit").textContent).toBe(
+        "About 5,000 requests / 1 min per address",
+      );
+    });
+
+    it("notes under an enforced limit that it is counted per Shield instance, and not under one in Monitor", () => {
+      show();
+      expect(within(row(api.id)).getByTestId("rule-limit-note").textContent).toBe("Counted per Shield instance.");
+      expect(within(row(login.id)).queryByTestId("rule-limit-note")).toBeNull();
+      expect(within(row(enforced.id)).queryByTestId("rule-limit-note")).toBeNull();
+    });
+
+    it("promotes through the same confirmation step, which says what enforcing a limit does", async () => {
+      show();
+      expect(within(row(login.id)).getByTestId("rule-promote").getAttribute("href")).toBe(
+        ROUTES.policy(appId, "production", { promote: login.id }),
+      );
+      expect(within(row(api.id)).getByTestId("rule-demote")).toBeTruthy();
+      cleanup();
+
+      show(login.id);
+      const dialog = screen.getByRole("alertdialog");
+      expect(within(dialog).getByTestId("confirm-question").textContent).toBe(
+        "Promote to enforce in production? Requests matching /login over the limit will be refused.",
+      );
+      expect(within(dialog).queryByLabelText("Type production to confirm")).toBeNull();
+      await submit(within(dialog).getByRole("button", { name: "Promote to enforce" }));
+      expect(sent(actions.setRuleModeAction)).toEqual({
+        appId: [appId],
+        environment: ["production"],
+        ruleId: [login.id],
+        mode: ["enforce"],
+        confirm: ["production"],
+        expectedVersion: ["3"],
+      });
+    });
+
+    it("asks for the typed Environment before enforcing a limit on a broad pattern, as for a block", () => {
+      const broad: PolicyRule = { ...login, id: newId("rul"), path: "/*/login" };
+      render(
+        <RuleList
+          version={3}
+          appId={appId}
+          appName="shop-web"
+          environment="production"
+          rules={[broad]}
+          confirmRuleId={broad.id}
+        />,
+      );
+      expect(within(screen.getByRole("alertdialog")).getByLabelText("Type production to confirm")).toBeTruthy();
+    });
   });
 
   it("reads policy.none when there is no Rule, and shows no table", () => {
@@ -620,6 +716,7 @@ describe("AddRuleForm", () => {
       environment: ["staging"],
       name: ["Checkout"],
       path: ["/api/checkout"],
+      action: ["block"],
       requires: ["signature"],
       expectedVersion: ["3"],
     });
@@ -650,6 +747,7 @@ describe("AddRuleForm", () => {
       name: ["Admin area"],
       path: ["/api/admin/**"],
       methods: ["POST", "DELETE"],
+      action: ["block"],
       expectedVersion: ["3"],
     });
   });
@@ -690,6 +788,210 @@ describe("AddRuleForm", () => {
     expect(described.map((id) => document.getElementById(id)?.textContent)).toContain(
       "Choose from GET, POST, PUT, PATCH and DELETE.",
     );
+  });
+  describe("limits (slice 08)", () => {
+    const WINDOW = "Window in seconds";
+    const show = () => render(<AddRuleForm version={3} appId={appId} environment="staging" />);
+    const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+    /** The radios of a group: field name, value, visible label and whether it is chosen. */
+    const choices = (group: HTMLElement) =>
+      (within(group).getAllByRole("radio") as HTMLInputElement[]).map((one) => [
+        one.name,
+        one.value,
+        one.labels?.[0]?.textContent,
+        one.checked,
+      ]);
+    const chosen = (group: string) =>
+      (within(screen.getByRole("group", { name: group })).getAllByRole("radio") as HTMLInputElement[]).find(
+        (one) => one.checked,
+      )?.value;
+    const describedBy = (control: HTMLElement): (string | null | undefined)[] =>
+      (control.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent);
+
+    it("offers Block or Throttle, Block chosen, and no limit fields while it is Block", () => {
+      show();
+      const group = screen.getByRole("group", { name: "Action" });
+      const radios = within(group).getAllByRole("radio") as HTMLInputElement[];
+      expect(radios.map((one) => [one.name, one.value, one.checked])).toEqual([
+        ["action", "block", true],
+        ["action", "throttle", false],
+      ]);
+      expect(within(group).getByLabelText("Block")).toBe(radios[0]);
+      expect(within(group).getByLabelText("Throttle")).toBe(radios[1]);
+      expect(screen.queryByTestId("rule-limit-fields")).toBeNull();
+      expect(screen.queryByLabelText("Limit")).toBeNull();
+    });
+
+    it("shows the limit fields with their help when Throttle is chosen", () => {
+      show();
+      fireEvent.click(radio("Throttle"));
+      const requests = screen.getByLabelText("Limit") as HTMLInputElement;
+      expect([requests.name, requests.inputMode, requests.value]).toEqual(["limitRequests", "numeric", ""]);
+      expect(describedBy(requests)).toContain("The number allowed in one window, from 1 to 100,000.");
+      const window = screen.getByLabelText(WINDOW) as HTMLInputElement;
+      expect([window.name, window.inputMode, window.value]).toEqual(["limitWindow", "numeric", ""]);
+      expect(describedBy(window)).toContain("From 1 to 3,600 seconds.");
+      expect(requests.className).toMatch(MONO);
+      expect(window.className).toMatch(MONO);
+
+      const key = screen.getByRole("group", { name: "Counted per" });
+      expect(choices(key)).toEqual([
+        ["limitKey", "ip", "Address", true],
+        ["limitKey", "device", "Device", false],
+      ]);
+      expect(describedBy(key)).toContain(
+        "Device uses Guard's attestation; requests without a valid token are counted per address.",
+      );
+      const count = screen.getByRole("group", { name: "Count" });
+      expect(choices(count)).toEqual([
+        ["limitCount", "requests", "All requests", true],
+        ["limitCount", "failures", "Failed responses (401, 403)", false],
+      ]);
+    });
+
+    it("says the window in readable words as it is typed, and only for a window that is allowed", () => {
+      show();
+      fireEvent.click(radio("Throttle"));
+      const window = screen.getByLabelText(WINDOW);
+      const hint = () => screen.queryByTestId("rule-limit-window-hint")?.textContent;
+      expect(hint()).toBeUndefined();
+      fireEvent.change(window, { target: { value: "300" } });
+      expect(hint()).toBe("5 min");
+      expect(describedBy(window)).toContain("5 min");
+      fireEvent.change(window, { target: { value: "90" } });
+      expect(hint()).toBe("1 min 30 s");
+      for (const bad of ["0", "3601", "5m", ""]) {
+        fireEvent.change(window, { target: { value: bad } });
+        expect(hint()).toBeUndefined();
+      }
+    });
+
+    it("makes Require a signed request unavailable with Throttle, and says why", () => {
+      show();
+      const box = screen.getByLabelText("Require a signed request") as HTMLInputElement;
+      fireEvent.click(box);
+      expect(box.checked).toBe(true);
+      fireEvent.click(radio("Throttle"));
+      expect(box.disabled).toBe(true);
+      expect(box.checked).toBe(false);
+      expect(describedBy(box)).toContain("Not available with Throttle.");
+      // Back to Block: available again, and what was checked before is checked again.
+      fireEvent.click(radio("Block"));
+      expect(box.disabled).toBe(false);
+      expect(box.checked).toBe(true);
+      expect(screen.queryByText("Not available with Throttle.")).toBeNull();
+    });
+
+    it("sends the limit with the Rule, and never a requirement beside it", async () => {
+      show();
+      fireEvent.change(screen.getByLabelText("Rule name"), { target: { value: "API rate" } });
+      fireEvent.change(screen.getByLabelText("Path pattern"), { target: { value: "/api/**" } });
+      fireEvent.click(screen.getByLabelText("Require a signed request"));
+      fireEvent.click(radio("Throttle"));
+      fireEvent.change(screen.getByLabelText("Limit"), { target: { value: "100" } });
+      fireEvent.change(screen.getByLabelText(WINDOW), { target: { value: "60" } });
+      fireEvent.click(radio("Device"));
+      await submit(screen.getByRole("button", { name: "Add Rule" }));
+      expect(sent(actions.publishRuleAction)).toEqual({
+        appId: [appId],
+        environment: ["staging"],
+        name: ["API rate"],
+        path: ["/api/**"],
+        action: ["throttle"],
+        limitRequests: ["100"],
+        limitWindow: ["60"],
+        limitKey: ["device"],
+        limitCount: ["requests"],
+        expectedVersion: ["3"],
+      });
+    });
+
+    it("fills Login protection with one button: POST, Throttle, 10 failed responses per 300 s per address", async () => {
+      show();
+      fireEvent.change(screen.getByLabelText("Rule name"), { target: { value: "Login" } });
+      fireEvent.click(screen.getByLabelText("GET"));
+      fireEvent.click(screen.getByLabelText("Require a signed request"));
+      const preset = screen.getByRole("button", { name: "Login protection" });
+      expect(preset.getAttribute("type")).toBe("button");
+      expect(describedBy(preset)).toContain(
+        "Fills in POST, Throttle and 10 failed responses per 5 min per address. Enter the path of your login route.",
+      );
+      fireEvent.click(preset);
+      // Filling the form sends nothing.
+      expect(actions.publishRuleAction).not.toHaveBeenCalled();
+
+      expect(radio("Throttle").checked).toBe(true);
+      expect((screen.getByLabelText("POST") as HTMLInputElement).checked).toBe(true);
+      expect((screen.getByLabelText("GET") as HTMLInputElement).checked).toBe(false);
+      expect((screen.getByLabelText("Limit") as HTMLInputElement).value).toBe("10");
+      expect((screen.getByLabelText(WINDOW) as HTMLInputElement).value).toBe("300");
+      expect(screen.getByTestId("rule-limit-window-hint").textContent).toBe("5 min");
+      expect(chosen("Counted per")).toBe("ip");
+      expect(chosen("Count")).toBe("failures");
+      // What the admin typed stays, and the path is still theirs to type.
+      expect((screen.getByLabelText("Rule name") as HTMLInputElement).value).toBe("Login");
+      expect((screen.getByLabelText("Path pattern") as HTMLInputElement).value).toBe("");
+
+      fireEvent.change(screen.getByLabelText("Path pattern"), { target: { value: "/login" } });
+      await submit(screen.getByRole("button", { name: "Add Rule" }));
+      // No mode: the action starts every new Rule in Monitor.
+      expect(sent(actions.publishRuleAction)).toEqual({
+        appId: [appId],
+        environment: ["staging"],
+        name: ["Login"],
+        path: ["/login"],
+        methods: ["POST"],
+        action: ["throttle"],
+        limitRequests: ["10"],
+        limitWindow: ["300"],
+        limitKey: ["ip"],
+        limitCount: ["failures"],
+        expectedVersion: ["3"],
+      });
+    });
+
+    it("shows a refused limit value below its field, linked from the summary, and keeps the limit as typed", async () => {
+      vi.mocked(actions.publishRuleAction).mockResolvedValue({
+        ok: false,
+        errors: [
+          { path: "limitRequests", message: "Enter a whole number from 1 to 100,000." },
+          { path: "limitWindow", message: "Enter a whole number of seconds from 1 to 3,600." },
+        ],
+        values: {
+          name: "Login",
+          path: "/login",
+          methods: ["POST"],
+          requires: false,
+          action: "throttle",
+          limit: { requests: "0", window: "7200", key: "device", count: "failures" },
+        },
+      });
+      show();
+      await submit(screen.getByRole("button", { name: "Add Rule" }));
+
+      expect(radio("Throttle").checked).toBe(true);
+      const requests = screen.getByLabelText("Limit") as HTMLInputElement;
+      const window = screen.getByLabelText(WINDOW) as HTMLInputElement;
+      expect([requests.value, window.value]).toEqual(["0", "7200"]);
+      expect(chosen("Counted per")).toBe("device");
+      expect(chosen("Count")).toBe("failures");
+      expect((screen.getByLabelText("POST") as HTMLInputElement).checked).toBe(true);
+
+      const summary = screen.getByTestId("error-summary");
+      expect(
+        within(summary)
+          .getByRole("link", { name: "Limit: Enter a whole number from 1 to 100,000." })
+          .getAttribute("href"),
+      ).toBe(`#${requests.id}`);
+      expect(
+        within(summary)
+          .getByRole("link", { name: `${WINDOW}: Enter a whole number of seconds from 1 to 3,600.` })
+          .getAttribute("href"),
+      ).toBe(`#${window.id}`);
+      expect(requests.getAttribute("aria-invalid")).toBe("true");
+      expect(describedBy(requests)).toContain("Enter a whole number from 1 to 100,000.");
+      expect(describedBy(window)).toContain("Enter a whole number of seconds from 1 to 3,600.");
+    });
   });
 });
 

@@ -154,6 +154,7 @@ describe("an Enforce Rule on /files/private/** in front of express.static", () =
         containment_id: null,
         patch_id: null,
         patch_body: null,
+        limit_rule_id: null,
       });
     }
   });

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { EXAMPLE_POLICY, type Policy, type PolicyRule } from "@antireverse/protocol";
+import { EXAMPLE_LIMIT_RULE, EXAMPLE_POLICY, type Policy, type PolicyRule } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -41,14 +41,15 @@ const READ = 4;
 const SHOWN = { expectedVersion: String(READ) };
 
 const GUARDRAIL = "A Rule that blocks every request cannot be enforced.";
+const LIMIT_GUARDRAIL = "A Rule that limits every request cannot be enforced.";
 const BROAD_UNCONFIRMED =
   "This pattern matches most of the App's requests and needs the stronger confirmation. Nothing was published. Reload the page and confirm again.";
 const typedMismatch = (environment: string) =>
   `Nothing was published. Type ${environment} exactly as shown to confirm.`;
 const STALE = "This Policy changed while you were editing it, so nothing was saved. Reload the page and try again.";
 const UNCONFIRMED = "Nothing was published. Confirm the change first.";
-const API_DOWN = "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.";
-const API_FAILED = "The Anti Reverse API reported a problem, so nothing was saved. Try again in a moment.";
+const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
+const API_FAILED = "The Airverse API reported a problem, so nothing was saved. Try again in a moment.";
 
 function form(fields: Record<string, string | string[]>): FormData {
   const data = new FormData();
@@ -272,6 +273,286 @@ describe("publishRuleAction", () => {
     const state = await publishRuleAction(null, form({ ...fields, ...change }));
     expect(state?.errors).toEqual([{ path: "", message: STALE }]);
     expect(api.getPolicy).not.toHaveBeenCalled();
+  });
+});
+
+describe("publishRuleAction — a Rule with a limit (slice 08)", () => {
+  const block = { appId, environment: "development", name: "Login", path: "/login", methods: ["POST"], ...SHOWN };
+  const limit = { limitRequests: "10", limitWindow: "300", limitKey: "ip", limitCount: "failures" };
+  const fields = { ...block, action: "throttle", ...limit };
+  const REQUESTS = "Enter a whole number from 1 to 100,000.";
+  const WINDOW = "Enter a whole number of seconds from 1 to 3,600.";
+  const publishedRule = () => vi.mocked(api.publishPolicy).mock.calls[0]?.[3]?.at(-1);
+
+  it("publishes a throttle Rule with its limit, in Monitor mode, and goes back to the Policy", async () => {
+    signedIn();
+    await expect(publishRuleAction(null, form(fields))).rejects.toThrow(`REDIRECT ${PAGE}?environment=development`);
+    expect(api.publishPolicy).toHaveBeenCalledWith(
+      admin.key,
+      appId,
+      "development",
+      [
+        enforced,
+        monitored,
+        {
+          name: "Login",
+          path: "/login",
+          methods: ["POST"],
+          action: "throttle",
+          mode: "monitor",
+          limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+        },
+      ],
+      READ,
+    );
+    // The Login protection preset sends exactly the protocol's example limit Rule, less its id and name.
+    const { id: _id, name: _name, ...example } = EXAMPLE_LIMIT_RULE;
+    expect(publishedRule()).toEqual({ name: "Login", ...example });
+  });
+
+  it("accepts the smallest and the largest limit, per device, counting every request", async () => {
+    signedIn(policy({ rules: [] }));
+    await expect(
+      publishRuleAction(
+        null,
+        form({ ...fields, limitRequests: "100000", limitWindow: "3600", limitKey: "device", limitCount: "requests" }),
+      ),
+    ).rejects.toThrow("REDIRECT");
+    expect(publishedRule()).toMatchObject({
+      action: "throttle",
+      limit: { requests: 100_000, window_s: 3_600, key: "device", count: "requests" },
+    });
+    vi.mocked(api.publishPolicy).mockClear();
+    await expect(
+      publishRuleAction(null, form({ ...fields, limitRequests: " 1 ", limitWindow: " 1 " })),
+    ).rejects.toThrow("REDIRECT");
+    expect(publishedRule()).toMatchObject({ limit: { requests: 1, window_s: 1 } });
+  });
+
+  it("starts a limit Rule in Monitor mode whatever the form claims", async () => {
+    signedIn(policy({ rules: [] }));
+    await expect(publishRuleAction(null, form({ ...fields, mode: "enforce", confirm: "development" }))).rejects.toThrow(
+      "REDIRECT",
+    );
+    expect(publishedRule()).toMatchObject({ action: "throttle", mode: "monitor" });
+  });
+
+  it("sends a block Rule without a limit when the action is Block or is not sent", async () => {
+    signedIn(policy({ rules: [] }));
+    await expect(publishRuleAction(null, form({ ...block, action: "block" }))).rejects.toThrow("REDIRECT");
+    expect(publishedRule()).toEqual({
+      name: "Login",
+      path: "/login",
+      methods: ["POST"],
+      action: "block",
+      mode: "monitor",
+    });
+  });
+
+  it.each([
+    ["nothing", ""],
+    ["zero", "0"],
+    ["a negative number", "-5"],
+    ["a decimal", "1.5"],
+    ["an exponent", "1e3"],
+    ["a leading zero", "010"],
+    ["words", "ten"],
+    ["more than 100,000", "100001"],
+  ])("refuses %s as the number of requests, below the field, without calling the API", async (_what, value) => {
+    signedIn();
+    const state = await publishRuleAction(null, form({ ...fields, limitRequests: value }));
+    expect(state).toMatchObject({ ok: false, errors: [{ path: "limitRequests", message: REQUESTS }] });
+    expect(api.getPolicy).not.toHaveBeenCalled();
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["nothing", ""],
+    ["zero", "0"],
+    ["a unit", "5m"],
+    ["a decimal", "0.5"],
+    ["more than 3,600", "3601"],
+  ])("refuses %s as the window, below the field, without calling the API", async (_what, value) => {
+    signedIn();
+    const state = await publishRuleAction(null, form({ ...fields, limitWindow: value }));
+    expect(state).toMatchObject({ ok: false, errors: [{ path: "limitWindow", message: WINDOW }] });
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+  });
+
+  it("reports every refused field at once and gives everything back as typed", async () => {
+    signedIn();
+    const state = await publishRuleAction(
+      null,
+      form({ ...fields, path: "", limitRequests: "0", limitWindow: "7200", limitKey: "device" }),
+    );
+    expect(state).toEqual({
+      ok: false,
+      errors: [
+        { path: "path", message: "Enter a path pattern." },
+        { path: "limitRequests", message: REQUESTS },
+        { path: "limitWindow", message: WINDOW },
+      ],
+      values: {
+        name: "Login",
+        path: "",
+        methods: ["POST"],
+        requires: false,
+        action: "throttle",
+        limit: { requests: "0", window: "7200", key: "device", count: "failures" },
+      },
+    });
+  });
+
+  it.each([
+    ["an action this screen does not offer", { action: "challenge" }],
+    ["a key this screen does not offer", { limitKey: "session" }],
+    ["a count this screen does not offer", { limitCount: "errors" }],
+    ["a requirement beside a limit", { requires: "signature" }],
+  ])("refuses %s as a stale form, without calling the API", async (_what, change) => {
+    signedIn();
+    const state = await publishRuleAction(null, form({ ...fields, ...change }));
+    expect(state).toMatchObject({ ok: false, errors: [{ path: "", message: STALE }] });
+    expect(api.getPolicy).not.toHaveBeenCalled();
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+  });
+
+  it.each([["limitKey"], ["limitCount"], ["limitRequests"], ["limitWindow"]])(
+    "refuses a Throttle form without %s as a stale form",
+    async (missing) => {
+      signedIn();
+      const { [missing as keyof typeof fields]: _gone, ...rest } = fields;
+      const state = await publishRuleAction(null, form(rest));
+      expect(state).toMatchObject({ ok: false, errors: [{ path: "", message: STALE }] });
+      expect(api.publishPolicy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["a Block form", { ...block, action: "block" }],
+    ["a form without an action", block],
+  ])("refuses limit fields on %s as a stale form", async (_what, base) => {
+    signedIn();
+    for (const [name, value] of Object.entries(limit)) {
+      const state = await publishRuleAction(null, form({ ...base, [name]: value }));
+      expect(state).toMatchObject({ ok: false, errors: [{ path: "", message: STALE }] });
+    }
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+  });
+
+  it("reports what the API refused next to the limit field of the new Rule, in the Console's words", async () => {
+    signedIn();
+    vi.mocked(api.publishPolicy).mockRejectedValue(
+      new api.ValidationError("refused", [
+        { path: "rules.2.limit.requests", message: "Too big: expected int to be <=100000" },
+        { path: "rules.2.limit.window_s", message: "Too big: expected int to be <=3600" },
+      ]),
+    );
+    const state = await publishRuleAction(null, form(fields));
+    expect(state).toMatchObject({
+      ok: false,
+      errors: [
+        { path: "limitRequests", message: "The API did not accept this value. Change it and try again." },
+        { path: "limitWindow", message: "The API did not accept this value. Change it and try again." },
+      ],
+      values: { action: "throttle", limit: { requests: "10", window: "300", key: "ip", count: "failures" } },
+    });
+  });
+
+  it("does not blame a field for a refusal of the limit of another Rule, or of the limit as a whole", async () => {
+    signedIn();
+    vi.mocked(api.publishPolicy).mockRejectedValue(
+      new api.ValidationError("refused", [{ path: "rules.0.limit.requests", message: "Too big" }]),
+    );
+    expect(await publishRuleAction(null, form(fields))).toMatchObject({ errors: [{ path: "", message: API_FAILED }] });
+    vi.mocked(api.publishPolicy).mockRejectedValue(
+      new api.ValidationError("refused", [
+        { path: "rules.2.limit", message: "A Rule with the action throttle must have a limit." },
+      ]),
+    );
+    expect(await publishRuleAction(null, form(fields))).toMatchObject({ errors: [{ path: "", message: API_FAILED }] });
+  });
+});
+
+describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
+  const login: PolicyRule = { ...EXAMPLE_LIMIT_RULE, methods: [...EXAMPLE_LIMIT_RULE.methods] };
+  const target = { appId, environment: "development", ruleId: login.id, ...SHOWN };
+
+  it("needs the confirmation to enforce, and keeps the action and the limit when the mode changes", async () => {
+    signedIn(policy({ rules: [enforced, login] }));
+    const unconfirmed = await setRuleModeAction(null, form({ ...target, mode: "enforce" }));
+    expect(unconfirmed).toEqual({ ok: false, errors: [{ path: "confirm", message: UNCONFIRMED }] });
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+
+    await expect(setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }))).rejects.toThrow(
+      "REDIRECT",
+    );
+    expect(api.publishPolicy).toHaveBeenCalledWith(
+      admin.key,
+      appId,
+      "development",
+      [enforced, { ...login, mode: "enforce" }],
+      READ,
+    );
+
+    signedIn(policy({ rules: [enforced, { ...login, mode: "enforce" }] }));
+    await expect(setRuleModeAction(null, form({ ...target, mode: "monitor" }))).rejects.toThrow("REDIRECT");
+    expect(vi.mocked(api.publishPolicy).mock.calls.at(-1)?.[3]).toEqual([enforced, login]);
+  });
+
+  it("asks for the typed Environment before enforcing a limit on a broad pattern, as for a block", async () => {
+    const broad = { ...login, path: "/*/login" };
+    signedIn(policy({ rules: [broad] }));
+    const confirmedOnly = { ...target, mode: "enforce", confirm: "development" };
+    expect(await setRuleModeAction(null, form(confirmedOnly))).toEqual({
+      ok: false,
+      errors: [{ path: "typedEnvironment", message: typedMismatch("development") }],
+    });
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+    await expect(setRuleModeAction(null, form({ ...confirmedOnly, typedEnvironment: "development" }))).rejects.toThrow(
+      "REDIRECT",
+    );
+    expect(api.publishPolicy).toHaveBeenCalledWith(
+      admin.key,
+      appId,
+      "development",
+      [{ ...broad, mode: "enforce" }],
+      READ,
+      { allowBroad: true },
+    );
+  });
+
+  it("shows the guardrail in a limit's words for a Rule on /**, without asking the API to publish it", async () => {
+    const everything = { ...login, path: "/**" };
+    signedIn(policy({ rules: [everything] }));
+    const state = await setRuleModeAction(
+      null,
+      form({ ...target, mode: "enforce", confirm: "development", typedEnvironment: "development" }),
+    );
+    expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: LIMIT_GUARDRAIL }] });
+    expect(api.publishPolicy).not.toHaveBeenCalled();
+    // A block Rule on the same pattern keeps its own words.
+    signedIn(policy({ rules: [{ ...enforced, id: login.id, path: "/**", mode: "monitor" }] }));
+    expect(await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }))).toEqual({
+      ok: false,
+      errors: [{ path: "mode", message: GUARDRAIL }],
+    });
+  });
+
+  it("shows the guardrail in a limit's words when the API refuses to enforce a limit Rule", async () => {
+    signedIn(policy({ rules: [enforced, login] }));
+    vi.mocked(api.publishPolicy).mockRejectedValue(
+      new api.ValidationError("refused", [{ path: "rules.1.mode", message: "would refuse every request" }]),
+    );
+    const state = await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }));
+    expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: LIMIT_GUARDRAIL }] });
+  });
+
+  it("removes another Rule and sends the limit Rule on unchanged", async () => {
+    signedIn(policy({ rules: [enforced, login] }));
+    await expect(
+      removeRuleAction(null, form({ appId, environment: "development", ruleId: enforced.id, ...SHOWN })),
+    ).rejects.toThrow("REDIRECT");
+    expect(vi.mocked(api.publishPolicy).mock.calls[0]?.[3]).toEqual([login]);
   });
 });
 

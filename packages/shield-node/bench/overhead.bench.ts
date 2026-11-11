@@ -32,6 +32,14 @@
 // escapes (so the JSON-escape form is a second form to scan) through the middleware and `shield.verifyBody`. Each
 // distinct form of the body is lower-cased once and every body condition searches it with the native `indexOf`.
 // Held to PB-01 (p99 <= 1.5 ms; Jev native_indexof_latin1).
+// The limit run (slice 08) applies a bundle of 50 limit Rules, every one of which matches the benchmark request and
+// counts it: half count requests (when the request is decided), half count failures (looked at when it is decided,
+// counted when its 401 closes); half per address, half per attested device (every request carries a valid, cached
+// token); half enforce, half monitor; plus 100 never-block CIDRs, none of which holds the client, so the whole list
+// is read. A device Rule counts the device and the address (5 times the limit), so a request updates 75 counters;
+// their keys carry a keyed hash of the client, made twice per request (address, device), not once per Rule.
+// Measured twice against PB-01: with 1,000 clients (75,000 counters: every hit updates one) and with 4,000 clients
+// (300,000 counters wanted in a table of 100,000: every hit inserts a key and drops the idlest one).
 import { createHash, createHmac, generateKeyPairSync, type KeyObject, randomBytes, sign } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { setImmediate as tick } from "node:timers/promises";
@@ -871,6 +879,176 @@ for (const run of ["built-in", "rules", "canaries", "containment", "attestation"
   worstAttested = Math.max(worstAttested, at(0.99));
   await shield.close();
   internalErrors += shield.stats().internalErrors;
+}
+
+// Limit Rules (slice 08): 50 limit Rules matched and counted per request, middleware + the 401 of the handler + close.
+{
+  const LIMIT_RULES = 50;
+  /** Above what one counter sees in a measured run, so that no measured request is throttled. */
+  const THRESHOLD = 1_000;
+  /** Counters one client touches: one per address Rule, two per device Rule (the device and its address). */
+  const COUNTERS_PER_CLIENT = LIMIT_RULES / 2 + (LIMIT_RULES / 2) * 2;
+  const LIMIT_PATHS = ["/api/products/*", "/api/**", "/**", "/api/products/42", "/api/*/42"];
+  const limitRules = Array.from({ length: LIMIT_RULES }, (_, i) => ({
+    id: `rul_${(0x100 + i).toString(16).padStart(24, "0")}`,
+    path: LIMIT_PATHS[i % LIMIT_PATHS.length],
+    methods: i % 3 === 0 ? [] : ["GET"],
+    action: "throttle",
+    mode: i % 4 < 2 ? "enforce" : "monitor",
+    limit: {
+      requests: THRESHOLD,
+      window_s: 3_600,
+      key: i % 2 === 0 ? "ip" : "device",
+      count: i % 4 === 0 || i % 4 === 3 ? "requests" : "failures",
+    },
+  }));
+  const bundle = JSON.stringify({
+    format: 1,
+    audience: createHash("sha256").update(KEY, "utf8").digest("hex").slice(0, 32),
+    epoch: "0123456789abcdef0123456789abcdef",
+    app_id: APP_ID,
+    environment: "development",
+    version: 1,
+    issued_at: new Date().toISOString(),
+    not_after: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    rules: [],
+    allowlist: hundredCidrs(),
+    attestation_keys: attestationKeys.map((key) => ({ kid: key.kid, public_key: key.raw })),
+    limit_rules: limitRules,
+  });
+  const envelope = JSON.stringify({
+    bundle,
+    signature: sign(null, Buffer.from(bundle, "utf8"), signing.privateKey).toString("base64url"),
+    key_id: "0123456789abcdef",
+  });
+  let limitBodies: string[] = [];
+  const shield = createShield({
+    key: KEY,
+    endpoint: "http://127.0.0.1:9",
+    disabled: false,
+    actorKey: ACTOR_KEY,
+    flushIntervalMs: 50,
+    transport: async (request) => {
+      if (request.method === "GET") return { status: 200, body: envelope, etag: '"limits"' };
+      if (limitBodies.length < 50) limitBodies.push(request.body ?? "");
+      return { status: 202 };
+    },
+    logger: { warn: () => {} },
+    policyPublicKey: signing.publicKey.export({ format: "jwk" }).x as string,
+    policyPollIntervalMs: 3_600_000,
+  });
+  await shield.refreshPolicy();
+  const applied = shield.stats();
+  if (applied.policyRules !== LIMIT_RULES || applied.lastPolicyError !== null) {
+    console.error(`FAIL: the Policy of ${LIMIT_RULES} limit Rules was not applied (${applied.lastPolicyError}).`);
+    process.exit(1);
+  }
+  /** A valid token of device `n`. */
+  const deviceToken = (n: number): string => {
+    const iat = Math.floor(Date.now() / 1000);
+    const input = `${TOKEN_HEADER}.${b64({
+      iss: "antireverse",
+      aud: APP_ID,
+      sub: `dev_${n.toString(16).padStart(24, "0")}`,
+      iat,
+      exp: iat + 300,
+      jti: (0x7000_0000 + n).toString(16).padStart(32, "0"),
+      cnf: { jkt: "cn-I_WNMClehiVp51i_0VpOENW1upEerA8sEam5hn-s" },
+      verdict: "trusted",
+      risk: 5,
+      sig: [],
+      pv: 1,
+    })}`;
+    return `${input}.${sign(null, Buffer.from(input, "ascii"), TOKEN_KEY.privateKey).toString("base64url")}`;
+  };
+  const middleware = shield.express();
+  const base = scenarios[0] as Scenario;
+  const lines: string[] = [];
+  console.log(
+    `\n${LIMIT_RULES} limit Rules, all matched and counted per request (requests and failures, per address and per attested device, enforce and monitor), ${ALLOWLIST} never-block CIDRs; every request carries a valid cached token and is answered 401 (budget PB-01: p99 <= ${ATTESTED_BUDGET_P99_US} µs)`,
+  );
+  for (const clients of [1_000, 4_000]) {
+    // Tokens are made here, per run, so that none expires while it is measured.
+    const tokens = Array.from({ length: clients }, (_, n) => ({
+      ...CANARY_RUN_HEADERS,
+      "ar-attestation": deviceToken(clients * 10 + n),
+    }));
+    const nanos = new Float64Array(ITERATIONS);
+    for (let i = -WARMUP; i < ITERATIONS; i++) {
+      const n = (i + WARMUP) % clients;
+      const req = requestDouble(
+        base.url,
+        tokens[n] as Record<string, string>,
+        `10.${clients / 1_000}.${n >> 8}.${n & 255}`,
+      );
+      const res = new ResponseDouble();
+      const started = process.hrtime.bigint();
+      middleware(req, res as unknown as ServerResponse, next);
+      base.route(req);
+      if (res.statusCode === 200) res.statusCode = 401; // the handler refuses the credentials
+      res.close?.();
+      const elapsed = Number(process.hrtime.bigint() - started);
+      if (i >= 0) nanos[i] = elapsed;
+      if (res.statusCode !== 401) throw new Error(`a measured request was answered ${res.statusCode}`);
+      if (i % 1_000 === 0) await tick();
+    }
+    let sum = 0;
+    for (const value of nanos) sum += value;
+    nanos.sort();
+    const at = (quantile: number): number =>
+      (nanos[Math.min(ITERATIONS - 1, Math.floor(ITERATIONS * quantile))] as number) / 1_000;
+    worstAttested = Math.max(worstAttested, at(0.99));
+    const line = `p50 ${at(0.5).toFixed(2)} µs   p99 ${at(0.99).toFixed(2)} µs   mean ${(sum / ITERATIONS / 1_000).toFixed(2)} µs   max ${at(1).toFixed(2)} µs`;
+    const name =
+      clients === 1_000
+        ? `${clients.toLocaleString("en-US")} clients (${(clients * COUNTERS_PER_CLIENT).toLocaleString("en-US")} counters, every hit an update)`
+        : `${clients.toLocaleString("en-US")} clients (${(clients * COUNTERS_PER_CLIENT).toLocaleString("en-US")} counters wanted, table full: every hit an insert and an eviction)`;
+    lines.push(`${LIMIT_RULES} limit Rules, ${name}: ${line}`);
+    console.log(`  ${base.name}, ${name}`);
+    console.log(`    ${line}`);
+  }
+  for (const line of lines) attestedResults.push(line);
+  // The limits must be applied: a fresh client is served `THRESHOLD` times and then answered 429 with Retry-After.
+  await shield.flush();
+  limitBodies = [];
+  const probeToken = { "ar-attestation": deviceToken(999_999) };
+  let served = 0;
+  let throttledStatus = 0;
+  let retryAfter = "";
+  for (let i = 0; i <= THRESHOLD; i++) {
+    const res = new ResponseDouble();
+    res.setHeader = function (this: ResponseDouble, name?: string, value?: string) {
+      if (name === "retry-after") retryAfter = String(value);
+      return this;
+    } as ResponseDouble["setHeader"];
+    middleware(requestDouble(base.url, probeToken, "192.168.77.5"), res as unknown as ServerResponse, next);
+    res.close?.();
+    if (res.statusCode === 200) served += 1;
+    else throttledStatus = res.statusCode;
+    if (i % 100 === 0) await tick();
+  }
+  await shield.flush();
+  const sentLimits = limitBodies.join("\n");
+  if (served !== THRESHOLD || throttledStatus !== 429 || !/^[1-9][0-9]*$/.test(retryAfter)) {
+    console.error(
+      `FAIL: the limit Rules were not applied (${served} of ${THRESHOLD + 1} probe requests served, then ${throttledStatus}, Retry-After "${retryAfter}").`,
+    );
+    process.exit(1);
+  }
+  if (!sentLimits.includes('"action":"throttle","mode":"enforce"')) {
+    console.error("FAIL: the throttled probe request was not recorded as throttle.");
+    process.exit(1);
+  }
+  if (sentLimits.includes("192.168.77.5") || sentLimits.includes("dev_")) {
+    console.error("FAIL: a counter key (an address or a device id) left the process.");
+    process.exit(1);
+  }
+  await shield.close();
+  const stats = shield.stats();
+  internalErrors += stats.internalErrors;
+  console.log(
+    `  Probe: a fresh client was served ${served.toLocaleString("en-US")} times, then answered 429 with Retry-After ${retryAfter} s. Events: ${stats.sent.toLocaleString("en-US")} handed to the transport, ${stats.dropped.toLocaleString("en-US")} dropped by the full buffer, ${stats.internalErrors} internal errors`,
+  );
 }
 
 console.log("");

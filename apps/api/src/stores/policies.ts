@@ -1,5 +1,6 @@
 import type { Environment, Policy, PolicyRule, PolicyVersionSummary } from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
+import { storedLimit } from "../policy.ts";
 
 /** Which Policy: the one of an App and Environment of the transaction's Organization. */
 export interface PolicyTarget {
@@ -16,7 +17,7 @@ function targetParams(target: PolicyTarget): string[] {
 
 /**
  * Stored Rules with their members in the documented order: `jsonb` keeps the order of a list, not of members.
- * `requires` (slice 04) only when the stored Rule has one.
+ * `requires` (slice 04) and `limit` (slice 08) only when the stored Rule has one.
  */
 function toRules(stored: PolicyRule[]): PolicyRule[] {
   return stored.map((rule) => ({
@@ -27,6 +28,7 @@ function toRules(stored: PolicyRule[]): PolicyRule[] {
     action: rule.action,
     mode: rule.mode,
     ...(rule.requires === undefined ? {} : { requires: rule.requires }),
+    ...(rule.limit === undefined ? {} : { limit: storedLimit(rule.limit) }),
   }));
 }
 

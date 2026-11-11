@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BundlePayloadSchema,
   type Environment,
   POLICY_LIMITS,
   type PolicyRule,
@@ -389,6 +390,300 @@ describe("Policy Bundle", () => {
         for (const entry of [...(raw.rules ?? []), ...(raw.signature_rules ?? [])]) {
           expect(Object.keys(entry)).toEqual(["id", "path", "methods", "action", "mode"]);
         }
+      });
+    });
+
+    describe("limit_rules (slice 08)", () => {
+      const limited = (name: string, path: string, mode = "monitor", limit: Record<string, unknown> = {}) => ({
+        name,
+        path,
+        methods: ["POST"],
+        mode,
+        limit: { requests: 10, window_s: 300, key: "ip", count: "failures", ...limit },
+      });
+      const signedRule = { name: "Checkout", path: "/api/checkout", methods: ["POST"], requires: "signature" };
+      /** A limit Rule as a bundle carries it: a bundle Rule plus its limit, complete, in this order of members. */
+      const bundledLimit = (rule: PolicyRule): Record<string, unknown> => ({ ...bundled(rule), limit: rule.limit });
+
+      it("puts Rules with a limit in limit_rules, never in rules or signature_rules, each in Policy order", async () => {
+        const t = await tenant("Limits", "production");
+        const policy = await publishPolicy(api, t.adminKey, t.appId, "production", [
+          limited("Login", "/login", "enforce"),
+          monitorRule,
+          signedRule,
+          { name: "Search", path: "/api/search", limit: { requests: 100, window_s: 60, key: "device" } },
+          enforceRule,
+          limited("Reset", "/password/reset"),
+        ]);
+        clock.now = new Date(T0 + 4_000);
+        const [login, users, checkout, search, admin, reset] = policy.rules as PolicyRule[];
+
+        const { signed: bundle, payload } = await fetchBundle(api, t.shieldKey, publicKey);
+
+        // The string itself: members in the documented order, `limit_rules` after `signature_rules`, `count` written
+        // also where the client left it out, and no name.
+        expect(bundle.bundle).toBe(
+          JSON.stringify({
+            format: 1,
+            audience: bundleAudience(t.shieldKey),
+            epoch,
+            app_id: t.appId,
+            environment: "production",
+            version: 1,
+            issued_at: new Date(T0 + 4_000).toISOString(),
+            not_after: new Date(T0 + 4_000 + 7 * DAY).toISOString(),
+            rules: [users, admin].map((rule) => bundled(rule as PolicyRule)),
+            signature_rules: [bundled(checkout as PolicyRule)],
+            limit_rules: [
+              {
+                id: login?.id,
+                path: "/login",
+                methods: ["POST"],
+                action: "throttle",
+                mode: "enforce",
+                limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+              },
+              {
+                id: search?.id,
+                path: "/api/search",
+                methods: [],
+                action: "throttle",
+                mode: "monitor",
+                limit: { requests: 100, window_s: 60, key: "device", count: "requests" },
+              },
+              bundledLimit(reset as PolicyRule),
+            ],
+            attestation_keys: ATTESTATION_KEYS,
+          }),
+        );
+        expect(payload.limit_rules).toHaveLength(3);
+        // What a Shield from before slice 08 keeps: no throttle and no limit anywhere outside `limit_rules`.
+        const raw = JSON.parse(bundle.bundle) as Record<string, Record<string, unknown>[]>;
+        for (const entry of [...(raw.rules ?? []), ...(raw.signature_rules ?? [])]) {
+          expect(entry.action).toBe("block");
+          expect("limit" in entry).toBe(false);
+          expect(String(entry.path)).not.toMatch(/login|search|reset/);
+        }
+        const { limit_rules: _stripped, ...older } = raw;
+        expect(JSON.stringify(older)).not.toMatch(/throttle|limit|window_s/);
+        expect(bundle.bundle).not.toMatch(/Login|Search|Reset|name/);
+      });
+
+      it("has no limit_rules member without limit Rules: the bundle is byte for byte what it was before slice 08", async () => {
+        const t = await tenant("No limits", "production");
+        const policy = await publishPolicy(api, t.adminKey, t.appId, "production", [
+          monitorRule,
+          signedRule,
+          enforceRule,
+        ]);
+        clock.now = new Date(T0 + 5_000);
+        const [users, checkout, admin] = policy.rules as PolicyRule[];
+        const { signed: bundle } = await fetchBundle(api, t.shieldKey, publicKey);
+        expect(bundle.bundle).toBe(
+          JSON.stringify({
+            format: 1,
+            audience: bundleAudience(t.shieldKey),
+            epoch,
+            app_id: t.appId,
+            environment: "production",
+            version: 1,
+            issued_at: new Date(T0 + 5_000).toISOString(),
+            not_after: new Date(T0 + 5_000 + 7 * DAY).toISOString(),
+            rules: [users, admin].map((rule) => bundled(rule as PolicyRule)),
+            signature_rules: [bundled(checkout as PolicyRule)],
+            attestation_keys: ATTESTATION_KEYS,
+          }),
+        );
+        expect(bundle.bundle).not.toMatch(/limit|throttle/);
+
+        // The built-in Policy and a Policy of plain Rules only have none either.
+        const empty = await tenant("Never published");
+        expect((await fetchBundle(api, empty.shieldKey, publicKey)).signed.bundle).not.toContain("limit");
+
+        // Only limit Rules: rules is empty (always present), limit_rules holds them.
+        const only = await tenant("Limits only");
+        await publishPolicy(api, only.adminKey, only.appId, "development", [limited("Login", "/login")]);
+        const onlyRaw = JSON.parse((await fetchBundle(api, only.shieldKey, publicKey)).signed.bundle);
+        expect(onlyRaw.rules).toEqual([]);
+        expect("signature_rules" in onlyRaw).toBe(false);
+        expect(onlyRaw.limit_rules).toHaveLength(1);
+      });
+
+      it("changes the bundle and its ETag when a limit changes, is added or is removed", async () => {
+        const t = await tenant("Limit changes");
+        const first = await publishPolicy(api, t.adminKey, t.appId, "development", [limited("Login", "/login")]);
+        const before = await fetchBundle(api, t.shieldKey, publicKey);
+        expect((await fetchBundle(api, t.shieldKey, publicKey)).etag).toBe(before.etag);
+
+        const etags = new Set([before.etag]);
+        const variants: Record<string, unknown>[] = [
+          { requests: 11 },
+          { requests: 11, window_s: 60 },
+          { requests: 11, window_s: 60, key: "device" },
+          { requests: 11, window_s: 60, key: "device", count: "requests" },
+        ];
+        for (const limit of variants) {
+          await publishPolicy(api, t.adminKey, t.appId, "development", [
+            { ...limited("Login", "/login", "monitor", limit), id: first.rules[0]?.id },
+          ]);
+          const next = await fetchBundle(api, t.shieldKey, publicKey);
+          expect(etags.has(next.etag)).toBe(false);
+          etags.add(next.etag);
+          expect(next.payload.limit_rules?.[0]?.limit).toMatchObject(limit);
+          const notModified = await get("/v1/policy-bundle", { ...bearer(t.shieldKey), "if-none-match": before.etag });
+          expect(notModified.status).toBe(200);
+        }
+
+        // The limit removed: the Rule is a plain block Rule in `rules`, and `limit_rules` is gone.
+        await publishPolicy(api, t.adminKey, t.appId, "development", [{ name: "Login", path: "/login" }]);
+        const after = await fetchBundle(api, t.shieldKey, publicKey);
+        expect(etags.has(after.etag)).toBe(false);
+        expect(after.payload.rules).toHaveLength(1);
+        expect("limit_rules" in JSON.parse(after.signed.bundle)).toBe(false);
+      });
+
+      it("fits the bundle bound with 50 Rules as large as they can be, in any split between the three members", async () => {
+        const methods = Array.from({ length: POLICY_LIMITS.methodsMax }, (_, index) =>
+          `${String.fromCharCode(65 + index)}`.repeat(16),
+        );
+        const largest = (index: number, kind: number) => ({
+          name: "n".repeat(POLICY_LIMITS.nameMax),
+          path: `/${String(index).padStart(2, "0")}${"a".repeat(POLICY_LIMITS.pathMax - 3)}`,
+          methods,
+          mode: "enforce",
+          ...(kind === 1 ? { requires: "signature" } : {}),
+          ...(kind === 2 ? { limit: { requests: 100_000, window_s: 3_600, key: "device", count: "failures" } } : {}),
+        });
+        const split = await tenant("Largest in three");
+        await publishPolicy(
+          api,
+          split.adminKey,
+          split.appId,
+          "development",
+          Array.from({ length: POLICY_LIMITS.rulesMax }, (_, index) => largest(index, index % 3)),
+        );
+        const mixed = await fetchBundle(api, split.shieldKey, publicKey);
+        expect(mixed.payload.rules).toHaveLength(17);
+        expect(mixed.payload.signature_rules).toHaveLength(17);
+        expect(mixed.payload.limit_rules).toHaveLength(16);
+        expect(Buffer.byteLength(mixed.signed.bundle, "utf8")).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+
+        // All 50 as limit Rules, the longest form of a Rule (plan 08 amendment A2).
+        const all = await tenant("Largest limits");
+        await publishPolicy(
+          api,
+          all.adminKey,
+          all.appId,
+          "development",
+          Array.from({ length: POLICY_LIMITS.rulesMax }, (_, index) => largest(index, 2)),
+        );
+        const limits = await fetchBundle(api, all.shieldKey, publicKey);
+        expect(limits.payload.rules).toEqual([]);
+        expect(limits.payload.limit_rules).toHaveLength(POLICY_LIMITS.rulesMax);
+        expect(Buffer.byteLength(limits.signed.bundle, "utf8")).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+
+        // One Rule more is refused when it is published, whatever the members it would travel in.
+        const over = await api.app.request(`/v1/apps/${all.appId}/policies/development`, {
+          method: "PUT",
+          headers: { "content-type": "application/json", ...bearer(all.adminKey) },
+          body: JSON.stringify({
+            rules: Array.from({ length: POLICY_LIMITS.rulesMax + 1 }, (_, index) => largest(index, index % 3)),
+          }),
+        });
+        await expectProblem(over, 400);
+      });
+
+      it("ships a limit Rule only to its own App and Environment", async () => {
+        const a = await tenant("Limit owner", "production");
+        const staging = await issueShieldKey(a, "staging");
+        const otherApp = await createAppFor(api, a.adminKey, { name: "Back office", environment: "production" });
+        const b = await tenant("Limit stranger", "production");
+        await publishPolicy(api, a.adminKey, a.appId, "production", [limited("Login", "/only/here/login")]);
+        await publishPolicy(api, b.adminKey, b.appId, "production", [monitorRule]);
+
+        expect((await fetchBundle(api, a.shieldKey, publicKey)).payload.limit_rules).toHaveLength(1);
+        for (const key of [staging, otherApp.shield_key.key, b.shieldKey]) {
+          const { signed: bundle } = await fetchBundle(api, key, publicKey);
+          expect(bundle.bundle).not.toContain("limit_rules");
+          expect(bundle.bundle).not.toContain("/only/here/login");
+        }
+      });
+
+      it("issuer: splits the subject's Rules in three and writes a limit complete, in the documented order", () => {
+        const issuer = createBundleIssuer({ signer: createSigner(), now: () => new Date(T0) });
+        const ids = [1, 2, 3, 4, 5].map((n) => `rul_${String(n).padStart(24, "0")}`);
+        const base = (id: string) => ({
+          id,
+          name: `Rule ${id}`,
+          path: `/api/${id}`,
+          methods: [],
+          mode: "enforce" as const,
+        });
+        const plain = (id: string): PolicyRule => ({ ...base(id), action: "block" });
+        const signedOnly = (id: string): PolicyRule => ({ ...base(id), action: "block", requires: "signature" });
+        const subject = (rules: PolicyRule[]) => ({
+          audience: "0123456789abcdef0123456789abcdef",
+          epoch: "0123456789abcdef0123456789abcdef",
+          appId: "app_0123456789abcdef01234567",
+          environment: "development" as const,
+          version: 1,
+          rules,
+        });
+        const issued = issuer.issue(
+          subject([
+            // Stored with its members in another order: the bundle has the documented one.
+            {
+              ...base(ids[0] as string),
+              action: "throttle",
+              limit: { count: "failures", key: "ip", window_s: 300, requests: 10 },
+            },
+            plain(ids[1] as string),
+            signedOnly(ids[2] as string),
+            {
+              ...base(ids[3] as string),
+              action: "throttle",
+              limit: { requests: 5, window_s: 1, key: "device", count: "requests" },
+            },
+            plain(ids[4] as string),
+          ]),
+        );
+        const raw = JSON.parse(issued.signed.bundle) as Record<string, Record<string, unknown>[]>;
+        expect(Object.keys(raw)).toEqual([
+          "format",
+          "audience",
+          "epoch",
+          "app_id",
+          "environment",
+          "version",
+          "issued_at",
+          "not_after",
+          "rules",
+          "signature_rules",
+          "limit_rules",
+        ]);
+        expect(raw.rules?.map((entry) => entry.id)).toEqual([ids[1], ids[4]]);
+        expect(raw.signature_rules?.map((entry) => entry.id)).toEqual([ids[2]]);
+        expect(raw.limit_rules?.map((entry) => entry.id)).toEqual([ids[0], ids[3]]);
+        for (const entry of raw.limit_rules ?? []) {
+          expect(Object.keys(entry)).toEqual(["id", "path", "methods", "action", "mode", "limit"]);
+          expect(Object.keys(entry.limit as object)).toEqual(["requests", "window_s", "key", "count"]);
+          expect(entry.action).toBe("throttle");
+        }
+        for (const entry of [...(raw.rules ?? []), ...(raw.signature_rules ?? [])]) {
+          expect(Object.keys(entry)).toEqual(["id", "path", "methods", "action", "mode"]);
+          expect(entry.action).toBe("block");
+        }
+        expect(BundlePayloadSchema.safeParse(raw).success).toBe(true);
+
+        // A stored Rule that says throttle without a limit, or block with one, cannot come out of a publish. Should
+        // one be stored all the same, it is never shipped as a plain block Rule: the issuer refuses the bundle.
+        const broken = { ...base(ids[0] as string), action: "throttle" } as PolicyRule;
+        expect(() => createBundleIssuer({ signer: createSigner() }).issue(subject([broken]))).toThrow(TypeError);
+        const mislabelled = {
+          ...plain(ids[0] as string),
+          limit: { requests: 1, window_s: 1, key: "ip", count: "requests" },
+        } as PolicyRule;
+        expect(() => createBundleIssuer({ signer: createSigner() }).issue(subject([mislabelled]))).toThrow(TypeError);
       });
     });
 

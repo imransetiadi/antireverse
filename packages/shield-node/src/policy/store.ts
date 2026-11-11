@@ -1,6 +1,7 @@
 // The applied Policy: what `decide` reads. Replaced as a whole when a verified bundle arrives, never edited.
 import type { KeyObject } from "node:crypto";
 import type { ParsedCidr } from "../address.ts";
+import { type AppliedLimitRule, type LimitRuleInput, prepareLimitRule } from "../limits.ts";
 import { type MatchablePatch, type PatchInput, preparePatch } from "../patches.ts";
 import type { Decision } from "../types.ts";
 import type { PathPattern } from "./match.ts";
@@ -35,6 +36,16 @@ export interface AppliedPolicy {
    * and methods, as a plain Rule) only when the requirement is not met. Checked after `rules`.
    */
   readonly signatureRules: readonly AppliedRule[];
+  /**
+   * The Rules with a limit (the bundle's `limit_rules`, slice 08), in bundle order. Never read by `decide`: the
+   * limiter counts them, after Containments and Rules and before the Virtual patches.
+   */
+  readonly limitRules: readonly AppliedLimitRule[];
+  /**
+   * Entries of the bundle's `limit_rules` this Shield could not read and skipped (forward compatibility), plus 1 when
+   * the member was ignored as a whole. Internal: `ShieldStats` (contract C3) is unchanged.
+   */
+  readonly limitRulesSkipped: number;
   /** The Decision of a request no Rule matches. */
   readonly allow: Decision;
   /** Decoy key → Canary id: a request that carries the key adds the signal of the Canary. Built once per bundle. */
@@ -130,6 +141,10 @@ export function buildPolicy(input: {
   patches?: readonly PatchInput[];
   /** Left out: 0. */
   patchesSkipped?: number;
+  /** Left out: none. */
+  limitRules?: readonly LimitRuleInput[];
+  /** Left out: 0. */
+  limitRulesSkipped?: number;
 }): AppliedPolicy {
   const { version } = input;
   const compile = (rule: Pick<AppliedRule, "id" | "path" | "methods" | "mode" | "pattern">): AppliedRule => {
@@ -177,6 +192,8 @@ export function buildPolicy(input: {
     notAfter: input.notAfter,
     rules: Object.freeze(rules),
     signatureRules: Object.freeze(signatureRules),
+    limitRules: Object.freeze((input.limitRules ?? []).map((rule) => prepareLimitRule(rule, version))),
+    limitRulesSkipped: input.limitRulesSkipped ?? 0,
     // Only the built-in Policy is Monitor mode as a whole: nothing was published, so nothing could be enforced.
     allow: Object.freeze({
       action: "allow",

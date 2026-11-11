@@ -653,6 +653,50 @@ describe("review F1: bodyVerified lists media types; other bodies under an enfor
     expect(event?.signature).toEqual({ status: "valid", body: "unchecked" });
   });
 
+  it("a request throttled while its requirement was deferred to the body hook records the throttle (slice 08)", async () => {
+    // Validly signed, a listed type: the requirement is deferred to the hook. The second request is over the limit
+    // and answered 429 before any parser runs, so the hook never sees its body — the Event is the limit's, not the
+    // requirement Rule's block for a body that was "never checked".
+    const limit = {
+      id: "rul_0000000000000000000000f8",
+      path: "/api/orders",
+      methods: ["POST"],
+      action: "throttle" as const,
+      mode: "enforce" as const,
+      limit: { requests: 1, window_s: 60, key: "ip" as const, count: "requests" as const },
+    };
+    const s = await setup({ signature_rules: [ENFORCE_ORDERS], limit_rules: [limit] }, JSON_ONLY);
+    const body = '{"qty":1}';
+    const send = () =>
+      exchange(`${s.base}/api/orders`, {
+        method: "POST",
+        headers: {
+          ...JSON_TYPE,
+          ...signedHeaders({ method: "POST", target: "/api/orders", body, contentType: "application/json" }),
+        },
+        body,
+      });
+    expect((await send()).status).toBe(201);
+    const throttled = await send();
+    expect(throttled.status).toBe(429);
+    expect(s.calls).toHaveLength(1);
+    const [first, second] = await s.events(2);
+    expect(first?.decision).toMatchObject({ action: "allow" });
+    expect(first?.signature).toEqual({ status: "valid", body: "checked" });
+    expect(second?.decision).toEqual({
+      action: "throttle",
+      mode: "enforce",
+      rule_id: limit.id,
+      policy_version: 1,
+      containment_id: null,
+      patch_id: null,
+      patch_body: null,
+      limit_rule_id: null,
+    });
+    expect(second?.request).toMatchObject({ status: 429, route: "/api/orders" });
+    expect(second?.signature).toEqual({ status: "valid", body: "unchecked" });
+  });
+
   it("the content type is bound: a body sent with another type than the signed one is invalid and blocked", async () => {
     const s = await setup({ signature_rules: [ENFORCE_ORDERS] }, JSON_ONLY);
     const body = '{"qty":1}';

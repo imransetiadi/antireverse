@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { signOutAction } from "@/app/actions.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
+import { BrandMark } from "./brand-mark.tsx";
 import { Button } from "./button.tsx";
 
 /** The top-level screen a page belongs to; its navigation entry is marked as current. */
@@ -52,7 +53,10 @@ export function AppShell({ organization, width = "wide", current, children }: Ap
   return (
     <>
       <header className="flex min-h-12 flex-wrap items-center gap-x-4 gap-y-1 border-border border-b bg-bg px-4 py-2">
-        <span className="heading-6 text-fg">{t("brand")}</span>
+        <span data-testid="brand" className="inline-flex items-center gap-2 heading-6 text-fg">
+          <BrandMark />
+          {t("brand")}
+        </span>
         {organization ? (
           <>
             <span className="min-w-0 flex-1 basis-24 break-words text-fg-muted">

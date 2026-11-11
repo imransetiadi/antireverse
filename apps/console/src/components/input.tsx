@@ -15,12 +15,14 @@ interface FieldShellProps {
   label: string;
   labelTestId?: string | undefined;
   help?: string | undefined;
+  /** A short line under the help that follows the value, e.g. a window in readable words. */
+  hint?: string | undefined;
   error?: string | undefined;
   children: ReactNode;
 }
 
 /** A visible label above the control, the help text and the error below it, both linked to the control. */
-function FieldShell({ id, label, labelTestId, help, error, children }: FieldShellProps) {
+function FieldShell({ id, label, labelTestId, help, hint, error, children }: FieldShellProps) {
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className="title-4 text-fg" data-testid={labelTestId}>
@@ -32,6 +34,11 @@ function FieldShell({ id, label, labelTestId, help, error, children }: FieldShel
           {help}
         </p>
       ) : null}
+      {hint ? (
+        <p id={`${id}-hint`} className="code-3 text-fg-muted" data-testid={`${id}-hint`}>
+          {hint}
+        </p>
+      ) : null}
       {error ? (
         <p id={`${id}-error`} className="body-5 text-sev-critical-text" data-testid={`${id}-error`}>
           {error}
@@ -41,8 +48,8 @@ function FieldShell({ id, label, labelTestId, help, error, children }: FieldShel
   );
 }
 
-function describedBy(id: string, help?: string, error?: string): string | undefined {
-  const ids = [error ? `${id}-error` : null, help ? `${id}-help` : null].filter(Boolean);
+function describedBy(id: string, help?: string, error?: string, hint?: string): string | undefined {
+  const ids = [error ? `${id}-error` : null, help ? `${id}-help` : null, hint ? `${id}-hint` : null].filter(Boolean);
   return ids.length > 0 ? ids.join(" ") : undefined;
 }
 
@@ -52,18 +59,20 @@ type InputProps = Omit<ComponentProps<"input">, "id"> & {
   /** The value is an identifier, a key, a range or a pattern: set it in Geist Mono. */
   mono?: boolean | undefined;
   help?: string | undefined;
+  /** A short line under the help that follows the value as it is typed. */
+  hint?: string | undefined;
   error?: string | undefined;
   labelTestId?: string | undefined;
 };
 
-export function Input({ id, label, help, error, labelTestId, mono = false, className, ...rest }: InputProps) {
+export function Input({ id, label, help, hint, error, labelTestId, mono = false, className, ...rest }: InputProps) {
   return (
-    <FieldShell id={id} label={label} labelTestId={labelTestId} help={help} error={error}>
+    <FieldShell id={id} label={label} labelTestId={labelTestId} help={help} hint={hint} error={error}>
       <input
         id={id}
         className={`${CONTROL} ${mono ? MONO_TYPE : TYPE} ${className ?? ""}`.trim()}
         aria-invalid={error ? true : undefined}
-        aria-describedby={describedBy(id, help, error)}
+        aria-describedby={describedBy(id, help, error, hint)}
         {...rest}
       />
     </FieldShell>

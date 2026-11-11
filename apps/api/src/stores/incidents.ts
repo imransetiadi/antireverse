@@ -6,13 +6,15 @@ import {
   type Environment,
   type Incident,
   type IncidentStatus,
+  type PolicyRule,
   type Severity,
   type ShieldEvent,
   type StoredEvent,
 } from "@antireverse/protocol";
 import { newId } from "@antireverse/protocol/server";
 import type { Queryable } from "../db/db.ts";
-import { ruleConditionSql } from "../detect/rules.ts";
+import { type CoverageEntry, coverageEntries } from "../detect/coverage.ts";
+import { NEEDS_COVERAGE_SQL, ruleConditionSql } from "../detect/rules.ts";
 import type { PatchCatalog } from "../patches/catalog.ts";
 
 interface IncidentRow {
@@ -311,6 +313,8 @@ interface EvidenceRow {
  * An exploit-attempt Incident (slice 20) has no prefix: its Events are those of its App and Environment, in its span,
  * whose `decision.patch_id` is a patch of `catalog` covering its advisory (the id or one of the advisory's aliases).
  * Without a catalog, or without such a patch, it has none.
+ * A credential-stuffing Incident (slice 08) counts, beside throttle decisions, failed and refused responses on routes
+ * a limit Rule covers: the condition takes the limit Rules of the Policy versions those Events name (`coveredBy`).
  */
 async function evidenceScope(
   q: Queryable,
@@ -344,6 +348,13 @@ async function evidenceScope(
     if (incident.canary_id === null) return null;
     params.push(canarySignalId(incident.canary_id));
     condition = ruleConditionSql(incident.rule, "$6");
+  } else if (incident.rule === "credential-stuffing" || incident.rule === "failed-signin-burst") {
+    // The one counts the failures a login protection matched (stamped by Shield, or guessed by coverage for an older
+    // Shield), the other leaves exactly those out. A throttle is evidence only as its client's first in its window,
+    // as the Detector counted it.
+    const entries = await coveredBy(q, params);
+    params.push(JSON.stringify(entries));
+    condition = ruleConditionSql(incident.rule, "$6", "events");
   } else {
     condition = ruleConditionSql(incident.rule);
   }
@@ -353,6 +364,32 @@ async function evidenceScope(
        AND ${condition}`,
     params,
   };
+}
+
+/** Policy versions whose limit Rules one evidence query takes: the newest that its Events name. */
+export const EVIDENCE_POLICY_VERSIONS = 20;
+
+/**
+ * The limit Rules that judge a credential-stuffing or failed-signin-burst Incident's Events: those of the Policy versions named by the
+ * Events of its App, Environment, prefix and span whose counting depends on coverage (`NEEDS_COVERAGE_SQL`). Each
+ * Event is judged by the version it names, as the Detector judged it, so the evidence stays what was counted when a
+ * later version changes the limit Rules. `scope` holds App, Environment, prefix, first and last seen, in this
+ * order. Row-level security keeps the read to the transaction's Organization. An attack that spans more than
+ * `EVIDENCE_POLICY_VERSIONS` versions is judged by the newest of them only.
+ */
+async function coveredBy(q: Queryable, scope: unknown[]): Promise<CoverageEntry[]> {
+  const { rows } = await q.query<{ version: number; rules: PolicyRule[] }>(
+    `SELECT version, rules FROM policy_versions
+     WHERE app_id = $1 AND environment = $2 AND version::text IN (
+       SELECT DISTINCT payload->'decision'->>'policy_version' FROM events
+       WHERE app_id = $1 AND environment = $2 AND payload->'actor'->>'ip_prefix' = $3
+         AND ts BETWEEN $4::timestamptz AND $5::timestamptz
+         AND ${NEEDS_COVERAGE_SQL})
+     ORDER BY version DESC
+     LIMIT ${EVIDENCE_POLICY_VERSIONS}`,
+    scope,
+  );
+  return rows.flatMap((row) => coverageEntries(row.version, row.rules));
 }
 
 /** The ids of the catalog patches whose advisories name `advisoryId` or one of its aliases (as last synced). */

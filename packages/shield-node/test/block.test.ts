@@ -247,6 +247,7 @@ describe("an Enforce Rule on /api/admin/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
       [
@@ -260,6 +261,7 @@ describe("an Enforce Rule on /api/admin/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
       [
@@ -273,6 +275,7 @@ describe("an Enforce Rule on /api/admin/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
       [
@@ -286,6 +289,7 @@ describe("an Enforce Rule on /api/admin/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
     ]);
@@ -536,6 +540,7 @@ describe("a Monitor Rule on /api/products/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
       [
@@ -549,6 +554,7 @@ describe("a Monitor Rule on /api/products/**", () => {
           containment_id: null,
           patch_id: null,
           patch_body: null,
+          limit_rule_id: null,
         },
       ],
     ]);

@@ -261,6 +261,127 @@ describe("IncidentDetail", () => {
     expect(within(facts).getByTestId("fact-detections").textContent).toBe("2");
   });
 
+  describe("a Credential stuffing Incident (slice 08)", () => {
+    const PREFIX = "198.51.100.0/24";
+    const RULE_ID = "rul_fedcba9876543210fedcba98";
+    const HASH = "iph_2932b22c0f1e4d5a9b8c7d6e5f4a3b2c";
+    const stuffing = incident({
+      rule: "credential-stuffing",
+      title: "Credential stuffing",
+      severity: "high",
+      ip_prefix: PREFIX,
+    });
+    const stuffingDetection: Detection = {
+      ...EXAMPLE_DETECTION,
+      rule: "credential-stuffing",
+      ip_prefix: PREFIX,
+      count: 50,
+      window_start: "2026-11-10T08:15:00.000Z",
+      window_end: "2026-11-10T08:19:59.000Z",
+    };
+    const login = { method: "POST", route: "/login", latency_ms: 12.5 } as const;
+    const stuffingEvidence = [
+      {
+        ...EXAMPLE_STORED_EVENT,
+        event_id: "0193f9a0-0000-7000-8000-000000000011",
+        request: { ...login, status: 429 },
+        decision: { ...EXAMPLE_STORED_EVENT.decision, action: "throttle", mode: "enforce", rule_id: RULE_ID } as const,
+        actor: { ...EXAMPLE_STORED_EVENT.actor, ip_prefix: PREFIX },
+      },
+      {
+        ...EXAMPLE_STORED_EVENT,
+        event_id: "0193f9a0-0000-7000-8000-000000000010",
+        request: { ...login, status: 401 },
+        actor: { ...EXAMPLE_STORED_EVENT.actor, ip_prefix: PREFIX },
+      },
+    ];
+
+    function showStuffing(status: IncidentStatus = "open") {
+      render(
+        <IncidentDetail
+          incident={{ ...stuffing, status }}
+          detections={[stuffingDetection]}
+          evidence={stuffingEvidence}
+          appName="shop-web"
+          confirmResolve={false}
+          actors={[{ ip_hash: HASH, events: 2 }]}
+          containments={[]}
+          now={NOW}
+        />,
+      );
+    }
+
+    it("heads the page like a Blocked burst: High, the title, the network and the rule among the facts", () => {
+      showStuffing();
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Credential stuffing");
+      expect(screen.getByTestId("incident-severity").getAttribute("data-severity")).toBe("high");
+      const facts = screen.getByTestId("incident-facts");
+      const terms = within(facts)
+        .getAllByRole("term")
+        .map((term) => term.textContent);
+      expect(terms).toEqual([
+        "App",
+        "Environment",
+        "Network",
+        "Detection rule",
+        "First seen",
+        "Last seen",
+        "Detections",
+      ]);
+      expect(within(facts).getByTestId("fact-network").textContent).toBe(PREFIX);
+      expect(within(facts).getByTestId("fact-rule").textContent).toBe("Credential stuffing");
+    });
+
+    it("offers Containment of the Actor and of the network, and lists the Actors and the blocks", () => {
+      showStuffing();
+      const bar = screen.getByTestId("containment-bar");
+      expect(
+        within(bar)
+          .getAllByRole("button")
+          .map((button) => button.textContent),
+      ).toEqual(["Block actor", "Block network"]);
+      expect((within(bar).getByLabelText("Actor") as HTMLSelectElement).value).toBe(HASH);
+      expect(screen.queryByTestId("containment-clone-note")).toBeNull();
+      expect(screen.getByRole("heading", { name: "Actors" })).toBeTruthy();
+      expect(screen.getAllByTestId("actor-row")).toHaveLength(1);
+      expect(screen.getByRole("heading", { name: "Blocks" })).toBeTruthy();
+    });
+
+    it("names the rule and the counted window in the timeline", () => {
+      showStuffing();
+      const [item] = screen.getAllByTestId("detection-item");
+      expect(item?.textContent).toContain("Credential stuffing");
+      expect(item?.textContent).toContain("50");
+      expect(item?.textContent).toContain("08:15:00");
+    });
+
+    it("shows the evidence with the Throttled chip on the refused request and its 429", () => {
+      showStuffing();
+      const rows = within(screen.getByTestId("incident-evidence")).getAllByTestId("event-row");
+      expect(rows).toHaveLength(2);
+      const cells = (row: HTMLElement | undefined) =>
+        within(row as HTMLElement)
+          .getAllByRole("cell")
+          .map((cell) => cell.textContent);
+      expect(cells(rows[0])[1]).toBe("Throttled");
+      expect(cells(rows[0]).slice(4, 7)).toEqual(["POST", "/login", "429"]);
+      const chip = within(rows[0] as HTMLElement).getByTestId("decision-chip");
+      expect(chip.getAttribute("data-decision")).toBe("throttle");
+      expect(chip.querySelector("svg")?.getAttribute("data-shape")).toBe("hourglass-medium");
+      expect(cells(rows[1]).slice(4, 7)).toEqual(["POST", "/login", "401"]);
+      expect(cells(rows[1])[8]).toBe(PREFIX);
+    });
+
+    it("lists it among the Incidents by its title, with the High badge", () => {
+      render(<IncidentList incidents={[stuffing]} appNames={appNames} status={undefined} />);
+      const row = screen.getByTestId("incident-row");
+      expect(within(row).getByRole("link", { name: "Credential stuffing" }).getAttribute("href")).toBe(
+        `/incidents/${stuffing.id}`,
+      );
+      expect(row.getAttribute("data-severity")).toBe("high");
+    });
+  });
+
   describe("a Canary Incident", () => {
     const [key] = EXAMPLE_CANARIES;
     if (!key) throw new Error("EXAMPLE_CANARIES is empty");

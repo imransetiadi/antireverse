@@ -44,7 +44,7 @@ const UNCONFIRMED = "Nothing was changed. Confirm the change first.";
 const REASON_REQUIRED = "Enter a reason.";
 const REASON_LONG = "Use 200 characters or fewer.";
 const UNTIL = "Choose a date from tomorrow up to 90 days ahead.";
-const API_DOWN = "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.";
+const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
 const FIELD = "The API did not accept this value. Change it and try again.";
 
 function form(fields: Record<string, string>): FormData {

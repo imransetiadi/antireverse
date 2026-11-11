@@ -65,7 +65,7 @@ const NOT_APPLICABLE = "Containment does not apply to this Incident.";
 const LIFT_REQUIRED = "Nothing was lifted. Confirm the change first.";
 const ENDED = "This block already ended — it expired or was lifted. Reload the page to see its status.";
 const REMOVE_REQUIRED = "Nothing was removed. Confirm the change first.";
-const API_DOWN = "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.";
+const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
 
 function form(fields: Record<string, string>): FormData {
   const data = new FormData();

@@ -35,7 +35,7 @@ const PAGE = `/findings/${findingId}`;
 
 const STALE = "This patch changed since the page was loaded, so nothing was saved. Reload the page and try again.";
 const MISMATCH = `Type ${patchId} exactly to confirm.`;
-const API_DOWN = "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.";
+const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
 
 function form(fields: Record<string, string>): FormData {
   const data = new FormData();

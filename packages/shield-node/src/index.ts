@@ -1,4 +1,5 @@
 // Entry "@antireverse/shield-node": contract C3. Zero runtime dependencies.
+export { type CounterStore, MemoryCounterStore } from "./counters.ts";
 export { createShield } from "./shield.ts";
 export type {
   DecideInput,

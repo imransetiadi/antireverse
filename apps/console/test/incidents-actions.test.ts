@@ -47,8 +47,8 @@ const RESOLVE_UNCONFIRMED = "Nothing was changed. Confirm the change first.";
 const REMOVE_UNCONFIRMED = "Nothing was removed. Confirm the change first.";
 const CAP = "An organization holds at most 10 alert channels. Remove one before adding another.";
 const URL_REFUSED = "This address cannot receive alerts. Use an https:// URL on a public host.";
-const API_DOWN = "The Anti Reverse API did not answer, so nothing was saved. Check that it is running, then try again.";
-const API_FAILED = "The Anti Reverse API reported a problem, so nothing was saved. Try again in a moment.";
+const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
+const API_FAILED = "The Airverse API reported a problem, so nothing was saved. Try again in a moment.";
 
 function form(fields: Record<string, string>): FormData {
   const data = new FormData();
@@ -306,7 +306,7 @@ describe("testAlertChannelAction", () => {
     vi.mocked(api.testAlertChannel).mockRejectedValueOnce(new api.ApiError("boom", 500));
     expect(await testAlertChannelAction(null, form({ channelId }))).toEqual({
       ok: false,
-      message: "The Anti Reverse API reported a problem, so no test alert was sent. Try again in a moment.",
+      message: "The Airverse API reported a problem, so no test alert was sent. Try again in a moment.",
     });
   });
 

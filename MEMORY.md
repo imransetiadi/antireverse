@@ -238,6 +238,8 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-060 | A Finding whose advisory is withdrawn, or whose advisory no longer lists the installed version after a sync, becomes `withdrawn` (not `fixed`); it never counts as open, opens no Incident and returns to open if a later sync lists the version again | Owner's decision 2026-11-11 (Jev split 0.47/0.43, confidence 0.36) | accepted |
 | D-061 | Virtual patches: a curated catalog of request-level exploit patterns (declarative conditions, no regular expressions), shipped automatically in monitor only to App+Environments with an open or ignored Finding for the advisory; an admin promotes to enforce; body conditions only through `verifyBody` and never block when unchecked | Owner approved 2026-11-11; Jev 1.0, 0.98, 0.66, 0.92 | accepted |
 | D-062 | A request body in a character set Shield cannot decode (other than UTF-8, UTF-16, UTF-32) is refused under an enforced virtual patch whose other conditions match; a body never seen by `verifyBody` still never blocks and is recorded as allow | Owner's decision 2026-11-11; Jev 0.82 | accepted |
+| D-063 | Abuse rules: a Rule may carry a limit (requests or failed responses per window, per address or attested device) with action throttle (429 + Retry-After), in-memory per-instance counters behind a store interface; a Login protection preset and a High Credential stuffing Incident | Owner approved 2026-11-11; Jev 0.94, 0.92 | accepted |
+| D-064 | The Credential stuffing Incident counts only login-protection (failure-counting) limit Rules, from Events Shield stamps with that Rule; plain request limits show in the feed and open no Incident in this slice | Owner's decision 2026-11-11 after review F5; Jev 0.94 | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -477,6 +479,12 @@ Next step for whoever continues:
 - Review: two independent reviews (6 HIGH in total, all evasions or false alerts) fixed test-first; decisions D-061, D-062; plan amendments A1–A12; Jev verified 6 of 6 claims. Limits listed in ticket 20.
 - Next: Exposure step 3 (discovery through Prove) needs slices 14 and 15; otherwise 08, 11 or 12.
 
+**2026-11-11 — slice 08, Abuse rules**
+
+- Done: limit Rules (requests or failed responses per window, per address or attested device with the address at 5×), throttle with 429 and Retry-After, `limit_rules` bundle member, in-memory counters (exact up to 1,000, in-flight slots for failure limits, hashed keys), Login protection preset, Credential stuffing Incident from Events Shield stamps with the Login protection Rule (D-064). Evidence: `npm run verify` 5,635 tests; e2e HTTP 99 + browser 15; bench 50 limit Rules p99 about 110 µs.
+- Review: 1 HIGH + 8 fixed test-first; plan amendments A1–A8; Jev verified 5 of 5.
+- Next: owner renamed the product to Airverse (2026-11-11) — rename scope to agree; then 11, 12 or 14.
+
 ## 13. Safety rules for memory
 
 1. No secrets, credentials, tokens or personal data in memory — here or in the memory server.
@@ -503,3 +511,4 @@ Next step for whoever continues:
 | 2026-11-11 | Slice 04 built; decisions D-057–D-058; signed requests, replay protection |
 | 2026-11-11 | Slice 19 built; decision D-060; Exposure: CVE Findings |
 | 2026-11-11 | Slice 20 built; decisions D-061–D-062; virtual patches |
+| 2026-11-11 | Slice 08 built; decisions D-063–D-064; abuse rules |

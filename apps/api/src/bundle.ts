@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type BundleAttestationKey,
   type BundleBlock,
+  type BundleLimitRule,
   type BundlePatch,
   type BundlePayload,
   type BundleRule,
@@ -11,6 +12,7 @@ import {
   type PolicyRule,
   type SignedBundle,
 } from "@antireverse/protocol";
+import { storedLimit } from "./policy.ts";
 import type { Signer } from "./signer.ts";
 
 /** What a bundle is issued for. Every member comes from the Shield key and the stored Policy. */
@@ -89,10 +91,36 @@ interface Kept {
   issued: IssuedBundle;
 }
 
-/** A Rule as Shield needs it: no name, no `requires` (the member it sits in says that), the documented order. */
+/**
+ * A Rule as Shield needs it: no name, no `requires` (the member it sits in says that), the documented order. Block
+ * only: a Rule that is not a plain block Rule never comes out of here as one.
+ */
 function bundleRule(rule: PolicyRule): BundleRule {
-  return { id: rule.id, path: rule.path, methods: [...rule.methods], action: rule.action, mode: rule.mode };
+  if (rule.action !== "block" || rule.limit !== undefined) {
+    // Cannot happen with a stored Policy: a Rule has a limit exactly when its action is throttle, and such a Rule
+    // goes in `limit_rules`. Better no bundle than a limit enforced as a plain block.
+    throw new TypeError("A Rule in rules or signature_rules must be a block Rule without a limit.");
+  }
+  return { id: rule.id, path: rule.path, methods: [...rule.methods], action: "block", mode: rule.mode };
 }
+
+/** A limit Rule as Shield needs it (slice 08): a bundle Rule with the action throttle, then its limit, complete. */
+function bundleLimitRule(rule: PolicyRule): BundleLimitRule {
+  if (rule.action !== "throttle" || rule.limit === undefined) {
+    throw new TypeError("A Rule in limit_rules must be a throttle Rule with a limit.");
+  }
+  return {
+    id: rule.id,
+    path: rule.path,
+    methods: [...rule.methods],
+    action: "throttle",
+    mode: rule.mode,
+    limit: storedLimit(rule.limit),
+  };
+}
+
+/** Whether the Rule travels in `limit_rules`: it has a limit, or says throttle (then `bundleLimitRule` judges it). */
+const isLimitRule = (rule: PolicyRule): boolean => rule.limit !== undefined || rule.action === "throttle";
 
 /** Names a Canary set, order included: equal for the same Canaries in the same order, whatever the objects. */
 function canaryDigest(canaries: readonly Canary[]): string {
@@ -161,11 +189,16 @@ export function createBundleIssuer(options: { signer: Signer; now?: () => Date; 
       issued_at: new Date(issuedAt).toISOString(),
       not_after: new Date(issuedAt + BUNDLE_LIFETIME_MS).toISOString(),
       // A Rule with a requirement never goes in `rules`: a Shield before slice 04 would enforce it as a plain block
-      // (plan 04 amendment A1). It goes in `signature_rules`, which such a Shield strips. Policy order in each.
-      rules: subject.rules.filter((rule) => rule.requires === undefined).map(bundleRule),
+      // (plan 04 amendment A1). It goes in `signature_rules`, which such a Shield strips. Nor does a Rule with a
+      // limit (slice 08): it goes in `limit_rules`, which a Shield before slice 08 strips. Policy order in each;
+      // the three together are the Policy's Rules, so at most `POLICY_LIMITS.rulesMax`.
+      rules: subject.rules.filter((rule) => !isLimitRule(rule) && rule.requires === undefined).map(bundleRule),
     };
-    const signatureRules = subject.rules.filter((rule) => rule.requires === "signature");
+    const signatureRules = subject.rules.filter((rule) => !isLimitRule(rule) && rule.requires === "signature");
     if (signatureRules.length > 0) payload.signature_rules = signatureRules.map(bundleRule);
+    // Only when there is one: a Policy without limit Rules gives the bundle it gave before slice 08, byte for byte.
+    const limitRules = subject.rules.filter(isLimitRule);
+    if (limitRules.length > 0) payload.limit_rules = limitRules.map(bundleLimitRule);
     const canaries = subject.canaries ?? [];
     if (canaries.length > 0) {
       payload.canaries = canaries.map(

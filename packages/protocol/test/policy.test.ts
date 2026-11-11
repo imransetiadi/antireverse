@@ -6,6 +6,7 @@ import {
   ATTESTATION_LIMITS,
   BLOCK_RESPONSE_BODY,
   type BundleBlock,
+  type BundleLimitRule,
   type BundlePayload,
   BundlePayloadSchema,
   type BundleRule,
@@ -16,10 +17,17 @@ import {
   EXAMPLE_BUNDLE_PATCH,
   EXAMPLE_BUNDLE_PAYLOAD,
   EXAMPLE_CANARIES,
+  EXAMPLE_LIMIT_RULE,
   EXAMPLE_POLICY,
   EXAMPLE_POLICY_RULE,
   EXAMPLE_STORED_EVENT,
   isBroadPattern,
+  LIMIT_COUNTS,
+  LIMIT_FAILURE_STATUSES,
+  LIMIT_KEYS,
+  LIMIT_LIMITS,
+  type LimitCount,
+  type LimitKey,
   PATCH_LIMITS,
   PATH_PATTERN,
   type ParsedPolicyRuleInput,
@@ -37,12 +45,14 @@ import {
   type PublishPolicyRequest,
   type PublishPolicyRequestInput,
   PublishPolicyRequestSchema,
+  RATE_LIMITED_RESPONSE_BODY,
   type RollbackPolicyRequest,
   RollbackPolicyRequestSchema,
   RollbackPolicyRequestSchema as RollbackSchemaForBroad,
   RULE_ACTIONS,
   RULE_REQUIREMENTS,
   type RuleAction,
+  type RuleLimit,
   type RuleRequirement,
   type SignedBundle,
   SignedBundleSchema,
@@ -75,7 +85,7 @@ const signingKey = (patch: Record<string, unknown> = {}) => ({
 describe("constants", () => {
   it("has the values of contract P1", () => {
     const action: RuleAction = "block";
-    expect(RULE_ACTIONS).toEqual([action]);
+    expect(RULE_ACTIONS).toEqual([action, "throttle"]);
     expect(POLICY_LIMITS).toEqual({
       rulesMax: 50,
       pathMax: 256,
@@ -253,11 +263,12 @@ describe("PolicyRuleSchema", () => {
     expect(result.error?.issues.map((issue) => issue.path)).toEqual([["methods"]]);
   });
 
-  it("limits action to block and mode to monitor or enforce", () => {
+  it("limits action to block (throttle only with a limit, slice 08) and mode to monitor or enforce", () => {
     for (const mode of DECISION_MODES) {
       expect(acceptsRule({ mode }), mode).toBe(true);
     }
     expect(acceptsRule({ action: "block" })).toBe(true);
+    expect(acceptsRule({ action: "throttle" })).toBe(false);
     expect(acceptsRule({ action: "allow" })).toBe(false);
     expect(acceptsRule({ action: "challenge" })).toBe(false);
     expect(acceptsRule({ mode: "shadow" })).toBe(false);
@@ -815,6 +826,7 @@ describe("BundlePayloadSchema blocks and allowlist (slice 09)", () => {
     expect(parsed).not.toHaveProperty("allowlist");
   });
 
+  // Slice 08 re-pins this with limit Rules, the longest Rules, at the end of the block: 64,974 bytes at every limit.
   describe("bundle size with 50 Rules, 100 Canaries, 150 blocks, 100 allowlist entries and 3 attestation keys of the longest form", () => {
     const longest: BundleRule = {
       id: "rul_0123456789abcdef01234567",
@@ -886,6 +898,66 @@ describe("BundlePayloadSchema blocks and allowlist (slice 09)", () => {
     it("keeps the same headroom with signature_rules: 182 blocks fit, 183 do not", () => {
       expect(sizeSigned(182)).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
       expect(sizeSigned(183)).toBeGreaterThan(POLICY_LIMITS.bundleBytesMax);
+    });
+
+    // Slice 08: the 50 Rules may also sit in `limit_rules`, whose entries are the longest: the action throttle and
+    // the limit at its largest values. The longest split puts every Rule there, leaving `"rules":[]`.
+    const longestLimit: BundleLimitRule = {
+      ...longest,
+      action: "throttle",
+      limit: {
+        requests: LIMIT_LIMITS.requestsMax,
+        window_s: LIMIT_LIMITS.windowSecondsMax,
+        key: "device",
+        count: "failures",
+      },
+    };
+    const largestLimited = (blockCount: number) => ({
+      ...largest(blockCount),
+      rules: [],
+      limit_rules: Array.from({ length: POLICY_LIMITS.rulesMax }, () => longestLimit),
+    });
+    const sizeLimited = (blockCount: number) => JSON.stringify(largestLimited(blockCount)).length;
+
+    it("has a limit Rule as its longest Rule: 81 characters more than a plain one", () => {
+      for (const count of LIMIT_COUNTS) {
+        for (const key of LIMIT_KEYS) {
+          const entry = { ...longestLimit, limit: { ...longestLimit.limit, key, count } };
+          expect(JSON.stringify(entry).length).toBeLessThanOrEqual(JSON.stringify(longestLimit).length);
+        }
+      }
+      expect(JSON.stringify(longestLimit).length - JSON.stringify(longest).length).toBe(81);
+    });
+
+    it("is still valid and fits with every Rule in limit_rules, the longest split (slice 08)", () => {
+      expect(BundlePayloadSchema.safeParse(largestLimited(CONTAINMENT_LIMITS.activePerAppEnv)).success).toBe(true);
+      // 60,886 with plain Rules; 50 limits add 50 x 81 characters and the member name with its brackets 17.
+      expect(sizeLimited(CONTAINMENT_LIMITS.activePerAppEnv)).toBe(64_953);
+      // An empty `signature_rules` member beside them (21 characters) is the absolute worst case.
+      const worst = { ...largestLimited(CONTAINMENT_LIMITS.activePerAppEnv), signature_rules: [] };
+      expect(BundlePayloadSchema.safeParse(worst).success).toBe(true);
+      expect(JSON.stringify(worst).length).toBe(64_974);
+      expect(JSON.stringify(worst).length).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+      for (let plain = 0; plain <= POLICY_LIMITS.rulesMax; plain += 1) {
+        for (let signed = 0; plain + signed <= POLICY_LIMITS.rulesMax; signed += 1) {
+          const value = {
+            ...largest(CONTAINMENT_LIMITS.activePerAppEnv),
+            rules: Array.from({ length: plain }, () => longest),
+            signature_rules: Array.from({ length: signed }, () => longest),
+            limit_rules: Array.from({ length: POLICY_LIMITS.rulesMax - plain - signed }, () => longestLimit),
+          };
+          expect(JSON.stringify(value).length, `${plain}/${signed}`).toBeLessThanOrEqual(64_974);
+        }
+      }
+      expect(sizeLimited(CONTAINMENT_LIMITS.activePerAppEnv)).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+    });
+
+    it("keeps less headroom with limit_rules: 154 blocks fit, 155 do not (182 with plain Rules)", () => {
+      expect(sizeLimited(154)).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+      expect(sizeLimited(155)).toBeGreaterThan(POLICY_LIMITS.bundleBytesMax);
+      // With an empty `signature_rules` member beside them (21 characters) one block fewer fits: 153.
+      expect(sizeLimited(153) + 21).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+      expect(sizeLimited(154) + 21).toBeGreaterThan(POLICY_LIMITS.bundleBytesMax);
     });
   });
 });
@@ -1224,5 +1296,272 @@ describe("BundlePayloadSchema patches (slice 20)", () => {
     const parsed = older.parse({ ...EXAMPLE_BUNDLE_PAYLOAD, patches: entries(2) });
     expect(parsed).toEqual(EXAMPLE_BUNDLE_PAYLOAD);
     expect(parsed).not.toHaveProperty("patches");
+  });
+});
+
+describe("Rule limit (slice 08)", () => {
+  const LIMIT: RuleLimit = { requests: 10, window_s: 300, key: "ip", count: "failures" };
+  const limitRule = (patch: Record<string, unknown> = {}) => ({ ...EXAMPLE_LIMIT_RULE, ...patch });
+  const acceptsLimit = (patch: Record<string, unknown>): boolean =>
+    PolicyRuleSchema.safeParse(limitRule({ limit: { ...LIMIT, ...patch } })).success;
+  const issuePaths = (value: unknown): string[] => {
+    const result = PolicyRuleSchema.safeParse(value);
+    return result.success ? [] : result.error.issues.map((issue) => issue.path.join("."));
+  };
+  const bundleRule = (): BundleRule => EXAMPLE_BUNDLE_PAYLOAD.rules[0] as BundleRule;
+  const bundleLimitRule = (): BundleLimitRule => {
+    const { name: _name, ...rest } = EXAMPLE_LIMIT_RULE;
+    return rest as BundleLimitRule;
+  };
+
+  it("has the constants of the plan's Global Constraints", () => {
+    const key: LimitKey = "ip";
+    const count: LimitCount = "requests";
+    expect(LIMIT_KEYS).toEqual([key, "device"]);
+    expect(LIMIT_COUNTS).toEqual([count, "failures"]);
+    expect(LIMIT_LIMITS).toEqual({ requestsMax: 100_000, windowSecondsMax: 3_600 });
+    expect(LIMIT_FAILURE_STATUSES).toEqual([401, 403]);
+    for (const constant of [LIMIT_KEYS, LIMIT_COUNTS, LIMIT_LIMITS, LIMIT_FAILURE_STATUSES]) {
+      expect(Object.isFrozen(constant)).toBe(true);
+    }
+  });
+
+  it("has the exact body of a throttle response: nothing but the error", () => {
+    expect(RATE_LIMITED_RESPONSE_BODY).toBe('{"error":"rate_limited"}');
+    expect(JSON.parse(RATE_LIMITED_RESPONSE_BODY)).toEqual({ error: "rate_limited" });
+  });
+
+  it("documents a limit Rule: Login protection, 10 failures per 5 minutes per address, in monitor", () => {
+    const parsed: PolicyRule = PolicyRuleSchema.parse(EXAMPLE_LIMIT_RULE);
+    expect(parsed).toEqual(EXAMPLE_LIMIT_RULE);
+    expect(EXAMPLE_LIMIT_RULE).toMatchObject({ action: "throttle", mode: "monitor", limit: LIMIT });
+    expect(EXAMPLE_LIMIT_RULE.id).toMatch(/^rul_[0-9a-f]{24}$/);
+    expect(EXAMPLE_POLICY.rules.map((entry) => entry.id)).not.toContain(EXAMPLE_LIMIT_RULE.id);
+    expect(Object.isFrozen(EXAMPLE_LIMIT_RULE)).toBe(true);
+    expect(Object.isFrozen(EXAMPLE_LIMIT_RULE.limit)).toBe(true);
+    expect(Object.isFrozen(EXAMPLE_LIMIT_RULE.methods)).toBe(true);
+  });
+
+  it("round-trips a Policy Rule, a Rule input, a Policy and a publish request with a limit through JSON", () => {
+    expect(PolicyRuleSchema.parse(JSON.parse(JSON.stringify(EXAMPLE_LIMIT_RULE)))).toEqual(EXAMPLE_LIMIT_RULE);
+    const input: PolicyRuleInput = { name: "Login", path: "/login", action: "throttle", limit: LIMIT };
+    expect(PolicyRuleInputSchema.parse(input)).toEqual({
+      name: "Login",
+      path: "/login",
+      methods: [],
+      action: "throttle",
+      mode: "monitor",
+      limit: LIMIT,
+    });
+    const withLimit: Policy = { ...EXAMPLE_POLICY, rules: [...EXAMPLE_POLICY.rules, EXAMPLE_LIMIT_RULE] };
+    expect(PolicySchema.parse(JSON.parse(JSON.stringify(withLimit)))).toEqual(withLimit);
+    const request: PublishPolicyRequestInput = { rules: [input] };
+    expect(PublishPolicyRequestSchema.parse(request).rules[0]?.limit).toEqual(LIMIT);
+  });
+
+  it("keeps limit optional: absent stays absent", () => {
+    expect(PolicyRuleSchema.parse(EXAMPLE_POLICY_RULE)).not.toHaveProperty("limit");
+    expect(PolicyRuleInputSchema.parse({ name: "a", path: "/a" })).not.toHaveProperty("limit");
+  });
+
+  it("limits requests to the integers 1..100,000", () => {
+    for (const requests of [1, 50, 100_000]) expect(acceptsLimit({ requests }), String(requests)).toBe(true);
+    for (const requests of [0, -1, 100_001, 1.5, "10", null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(acceptsLimit({ requests }), String(requests)).toBe(false);
+    }
+  });
+
+  it("limits window_s to the integers 1..3,600", () => {
+    for (const window_s of [1, 300, 3_600]) expect(acceptsLimit({ window_s }), String(window_s)).toBe(true);
+    for (const window_s of [0, -1, 3_601, 0.5, "300", null, undefined]) {
+      expect(acceptsLimit({ window_s }), String(window_s)).toBe(false);
+    }
+  });
+
+  it("limits key to ip or device, and requires it", () => {
+    for (const key of LIMIT_KEYS) expect(acceptsLimit({ key }), key).toBe(true);
+    for (const key of ["IP", "account", "session", "", null, undefined, ["ip"]]) {
+      expect(acceptsLimit({ key }), JSON.stringify(key)).toBe(false);
+    }
+  });
+
+  it("limits count to requests or failures and defaults it to requests", () => {
+    for (const count of LIMIT_COUNTS) expect(acceptsLimit({ count }), count).toBe(true);
+    for (const count of ["Failures", "errors", "", null, 401]) {
+      expect(acceptsLimit({ count }), JSON.stringify(count)).toBe(false);
+    }
+    const { count: _count, ...withoutCount } = LIMIT;
+    expect(PolicyRuleSchema.parse(limitRule({ limit: withoutCount })).limit).toEqual({ ...LIMIT, count: "requests" });
+    expect(
+      PolicyRuleInputSchema.parse({ name: "a", path: "/a", action: "throttle", limit: withoutCount }).limit,
+    ).toEqual({ ...LIMIT, count: "requests" });
+  });
+
+  it("rejects a limit that is not an object, and strips unknown keys of a limit", () => {
+    for (const limit of [null, 10, "10/300", [], true]) {
+      expect(PolicyRuleSchema.safeParse(limitRule({ limit })).success, JSON.stringify(limit)).toBe(false);
+    }
+    expect(PolicyRuleSchema.safeParse(limitRule({ limit: {} })).success).toBe(false);
+    const parsed = PolicyRuleSchema.parse(limitRule({ limit: { ...LIMIT, statuses: [500], burst: 3 } }));
+    expect(parsed.limit).toEqual(LIMIT);
+  });
+
+  it("requires action throttle of a Rule with a limit, and names the action", () => {
+    expect(PolicyRuleSchema.safeParse(limitRule()).success).toBe(true);
+    expect(issuePaths(limitRule({ action: "block" }))).toEqual(["action"]);
+    expect(acceptsInput({ name: "a", path: "/a", limit: LIMIT, action: "throttle" })).toBe(true);
+    expect(acceptsInput({ name: "a", path: "/a", limit: LIMIT, action: "block" })).toBe(false);
+  });
+
+  it("defaults the action of a Rule input to throttle when a limit is present, and to block otherwise", () => {
+    const withLimit: PolicyRuleInput = { name: "a", path: "/a", limit: LIMIT };
+    const parsed: ParsedPolicyRuleInput = PolicyRuleInputSchema.parse(withLimit);
+    expect(parsed).toEqual({ name: "a", path: "/a", methods: [], action: "throttle", mode: "monitor", limit: LIMIT });
+    expect(PolicyRuleInputSchema.parse({ ...withLimit, action: undefined }).action).toBe("throttle");
+    expect(PolicyRuleInputSchema.parse({ name: "a", path: "/a" }).action).toBe("block");
+    expect(PolicyRuleInputSchema.parse({ name: "a", path: "/a", requires: "signature" }).action).toBe("block");
+    // The default never hides a conflict: a limit beside a requirement is still refused, and null is no action.
+    expect(acceptsInput({ ...withLimit, requires: "signature" })).toBe(false);
+    expect(acceptsInput({ ...withLimit, action: null })).toBe(false);
+    expect(PublishPolicyRequestSchema.parse({ rules: [withLimit] }).rules[0]?.action).toBe("throttle");
+    // A stored Rule has no defaults.
+    const { action: _action, ...stored } = EXAMPLE_LIMIT_RULE;
+    expect(PolicyRuleSchema.safeParse(stored).success).toBe(false);
+  });
+
+  it("requires a limit of a Rule with action throttle, and names the limit", () => {
+    const { limit: _limit, ...withoutLimit } = EXAMPLE_LIMIT_RULE;
+    expect(issuePaths(withoutLimit)).toEqual(["limit"]);
+    expect(issuePaths(rule({ action: "throttle" }))).toEqual(["limit"]);
+    expect(acceptsInput({ name: "a", path: "/a", action: "throttle" })).toBe(false);
+  });
+
+  it("rejects a Rule with both a requirement and a limit, and names the requirement", () => {
+    expect(issuePaths(limitRule({ requires: "signature" }))).toEqual(["requires"]);
+    expect(acceptsInput({ name: "a", path: "/a", action: "throttle", limit: LIMIT, requires: "signature" })).toBe(
+      false,
+    );
+    // A requirement Rule stays a block Rule: throttle without a limit is refused whatever it requires.
+    expect(acceptsRule({ requires: "signature", action: "throttle" })).toBe(false);
+    expect(acceptsRule({ requires: "signature" })).toBe(true);
+  });
+
+  it("never echoes a rejected value in the issues of the limit checks", () => {
+    const result = PolicyRuleSchema.safeParse(limitRule({ action: "block", requires: "signature" }));
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.map((issue) => issue.path.join(".")).sort()).toEqual(["action", "requires"]);
+      for (const issue of result.error.issues) expect(issue.message).not.toContain("/login");
+    }
+  });
+
+  it("applies the limit checks to every Rule of a Policy and of a publish request", () => {
+    const { limit: _limit, ...throttleWithoutLimit } = EXAMPLE_LIMIT_RULE;
+    expect(PolicySchema.safeParse(policy({ rules: [throttleWithoutLimit] })).success).toBe(false);
+    expect(PolicySchema.safeParse(policy({ rules: [limitRule({ action: "block" })] })).success).toBe(false);
+    const result = PublishPolicyRequestSchema.safeParse({
+      rules: [
+        { name: "ok", path: "/a" },
+        { name: "bad", path: "/b", limit: LIMIT, action: "block" },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.path).toEqual(["rules", 1, "action"]);
+  });
+
+  describe("BundlePayloadSchema limit_rules", () => {
+    const accepts = (patch: Record<string, unknown>): boolean => BundlePayloadSchema.safeParse(payload(patch)).success;
+    const many = (count: number) => Array.from({ length: count }, bundleRule);
+    const manyLimits = (count: number) => Array.from({ length: count }, bundleLimitRule);
+
+    it("leaves a payload without limit_rules valid: absent stays absent", () => {
+      expect(BundlePayloadSchema.parse(EXAMPLE_BUNDLE_PAYLOAD)).not.toHaveProperty("limit_rules");
+    });
+
+    it("round-trips a payload with limit_rules through JSON", () => {
+      const withRules: BundlePayload = { ...EXAMPLE_BUNDLE_PAYLOAD, limit_rules: [bundleLimitRule()] };
+      expect(BundlePayloadSchema.parse(JSON.parse(JSON.stringify(withRules)))).toEqual(withRules);
+    });
+
+    it("has the shape of a bundle Rule plus its limit, without name, with action throttle and with no defaults", () => {
+      const parsed = BundlePayloadSchema.parse(payload({ limit_rules: [{ ...EXAMPLE_LIMIT_RULE, hits: 3 }] }));
+      expect(parsed.limit_rules).toEqual([bundleLimitRule()]);
+      expect(Object.keys(parsed.limit_rules?.[0] ?? {}).sort()).toEqual([
+        "action",
+        "id",
+        "limit",
+        "methods",
+        "mode",
+        "path",
+      ]);
+      const withEntry = (patch: Record<string, unknown>) =>
+        accepts({ limit_rules: [{ ...bundleLimitRule(), ...patch }] });
+      expect(withEntry({})).toBe(true);
+      expect(withEntry({ id: "rul_1" })).toBe(false);
+      expect(withEntry({ path: "/a/**/b" })).toBe(false);
+      expect(withEntry({ methods: undefined })).toBe(false);
+      expect(withEntry({ mode: undefined })).toBe(false);
+      expect(withEntry({ action: "block" })).toBe(false);
+      expect(withEntry({ action: undefined })).toBe(false);
+      expect(withEntry({ limit: undefined })).toBe(false);
+      expect(withEntry({ limit: { ...LIMIT, requests: 0 } })).toBe(false);
+      expect(withEntry({ limit: { ...LIMIT, window_s: 3_601 } })).toBe(false);
+      expect(withEntry({ limit: { ...LIMIT, key: "account" } })).toBe(false);
+      // No defaults in a bundle: Shield reads `count` as written.
+      expect(withEntry({ limit: { requests: 10, window_s: 300, key: "ip" } })).toBe(false);
+      expect(withEntry({ limit: { ...LIMIT, count: "requests" } })).toBe(true);
+      expect(accepts({ limit_rules: null })).toBe(false);
+    });
+
+    it("strips a requirement from a limit_rules entry", () => {
+      const parsed = BundlePayloadSchema.parse(
+        payload({ limit_rules: [{ ...bundleLimitRule(), requires: "signature" }] }),
+      );
+      expect(parsed.limit_rules?.[0]).not.toHaveProperty("requires");
+    });
+
+    it("caps rules, signature_rules and limit_rules together at 50", () => {
+      expect(accepts({ rules: many(20), signature_rules: many(20), limit_rules: manyLimits(10) })).toBe(true);
+      expect(accepts({ rules: [], limit_rules: manyLimits(POLICY_LIMITS.rulesMax) })).toBe(true);
+      expect(accepts({ rules: many(25), limit_rules: manyLimits(25) })).toBe(true);
+      expect(accepts({ rules: many(20), signature_rules: many(20), limit_rules: manyLimits(11) })).toBe(false);
+      expect(accepts({ rules: many(26), limit_rules: manyLimits(25) })).toBe(false);
+      expect(accepts({ rules: [], signature_rules: many(1), limit_rules: manyLimits(POLICY_LIMITS.rulesMax) })).toBe(
+        false,
+      );
+      expect(accepts({ rules: [], limit_rules: manyLimits(POLICY_LIMITS.rulesMax + 1) })).toBe(false);
+      // The slice 04 cap is unchanged.
+      expect(accepts({ rules: many(26), signature_rules: many(25) })).toBe(false);
+    });
+
+    it("refuses a limit or the throttle action in `rules` and `signature_rules`: a limit Rule never becomes a block", () => {
+      for (const member of ["rules", "signature_rules"]) {
+        expect(accepts({ [member]: [bundleRule()] }), member).toBe(true);
+        expect(accepts({ [member]: [bundleLimitRule()] }), member).toBe(false);
+        expect(accepts({ [member]: [{ ...bundleRule(), limit: LIMIT }] }), member).toBe(false);
+        expect(accepts({ [member]: [{ ...bundleRule(), action: "throttle" }] }), member).toBe(false);
+      }
+    });
+
+    it("is stripped by an older Shield's schema (a copy without the field)", () => {
+      const older = z.object(BundlePayloadSchema.shape).omit({ limit_rules: true });
+      const parsed = older.parse({ ...EXAMPLE_BUNDLE_PAYLOAD, limit_rules: [bundleLimitRule()] });
+      expect(parsed).toEqual(EXAMPLE_BUNDLE_PAYLOAD);
+      expect(parsed).not.toHaveProperty("limit_rules");
+    });
+
+    it("still fits the bundle string with 50 limit Rules of the longest form", () => {
+      const longest: BundleLimitRule = {
+        id: EXAMPLE_LIMIT_RULE.id,
+        path: `/${"a".repeat(POLICY_LIMITS.pathMax - 1)}`,
+        methods: Array.from({ length: POLICY_LIMITS.methodsMax }, (_, i) => `${"A".repeat(15)}${"ABCDEFGH"[i]}`),
+        action: "throttle",
+        mode: "enforce",
+        limit: { requests: 100_000, window_s: 3_600, key: "device", count: "failures" },
+      };
+      const full = payload({ rules: [], limit_rules: Array.from({ length: POLICY_LIMITS.rulesMax }, () => longest) });
+      expect(BundlePayloadSchema.safeParse(full).success).toBe(true);
+      expect(JSON.stringify(full).length).toBeLessThanOrEqual(POLICY_LIMITS.bundleBytesMax);
+    });
   });
 });

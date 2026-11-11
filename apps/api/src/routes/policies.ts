@@ -14,6 +14,7 @@ import { Hono } from "hono";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
+import type { PolicyPublished } from "../detect/detector.ts";
 import { guardrailErrors, prepareRules } from "../policy.ts";
 import { problem } from "../problem.ts";
 import { findApp, lockApp } from "../stores/apps.ts";
@@ -39,7 +40,12 @@ const UNIQUE_VIOLATION = "23505";
  */
 type Published = { policy: Policy } | { errors: ProblemError[] } | { conflict: true } | null;
 
-export function policyRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv> {
+export function policyRoutes(deps: {
+  db: Db;
+  now?: () => Date;
+  /** Told every newly stored version, after its transaction committed (see `AppDeps.onPolicyPublished`). */
+  onPolicyPublished?: ((policy: PolicyPublished) => void) | undefined;
+}): Hono<AppEnv> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
@@ -81,7 +87,7 @@ export function policyRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv> {
     if (target === null) return null;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await db.tx({ organizationId: target.organizationId }, async (q) => {
+        const published = await db.tx({ organizationId: target.organizationId }, async (q): Promise<Published> => {
           if (!(await lockApp(q, target.appId))) return null;
           if (expectedVersion !== undefined && (await currentVersion(q, target)) !== expectedVersion) {
             return { conflict: true };
@@ -93,6 +99,15 @@ export function policyRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv> {
           if (errors.length > 0) return { errors };
           return { policy: await insertPolicyVersion(q, target, { rules, publishedAt: now(), publishedByKeyId }) };
         });
+        // Committed. The version is stored whatever the listener does: its error never fails the publish.
+        if (published !== null && "policy" in published) {
+          try {
+            deps.onPolicyPublished?.({ ...target, version: published.policy.version });
+          } catch {
+            // Nothing to undo and nothing to say: the Detector learns the version on its next read.
+          }
+        }
+        return published;
       } catch (error) {
         const lostTheVersion = (error as { code?: unknown }).code === UNIQUE_VIOLATION;
         if (!lostTheVersion || attempt >= PUBLISH_ATTEMPTS) throw error;

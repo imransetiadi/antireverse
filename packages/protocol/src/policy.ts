@@ -8,12 +8,15 @@ import { IP_PREFIX_PATTERN } from "./events.ts";
 import { BundlePatchSchema, PATCH_LIMITS } from "./patches.ts";
 import { deepFreeze, HttpMethodSchema, RULE_PATH_MAX, RULE_PATH_PATTERN, trimmedText } from "./shared.ts";
 
-// The Policy contract: Rules as the Console sends and the API stores them, and the signed bundle Shield
-// applies. Every object schema is a plain `z.object`, which strips unknown keys. Shield validates the
+// The Policy contract: Rules as the Console sends and the API stores them (plain, with a requirement, or with a
+// limit), and the signed bundle Shield applies. Every object schema is a plain `z.object`, which strips unknown keys. Shield validates the
 // bundle by hand, without zod: a bound that changes here must change in Shield as well.
 
-/** What a Rule does to a matching request. */
-export const RULE_ACTIONS = ["block"] as const;
+/**
+ * What a Rule does to a matching request. `throttle` (slice 08) is the action of a Rule with a `limit`, and of no
+ * other Rule: the request is refused only while its client is over the limit.
+ */
+export const RULE_ACTIONS = ["block", "throttle"] as const;
 export type RuleAction = (typeof RULE_ACTIONS)[number];
 
 /**
@@ -42,6 +45,35 @@ export const POLICY_LIMITS = {
 /** The whole body of a block response (status 403, `content-type: application/json`). */
 export const BLOCK_RESPONSE_BODY = '{"error":"request_blocked"}';
 
+// Limits (slice 08, D-063). Shield mirrors these constants: a value that changes here must change in Shield as well.
+
+/**
+ * What a limit counts per: `ip` is the client address as Shield derives it (IPv6 by /64); `device` is the attested
+ * device when the Attestation Token is valid, else the address.
+ */
+export const LIMIT_KEYS = deepFreeze(["ip", "device"] as const);
+export type LimitKey = (typeof LIMIT_KEYS)[number];
+
+/**
+ * What a limit counts: `requests` counts every matching request when it is decided; `failures` counts the responses
+ * that close with a status of `LIMIT_FAILURE_STATUSES`.
+ */
+export const LIMIT_COUNTS = deepFreeze(["requests", "failures"] as const);
+export type LimitCount = (typeof LIMIT_COUNTS)[number];
+
+export const LIMIT_LIMITS = deepFreeze({
+  /** Largest `requests` of a limit; the smallest is 1. */
+  requestsMax: 100_000,
+  /** Largest `window_s` of a limit, in seconds; the smallest is 1. */
+  windowSecondsMax: 3_600,
+} as const);
+
+/** The response statuses a `count: "failures"` limit counts. Fixed in slice 08: a Rule cannot choose them. */
+export const LIMIT_FAILURE_STATUSES = deepFreeze([401, 403] as const);
+
+/** The whole body of a throttle response (status 429 with `Retry-After`, `content-type: application/json`). */
+export const RATE_LIMITED_RESPONSE_BODY = '{"error":"rate_limited"}';
+
 /**
  * A path pattern of 1..256 characters: `/` alone, or `/`-separated segments without a trailing slash.
  * A segment is literal text over `A-Z a-z 0-9 . _ ~ -`, or a single star (exactly one segment), or, as the
@@ -61,8 +93,21 @@ const RuleCountSchema = z.int().min(0).max(POLICY_LIMITS.rulesMax);
 /** The first 16 hex characters of the SHA-256 of the raw public key (`keyIdOf` of the server entry). */
 const KeyIdSchema = z.string().regex(/^[0-9a-f]{16}$/);
 
-/** One Rule of a Policy, complete: as the API stores and returns it. */
-export const PolicyRuleSchema = z.object({
+/**
+ * The limit of a Rule (slice 08): at most `requests` per sliding window of `window_s` seconds, counted per `key`.
+ * With `count: "failures"` only failed responses count, and a request is refused once the failures in the window
+ * reach `requests`. As a client sends it and as the API stores it, `count` defaults to requests.
+ */
+const RuleLimitSchema = z.object({
+  requests: z.int().min(1).max(LIMIT_LIMITS.requestsMax),
+  window_s: z.int().min(1).max(LIMIT_LIMITS.windowSecondsMax),
+  key: z.enum(LIMIT_KEYS),
+  count: z.enum(LIMIT_COUNTS).default("requests"),
+});
+export type RuleLimit = z.infer<typeof RuleLimitSchema>;
+
+/** The members of a Rule, before the checks that span members (`checkRuleLimit`). */
+const PolicyRuleObjectSchema = z.object({
   id: z.string().regex(ID_PATTERNS.rul),
   /** Shown in the Console only: a name is not part of the bundle. */
   name: trimmedText(POLICY_LIMITS.nameMax),
@@ -84,19 +129,58 @@ export const PolicyRuleSchema = z.object({
    * API puts a Rule with a requirement in `signature_rules` instead.
    */
   requires: z.enum(RULE_REQUIREMENTS).optional(),
+  /**
+   * Optional (slice 08): absent means no limit. A Rule has a limit exactly when its action is throttle, and a Rule
+   * with a limit has no requirement. The API puts such a Rule in the bundle's `limit_rules`, never in `rules`.
+   */
+  limit: RuleLimitSchema.optional(),
 });
+
+/**
+ * The checks of slice 08 that span members: limit present ⇔ action throttle, and never a limit beside a
+ * requirement. The messages name no value of the Rule.
+ */
+function checkRuleLimit(
+  rule: { action: RuleAction; requires?: RuleRequirement | undefined; limit?: RuleLimit | undefined },
+  ctx: z.RefinementCtx,
+): void {
+  const hasLimit = rule.limit !== undefined;
+  if (hasLimit && rule.action !== "throttle") {
+    ctx.addIssue({ code: "custom", path: ["action"], message: "A Rule with a limit must have the action throttle." });
+  }
+  if (!hasLimit && rule.action === "throttle") {
+    ctx.addIssue({ code: "custom", path: ["limit"], message: "A Rule with the action throttle must have a limit." });
+  }
+  if (hasLimit && rule.requires !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["requires"],
+      message: "A Rule must not have both a requirement and a limit.",
+    });
+  }
+}
+
+/** One Rule of a Policy, complete: as the API stores and returns it. */
+export const PolicyRuleSchema = PolicyRuleObjectSchema.superRefine(checkRuleLimit);
 export type PolicyRule = z.infer<typeof PolicyRuleSchema>;
 
 /**
- * A Rule as a client sends it for publishing. Without `id` the API assigns one; `methods` defaults to
- * every method, `action` to block and `mode` to monitor.
+ * A Rule as a client sends it for publishing. Without `id` the API assigns one; `methods` defaults to every
+ * method and `mode` to monitor. `action` defaults to throttle when a `limit` is sent and to block otherwise
+ * (slice 08), so the default never contradicts the limit; an action that is sent is checked as it is.
+ * The defaulting is a transform: this schema has no `.shape`, `.extend` or `.omit`.
  */
-export const PolicyRuleInputSchema = PolicyRuleSchema.extend({
-  id: PolicyRuleSchema.shape.id.optional(),
-  methods: PolicyRuleSchema.shape.methods.default([]),
-  action: PolicyRuleSchema.shape.action.default("block"),
-  mode: PolicyRuleSchema.shape.mode.default("monitor"),
-});
+export const PolicyRuleInputSchema = PolicyRuleObjectSchema.extend({
+  id: PolicyRuleObjectSchema.shape.id.optional(),
+  methods: PolicyRuleObjectSchema.shape.methods.default([]),
+  action: PolicyRuleObjectSchema.shape.action.optional(),
+  mode: PolicyRuleObjectSchema.shape.mode.default("monitor"),
+})
+  .transform((rule) => ({
+    ...rule,
+    action: rule.action ?? (rule.limit === undefined ? ("block" as const) : ("throttle" as const)),
+  }))
+  .superRefine(checkRuleLimit);
 /** What a client may send: only `name` and `path` are required. */
 export type PolicyRuleInput = z.input<typeof PolicyRuleInputSchema>;
 /** What the API works with after parsing: everything is set except, possibly, `id`. */
@@ -192,7 +276,24 @@ export type BundleBlock = z.infer<typeof BundleBlockSchema>;
  * it sits in says that). An older Shield would read a `requires` it does not know as a plain block Rule, so a
  * bundle entry never has one: the schema strips it.
  */
-const BundleRuleSchema = PolicyRuleSchema.omit({ name: true, requires: true });
+const BundleRuleSchema = PolicyRuleObjectSchema.omit({ name: true, requires: true }).extend({
+  /** Block only: a throttle Rule travels in `limit_rules` (slice 08). */
+  action: z.literal("block"),
+  /**
+   * Never present (slice 08): an entry of `rules` or `signature_rules` that carries a limit is refused, not
+   * stripped, so a limit Rule put in the wrong member can never be enforced as a plain block.
+   */
+  limit: z.never("A Rule with a limit belongs in limit_rules.").optional(),
+});
+
+/**
+ * A limit Rule as a bundle carries it (slice 08): a bundle Rule with the action throttle and its limit, complete —
+ * a bundle has no defaults, so `count` is always written.
+ */
+const BundleLimitRuleSchema = PolicyRuleObjectSchema.omit({ name: true, requires: true }).extend({
+  action: z.literal("throttle"),
+  limit: RuleLimitSchema.extend({ count: z.enum(LIMIT_COUNTS) }),
+});
 
 /**
  * What a bundle string holds once parsed as JSON. The signature covers the string exactly as transmitted,
@@ -214,15 +315,22 @@ export const BundlePayloadSchema = z
     issued_at: z.iso.datetime(),
     /** `issued_at` plus 7 days. After it Shield reports the Policy as stale. */
     not_after: z.iso.datetime(),
-    /** The Rules without a requirement, in order, without their names. */
+    /** The Rules without a requirement and without a limit, in order, without their names. */
     rules: z.array(BundleRuleSchema).max(POLICY_LIMITS.rulesMax),
     /**
      * The Rules that require a signed request (`requires: "signature"` in the Policy), in Policy order, in the
      * form of `rules` (plan 04 amendment A1). Optional: a bundle from before slice 04 has none, and an older Shield
-     * strips the field, so it never turns a requirement into a plain block. Together with `rules` at most
-     * `POLICY_LIMITS.rulesMax`.
+     * strips the field, so it never turns a requirement into a plain block. Together with `rules` and
+     * `limit_rules` at most `POLICY_LIMITS.rulesMax`.
      */
     signature_rules: z.array(BundleRuleSchema).max(POLICY_LIMITS.rulesMax).optional(),
+    /**
+     * The Rules with a limit (action throttle), in Policy order, each a bundle Rule plus its `limit` (slice 08).
+     * Optional: a bundle from before slice 08 has none, and an older Shield strips the field, so it never turns a
+     * limit into a plain block. Shield applies them after `rules` and `signature_rules`, in this order. Together
+     * with `rules` and `signature_rules` at most `POLICY_LIMITS.rulesMax`.
+     */
+    limit_rules: z.array(BundleLimitRuleSchema).max(POLICY_LIMITS.rulesMax).optional(),
     /**
      * The active Canaries of the App and Environment (those of its most recent `CANARY_LIMITS.buildsInBundle`
      * Builds). Optional: a bundle from before slice 07 has none, and an older Shield strips the field.
@@ -270,9 +378,21 @@ export const BundlePayloadSchema = z
   .refine((payload) => payload.rules.length + (payload.signature_rules?.length ?? 0) <= POLICY_LIMITS.rulesMax, {
     message: `rules and signature_rules hold at most ${POLICY_LIMITS.rulesMax} Rules together.`,
     path: ["signature_rules"],
-  });
+  })
+  .refine(
+    (payload) =>
+      payload.limit_rules === undefined ||
+      payload.rules.length + (payload.signature_rules?.length ?? 0) + payload.limit_rules.length <=
+        POLICY_LIMITS.rulesMax,
+    {
+      message: `rules, signature_rules and limit_rules hold at most ${POLICY_LIMITS.rulesMax} Rules together.`,
+      path: ["limit_rules"],
+    },
+  );
 export type BundlePayload = z.infer<typeof BundlePayloadSchema>;
 export type BundleRule = BundlePayload["rules"][number];
+/** An entry of `limit_rules`. */
+export type BundleLimitRule = NonNullable<BundlePayload["limit_rules"]>[number];
 
 /** 200 of `GET /v1/policy-bundle`. */
 export const SignedBundleSchema = z.object({
@@ -306,6 +426,21 @@ export const EXAMPLE_POLICY_RULE: PolicyRule = deepFreeze({
   mode: "enforce",
 });
 
+/**
+ * A valid limit Rule (slice 08), the Console's "Login protection" preset: more than 10 failed responses (401 or
+ * 403) per 5 minutes from one address throttle `POST /login`; in Monitor mode until promoted. Not part of
+ * `EXAMPLE_POLICY` or `EXAMPLE_BUNDLE_PAYLOAD`; in a bundle it goes in `limit_rules`, without its name.
+ */
+export const EXAMPLE_LIMIT_RULE = deepFreeze({
+  id: "rul_fedcba9876543210fedcba98",
+  name: "Login protection",
+  path: "/login",
+  methods: ["POST"],
+  action: "throttle",
+  mode: "monitor",
+  limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+}) satisfies PolicyRule;
+
 /** A published Policy of the App of `EXAMPLE_STORED_EVENT`: `EXAMPLE_POLICY_RULE`, then a Rule in Monitor mode. */
 export const EXAMPLE_POLICY: Policy = deepFreeze({
   app_id: "app_89abcdef0123456789abcdef",
@@ -338,5 +473,6 @@ export const EXAMPLE_BUNDLE_PAYLOAD: BundlePayload = deepFreeze({
   version: EXAMPLE_POLICY.version,
   issued_at: "2026-11-10T08:00:01.000Z",
   not_after: "2026-11-17T08:00:01.000Z",
-  rules: EXAMPLE_POLICY.rules.map(({ name: _name, ...rule }) => rule),
+  // Both Rules of `EXAMPLE_POLICY` are plain block Rules: a Rule with a limit would go in `limit_rules`.
+  rules: EXAMPLE_POLICY.rules.map(({ id, path, methods, mode }) => ({ id, path, methods, action: "block", mode })),
 });

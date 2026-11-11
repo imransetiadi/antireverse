@@ -373,6 +373,7 @@ describe("an actor block", () => {
       containment_id: ACTOR.id,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
     expect(blocked?.request).toMatchObject({ method: "GET", route: UNMATCHED_ROUTE, status: 403 });
     expect(blocked?.actor).toEqual({ ip_prefix: "203.0.113.0/24", ip_hash: ATTACKER_HASH });
@@ -384,6 +385,7 @@ describe("an actor block", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
   });
 });
@@ -462,6 +464,7 @@ describe("the block response", () => {
       containment_id: ACTOR.id,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
     expect(event?.request.route).toBe(UNMATCHED_ROUTE);
   });

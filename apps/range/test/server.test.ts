@@ -20,6 +20,7 @@ interface ShieldEvent {
     containment_id: string | null;
     patch_id: string | null;
     patch_body: string | null;
+    limit_rule_id: string | null;
   };
   actor: { ip_prefix: string | null };
 }
@@ -145,6 +146,7 @@ describe("ar-range, the reference target", () => {
         containment_id: null,
         patch_id: null,
         patch_body: null,
+        limit_rule_id: null,
       });
       expect(event.actor.ip_prefix).toBe("127.0.0.0/24");
     }
@@ -224,6 +226,7 @@ describe("ar-range, the reference target", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
 
     const home = await (await fetch(`${range.base}/`)).text();
@@ -259,6 +262,7 @@ describe("ar-range, the reference target", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
     expect(events[4]?.decision).toEqual({
       action: "allow",
@@ -268,6 +272,7 @@ describe("ar-range, the reference target", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
     const sent = range.bodies.join("\n");
     expect(sent).not.toContain("reports");
@@ -291,6 +296,7 @@ describe("ar-range, the reference target", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
   });
 

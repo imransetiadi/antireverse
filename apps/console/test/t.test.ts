@@ -447,7 +447,7 @@ const FINDINGS_COPY: Array<[string, string]> = [
   ["findings.title", "Findings"],
   [
     "findings.empty",
-    "No findings. Anti Reverse checks the packages your builds ship and your servers run against known advisories.",
+    "No findings. Airverse checks the packages your builds ship and your servers run against known advisories.",
   ],
   [
     "findings.empty.how",

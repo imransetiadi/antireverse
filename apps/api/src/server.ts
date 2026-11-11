@@ -8,7 +8,7 @@ import { createEventBus, type EventBus } from "./bus.ts";
 import { DEFAULT_HOST } from "./config.ts";
 import { type Db, openDb } from "./db/db.ts";
 import { createBeaconRecorder } from "./detect/beacon.ts";
-import { createDetector } from "./detect/detector.ts";
+import { createDetector, type Detector } from "./detect/detector.ts";
 import { createIncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { createNotifier, DEFAULT_CONSOLE_URL, type Notifier } from "./notify/notifier.ts";
@@ -129,9 +129,12 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   });
   const beacon = createBeaconRecorder({ db, notifier, now: options.now, logger });
   const exposureIncidents = createIncidentQueue({ db, notifier, logger });
+  // The Detector is made once the server listens; until then a publish tells nobody.
+  let detector: Detector | undefined;
   const deps: AppDeps = {
     db,
     bus,
+    onPolicyPublished: (policy) => detector?.policyPublished(policy),
     signer,
     attestation,
     shutdown: shutdown.signal,
@@ -156,8 +159,9 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const { server } = listening;
   const graceMs = options.shutdownGraceMs ?? 2_000;
   // Started once the server listens: a failed start leaves nothing subscribed.
-  const detector = createDetector({ db, bus, notifier, now: options.now, logger, patches: options.patches });
-  const stopDetector = detector.start();
+  const started = createDetector({ db, bus, notifier, now: options.now, logger, patches: options.patches });
+  detector = started;
+  const stopDetector = started.start();
 
   let closing: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
@@ -177,7 +181,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     // 4. No Event or beacon report arrives any more: the Detector stops, and both finish their writes, which may
     // queue alerts. 5. The alert queue drains (bounded wait), then the database closes.
     stopDetector();
-    await detector.flush();
+    await started.flush();
     await beacon.flush();
     await exposureIncidents.flush();
     await notifier.drain();

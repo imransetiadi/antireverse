@@ -149,6 +149,7 @@ describe("shield.express(): one Event per request, from the allowlist only", () 
     expect(Object.keys(event.decision ?? {}).sort()).toEqual([
       "action",
       "containment_id",
+      "limit_rule_id",
       "mode",
       "patch_body",
       "patch_id",

@@ -29,6 +29,12 @@
 // budget). Modes are kept per App, Environment and patch; enforcing needs `confirm` equal to the patch id (400
 // otherwise). Every fifth streamed Event names an active patch, alternating body checked and unchecked, and the
 // first App also gets an open "Exploit attempt" Incident for the high Finding's advisory.
+// Slice 08: a Rule may carry a limit (action throttle; requests 1–100,000 per window of 1–3,600 s, per ip or
+// device, counting requests or failures; never beside `requires`), checked as the API checks it. The current
+// development Policy has a "Login protection" limit Rule in monitor mode and the production Policy an enforced
+// "API rate" limit Rule. Every eighth streamed Event is a throttle decision of the App's limit Rule (429 on the
+// Rule's pattern when enforced; the response unchanged in monitor), and the first App also gets an open
+// "Credential stuffing" Incident whose evidence mixes failed logins (401) and throttled requests (429).
 // Channel URLs and signing secrets are never logged or returned after creation. Not used by any test.
 //
 //   PORT=39201 node apps/console/scripts/stub-api.mjs
@@ -118,6 +124,27 @@ function publish(appId, environment, rules, at = new Date()) {
   return currentPolicy(appId, environment);
 }
 
+/** The limit of a Rule as stored (`count` defaults to requests), or null when there is none or it is refused. */
+function checkLimit(limit, at) {
+  if (limit === undefined) return null;
+  if (limit === null || typeof limit !== "object") {
+    at("limit", "Expected an object");
+    return null;
+  }
+  const whole = (value, max) => Number.isInteger(value) && value >= 1 && value <= max;
+  const count = limit.count ?? "requests";
+  let ok = true;
+  const refuse = (member, message) => {
+    ok = false;
+    at(`limit.${member}`, message);
+  };
+  if (!whole(limit.requests, 100_000)) refuse("requests", "Expected a whole number from 1 to 100000");
+  if (!whole(limit.window_s, 3_600)) refuse("window_s", "Expected a whole number from 1 to 3600");
+  if (limit.key !== "ip" && limit.key !== "device") refuse("key", "Invalid option");
+  if (count !== "requests" && count !== "failures") refuse("count", "Invalid option");
+  return ok ? { requests: limit.requests, window_s: limit.window_s, key: limit.key, count } : null;
+}
+
 /** The problems of a publish request as `errors[]`, or the Rules ready to store. */
 function checkRules(body) {
   if (!Array.isArray(body?.rules)) return { errors: [{ path: "rules", message: "Expected an array" }] };
@@ -137,13 +164,21 @@ function checkRules(body) {
         if (typeof method !== "string" || !/^[A-Z-]{1,16}$/.test(method)) at(`methods.${n}`, "Invalid method");
       });
     }
-    if ((rule?.action ?? "block") !== "block") at("action", "Invalid option");
+    // Slice 08: a limit makes the action throttle, and the reverse; without an action a limit implies throttle.
+    const limit = checkLimit(rule?.limit, at);
+    const action = rule?.action ?? (limit ? "throttle" : "block");
+    if (action !== "block" && action !== "throttle") at("action", "Invalid option");
+    else if (limit && action !== "throttle") at("action", "A Rule with a limit must have the action throttle.");
+    else if (!limit && action === "throttle" && rule?.limit === undefined)
+      at("limit", "A Rule with the action throttle must have a limit.");
+    if (limit && rule?.requires !== undefined) at("requires", "A Rule must not have both a requirement and a limit.");
     if (mode !== "monitor" && mode !== "enforce") at("mode", "Invalid option");
     else if (mode === "enforce" && rule?.path === "/**")
       at("mode", "A Rule on /** in Enforce mode would block every request");
     // Slice 04: the one requirement a Rule may carry; absent means none.
     if (rule?.requires !== undefined && rule.requires !== "signature") at("requires", "Invalid option");
-    const stored = { id: rule?.id, name, path: rule?.path, methods, action: "block", mode };
+    const stored = { id: rule?.id, name, path: rule?.path, methods, action, mode };
+    if (limit) return { ...stored, limit };
     return rule?.requires === "signature" ? { ...stored, requires: "signature" } : stored;
   });
   return errors.length > 0 ? { errors } : { rules };
@@ -161,7 +196,8 @@ function broadErrors(rules, allowBroad) {
 
 /**
  * Two versions in development, one in production, none in staging: every state of the Policy screen. The current
- * development version has a Rule that requires a signed request.
+ * development version has a Rule that requires a signed request and a limit Rule in monitor mode (the Login
+ * protection preset); production has an enforced limit Rule.
  */
 function seedPolicies(appId) {
   const hour = 3_600_000;
@@ -182,14 +218,31 @@ function seedPolicies(appId) {
     mode: "monitor",
     requires: "signature",
   };
+  // Slice 08: what the Login protection preset fills in, on the stub's login route.
+  const login = {
+    name: "Login protection",
+    path: "/api/login",
+    methods: ["POST"],
+    action: "throttle",
+    mode: "monitor",
+    limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+  };
+  const rate = {
+    name: "API rate",
+    path: "/api/**",
+    methods: [],
+    action: "throttle",
+    mode: "enforce",
+    limit: { requests: 100, window_s: 60, key: "device", count: "requests" },
+  };
   const first = publish(appId, "development", [admin], new Date(Date.now() - 2 * hour));
   publish(
     appId,
     "development",
-    [{ ...first.rules[0], mode: "enforce" }, exports, checkout],
+    [{ ...first.rules[0], mode: "enforce" }, exports, checkout, login],
     new Date(Date.now() - hour),
   );
-  publish(appId, "production", [{ ...admin, mode: "enforce" }], new Date(Date.now() - hour));
+  publish(appId, "production", [{ ...admin, mode: "enforce" }, rate], new Date(Date.now() - hour));
 }
 
 const sha256Hex = (value) => createHash("sha256").update(value).digest("hex");
@@ -284,8 +337,18 @@ function decide(app, n, route, status) {
     rule_id: null,
     policy_version: policy.version,
   };
-  const enforced = policy.rules.find((rule) => rule.mode === "enforce");
-  const monitored = policy.rules.find((rule) => rule.mode === "monitor");
+  // Slice 08: every eighth request is over the limit of the Policy's limit Rule. Enforced, Shield answers 429
+  // on the Rule's pattern; in monitor the response is unchanged and the Event records the throttle.
+  const limited = policy.rules.find((rule) => rule.action === "throttle");
+  if (limited && n % 8 === 6) {
+    const decision = { action: "throttle", mode: limited.mode, rule_id: limited.id, policy_version: policy.version };
+    const method = limited.methods[0] ?? "GET";
+    return limited.mode === "enforce"
+      ? { method, route: limited.path, status: 429, decision }
+      : { method, route: limited.path, status: limited.limit.count === "failures" ? 401 : 200, decision };
+  }
+  const enforced = policy.rules.find((rule) => rule.mode === "enforce" && rule.action === "block");
+  const monitored = policy.rules.find((rule) => rule.mode === "monitor" && rule.action === "block");
   if (enforced && n % 3 === 1) {
     const decision = { action: "block", mode: "enforce", rule_id: enforced.id, policy_version: policy.version };
     return { route: enforced.path, status: 403, decision };
@@ -330,8 +393,9 @@ const signatureFor = (n) => SIGNATURES[n % SIGNATURES.length];
 
 function makeEvent(organizationId, app, n) {
   const now = Date.now();
-  const [method, template, templateStatus] = ROUTES[n % ROUTES.length];
+  const [templateMethod, template, templateStatus] = ROUTES[n % ROUTES.length];
   const decided = decide(app, n, template, templateStatus);
+  const method = decided.method ?? templateMethod;
   // Every fifth Event matched an active, shipped virtual patch (slice 20).
   const patched = n % 5 === 3 ? patchDecision(organizationId, app, n, decided.decision.policy_version) : null;
   const { route, status, decision } = patched
@@ -361,6 +425,7 @@ function makeEvent(organizationId, app, n) {
 const RULES = {
   "blocked-burst": { title: "Blocked burst", severity: "high", threshold: 20 },
   "failed-signin-burst": { title: "Failed sign-in burst", severity: "medium", threshold: 30 },
+  "credential-stuffing": { title: "Credential stuffing", severity: "high", threshold: 50 },
   "canary-touched": { title: "Canary used", severity: "high", threshold: 1 },
   "clone-origin": { title: "Clone detected", severity: "high", threshold: 1 },
 };
@@ -380,6 +445,35 @@ function evidenceEvent(organizationId, app, rule, prefix, at, canary, ipHash = n
       signals: [{ id: `canary.touched:${canary.id}`, confidence: 1 }],
       attestation: { status: "missing", verdict: null, risk: null },
       signature: { status: "missing", body: null },
+      organization_id: organizationId,
+      app_id: app.id,
+      environment: app.environment,
+      received_at: new Date(at + 150).toISOString(),
+    };
+  }
+  if (rule === "credential-stuffing") {
+    // Slice 08: failed logins on the limit-protected route, and every third request refused by the limit Rule.
+    const limited = currentPolicy(app.id, app.environment).rules.find((one) => one.action === "throttle");
+    const step = Math.floor(at / 14_000);
+    const throttled = step % 3 === 0;
+    return {
+      event_id: uuidv7(at),
+      ts: new Date(at).toISOString(),
+      type: "request.decision",
+      surface: "api",
+      request: {
+        method: "POST",
+        route: limited?.path ?? "/api/login",
+        status: throttled ? 429 : 401,
+        latency_ms: throttled ? 0.4 : 38.7,
+      },
+      decision: throttled
+        ? { action: "throttle", mode: "enforce", rule_id: limited?.id ?? newId("rul"), policy_version: 2 }
+        : { action: "allow", mode: "enforce", rule_id: null, policy_version: 2 },
+      actor: { ip_prefix: prefix, ip_hash: ipHash },
+      signals: [],
+      attestation: attestationFor(step),
+      signature: signatureFor(step),
       organization_id: organizationId,
       app_id: app.id,
       environment: app.environment,
@@ -594,6 +688,14 @@ function seedIncidents(organizationId, app) {
           }),
         ]
       : []),
+    makeIncident(organizationId, app, {
+      rule: "credential-stuffing",
+      prefix: "198.51.100.0/24",
+      status: "open",
+      bursts: 2,
+      endMs: now - 3 * minute,
+      gapMs: 7 * minute,
+    }),
     makeIncident(organizationId, app, {
       rule: "blocked-burst",
       prefix: "203.0.113.0/24",

@@ -12,6 +12,7 @@ import { ModeTag } from "@/components/mode-tag.tsx";
 import { SubmitButton } from "@/components/submit-button.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
+import { limitText } from "./limit.ts";
 import { CELL, DATA, HEAD, STICKY } from "./table.ts";
 
 const COLUMNS = [
@@ -89,6 +90,7 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                     data-rule-id={rule.id}
                     data-mode={rule.mode}
                     data-requires={rule.requires}
+                    data-action={rule.action}
                     className={confirming ? "" : "border-border border-b"}
                   >
                     <th scope="row" id={nameId} className={`${CELL} ${STICKY} min-w-32 break-words text-start body-4`}>
@@ -108,6 +110,22 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                           >
                             <Icon name="signature" />
                             {t("policy.rule.requires.tag")}
+                          </span>
+                        ) : null}
+                        {/* Slice 08: the limit in words, with the glyph of the Throttled decision. */}
+                        {rule.limit ? (
+                          <span
+                            data-testid="rule-limit"
+                            className="inline-flex min-h-6 items-center gap-1 rounded-control border border-border-strong border-solid px-2 caption-1 text-fg"
+                          >
+                            <Icon name="hourglass-medium" />
+                            {limitText(rule.limit)}
+                          </span>
+                        ) : null}
+                        {/* Counters live in each Shield instance: with several, the effective limit is higher. */}
+                        {rule.limit && rule.mode === "enforce" ? (
+                          <span data-testid="rule-limit-note" className="body-5 text-fg-muted">
+                            {t("policy.limit.instance")}
                           </span>
                         ) : null}
                       </div>
@@ -174,7 +192,10 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                     <tr key={`${rule.id}-confirm`} className="border-border border-b">
                       <td colSpan={COLUMNS.length} className="px-3 pt-1 pb-3">
                         <ConfirmPanel
-                          question={t("policy.confirm.promote", { environment, path: rule.path })}
+                          question={t(rule.limit ? "policy.confirm.promote.throttle" : "policy.confirm.promote", {
+                            environment,
+                            path: rule.path,
+                          })}
                           confirmLabel={t("policy.rule.promote")}
                           cancelHref={ROUTES.policy(appId, environment)}
                           action={modeAction}

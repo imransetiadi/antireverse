@@ -61,6 +61,7 @@ describe("ShieldEventSchema", () => {
       containment_id: null,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
     expect(parsed.actor).toEqual({ ip_prefix: "203.0.113.0/24", ip_hash: null });
     expect(parsed.attestation).toBeNull();
@@ -158,6 +159,23 @@ describe("ShieldEventSchema", () => {
     expect(accepts(withDecision({ policy_version: 1.5 }))).toBe(false);
   });
 
+  it("round-trips a throttle decision of a limit Rule in monitor and in enforce through JSON (slice 08)", () => {
+    for (const mode of ["monitor", "enforce"] as const) {
+      const event = {
+        ...EXAMPLE_SHIELD_EVENT,
+        request: { ...EXAMPLE_SHIELD_EVENT.request, status: mode === "enforce" ? 429 : 401 },
+        decision: {
+          ...EXAMPLE_SHIELD_EVENT.decision,
+          action: "throttle" as const,
+          mode,
+          rule_id: "rul_fedcba9876543210fedcba98",
+          policy_version: 3,
+        },
+      };
+      expect(ShieldEventSchema.parse(JSON.parse(JSON.stringify(event))), mode).toEqual(event);
+    }
+  });
+
   it("limits actor.ip_prefix to null or at most 64 characters", () => {
     expect(accepts({ ...EXAMPLE_SHIELD_EVENT, actor: { ip_prefix: null } })).toBe(true);
     expect(accepts({ ...EXAMPLE_SHIELD_EVENT, actor: { ip_prefix: "2001:db8:abcd::/48" } })).toBe(true);
@@ -226,6 +244,7 @@ describe("ShieldEventSchema: actor.ip_hash and decision.containment_id (slice 09
         containment_id: CONTAINMENT,
         patch_id: null,
         patch_body: null,
+        limit_rule_id: null,
       },
       actor: { ip_prefix: "203.0.113.0/24", ip_hash: HASH },
     };
@@ -278,6 +297,70 @@ describe("ShieldEventSchema: actor.ip_hash and decision.containment_id (slice 09
   });
 });
 
+describe("ShieldEventSchema: decision.limit_rule_id (slice 08, amendment A7)", () => {
+  const RULE = "rul_0123456789abcdef01234567";
+  /** An Event as a Shield from before amendment A7 sends it: no limit_rule_id. */
+  const older = () => {
+    const { limit_rule_id: _limit, ...decision } = EXAMPLE_SHIELD_EVENT.decision;
+    return { ...EXAMPLE_SHIELD_EVENT, decision };
+  };
+
+  it("documents an Event without a failure limit: limit_rule_id null", () => {
+    expect(EXAMPLE_SHIELD_EVENT.decision.limit_rule_id).toBeNull();
+  });
+
+  it("still parses an older Shield's Event and batch, and keeps absent apart from null", () => {
+    // Absent: an older Shield, which never stamps the Rule (the API falls back to its coverage guess). Null: a Shield
+    // that stamps it and found no failure-counting limit Rule. Parsing must not turn one into the other.
+    expect(older().decision).not.toHaveProperty("limit_rule_id");
+    const parsed = ShieldEventSchema.parse(older());
+    expect(parsed.decision).not.toHaveProperty("limit_rule_id");
+    expect(parsed).toEqual(older());
+    const batch = EventBatchSchema.parse({ ...EXAMPLE_EVENT_BATCH, events: [older()] });
+    expect(batch.events[0]?.decision).not.toHaveProperty("limit_rule_id");
+    const stored = StoredEventSchema.parse(JSON.parse(JSON.stringify({ ...EXAMPLE_STORED_EVENT, ...older() })));
+    expect(stored.decision).not.toHaveProperty("limit_rule_id");
+    const withNull = ShieldEventSchema.parse(EXAMPLE_SHIELD_EVENT);
+    expect(withNull.decision).toHaveProperty("limit_rule_id", null);
+    expect(ShieldEventSchema.parse(withDecision({ limit_rule_id: undefined })).decision.limit_rule_id).toBeUndefined();
+  });
+
+  it("names the failure-counting limit Rule of a request, whether or not it throttled", () => {
+    // Allowed and answered 401 by the application: the Rule counted the failure.
+    expect(accepts(withDecision({ action: "allow", mode: "enforce", limit_rule_id: RULE }))).toBe(true);
+    // Throttled by that Rule.
+    expect(accepts(withDecision({ action: "throttle", mode: "enforce", rule_id: RULE, limit_rule_id: RULE }))).toBe(
+      true,
+    );
+    expect(accepts(withDecision({ limit_rule_id: null }))).toBe(true);
+  });
+
+  it.each([
+    "rul_0123",
+    "rul_0123456789ABCDEF01234567",
+    "rul_0123456789abcdef012345678",
+    "cnt_0123456789abcdef01234567",
+    "vp_qs_proto",
+    "",
+    7,
+    true,
+    ["rul_0123456789abcdef01234567"],
+  ])("rejects the limit rule id %j: a Rule identifier or null", (value) => {
+    expect(accepts(withDecision({ limit_rule_id: value }))).toBe(false);
+  });
+
+  it("round-trips through JSON in an Event and a stored Event", () => {
+    const decided: ShieldEvent = {
+      ...EXAMPLE_SHIELD_EVENT,
+      request: { ...EXAMPLE_SHIELD_EVENT.request, method: "POST", route: "/login", status: 401 },
+      decision: { ...EXAMPLE_SHIELD_EVENT.decision, mode: "enforce", policy_version: 3, limit_rule_id: RULE },
+    };
+    expect(ShieldEventSchema.parse(JSON.parse(JSON.stringify(decided)))).toEqual(decided);
+    const stored: StoredEvent = { ...EXAMPLE_STORED_EVENT, ...decided };
+    expect(StoredEventSchema.parse(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+  });
+});
+
 describe("ShieldEventSchema: decision.patch_id (slice 20)", () => {
   const PATCH = "vp_qs_proto";
   /** An Event exactly as a Shield from before slice 20 sends it: neither patch_id nor patch_body. */
@@ -323,6 +406,7 @@ describe("ShieldEventSchema: decision.patch_id (slice 20)", () => {
           containment_id: null,
           patch_id: PATCH,
           patch_body: "checked",
+          limit_rule_id: null,
         },
       };
       expect(ShieldEventSchema.parse(JSON.parse(JSON.stringify(decided)))).toEqual(decided);

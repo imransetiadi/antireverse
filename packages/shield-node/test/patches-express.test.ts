@@ -187,6 +187,7 @@ const patchDecision = (patch: BundlePatch, body: "checked" | "unchecked" | "unde
   containment_id: null,
   patch_id: patch.id,
   patch_body: body,
+  limit_rule_id: null,
 });
 const ALLOW = {
   action: "allow",
@@ -196,6 +197,7 @@ const ALLOW = {
   containment_id: null,
   patch_id: null,
   patch_body: null,
+  limit_rule_id: null,
 };
 
 describe("a patch in monitor", () => {
@@ -289,6 +291,7 @@ describe("the order: Containment, then Rules, then patches", () => {
       rule_id: ADMIN("monitor").id,
       patch_id: null,
       patch_body: null,
+      limit_rule_id: null,
     });
   });
 
@@ -498,6 +501,7 @@ describe("review fixes (A6)", () => {
       mode: "monitor",
       patch_id: LODASH.id,
       patch_body: "undecodable",
+      limit_rule_id: null,
     });
   });
 

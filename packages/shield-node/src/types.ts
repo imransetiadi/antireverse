@@ -1,5 +1,6 @@
 // The public contract of Shield (plan contract C3). Types only, plus the constants the contract names.
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { CounterStore } from "./counters.ts";
 
 /** `sdk.name` of every batch Shield sends. */
 export const SDK_NAME = "shield-node";
@@ -104,6 +105,15 @@ export interface ShieldConfig {
   inventory?: boolean;
   /** The folder whose lockfile the inventory reads. Default: `process.cwd()` when Shield is created. */
   projectRoot?: string;
+  /**
+   * Where limit Rules count (slice 08). Default: a `MemoryCounterStore` of this Shield — in memory, per instance, at
+   * most 100,000 keys. With several instances each counts for itself, so the effective limit is the configured one
+   * times the number of instances. A custom store must answer synchronously (the request path never waits) and may
+   * throw: Shield then lets the request proceed. The keys it is given hold no address and no device id: the client
+   * part is a hash keyed with a random secret of this process, so they cannot be shared between instances either. A
+   * value that is not a counter store (no `hit` and `peek` functions) is replaced by the default with one warning.
+   */
+  counterStore?: CounterStore;
 }
 
 /**
@@ -115,6 +125,10 @@ export interface ShieldConfig {
  *   request proceeds; the Event says what Enforce mode would have done.
  * - No Rule matched: `{ action: "allow", ruleId: null, policyVersion }`, in mode `"monitor"` under the built-in
  *   Policy (version 0) and `"enforce"` under a published one.
+ *
+ * Limit Rules (slice 08) are not part of it: they count requests, which `decide` — a pure reading of the Policy —
+ * never does. The middleware applies them after this Decision (429 with `Retry-After` in Enforce mode) and records
+ * the action `throttle` on the Event.
  */
 export interface Decision {
   action: "allow" | "block";
@@ -163,7 +177,7 @@ export interface ShieldStats {
   policyVersion: number;
   /** The applied Policy is past its `not_after`: the API was not reached for days. Its Rules still apply. */
   policyStale: boolean;
-  /** Rules of the applied Policy. */
+  /** Rules of the applied Policy: plain Rules, signature requirement Rules and limit Rules. */
   policyRules: number;
   /**
    * Why the most recent request for the Policy Bundle changed nothing: the API was not reached, or its answer was

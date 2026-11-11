@@ -38,6 +38,10 @@ export type AlertChannelKind = (typeof ALERT_CHANNEL_KINDS)[number];
  * Incident's severity may differ from the table's `severity`, which is the rule's nominal level.
  * `exploit-attempt` (slice 20) counts Events whose decision names a Virtual patch (`decision.patch_id`), per (App,
  * Environment, advisory): the first match opens a High Incident with `advisory_id` set.
+ * `credential-stuffing` (slice 08) counts Events on limit-protected routes: those whose decision names a limit Rule
+ * (`decision.action` throttle), and those with status 401, 403 or 429 on a route a limit Rule of the published
+ * Policy covers. Like `blocked-burst` it records its Detection on reaching `threshold`: the 50th such Event in
+ * 5 minutes from one network prefix.
  * Deeply frozen: no consumer can change a threshold at run time.
  */
 export const DETECTION_RULES = deepFreeze([
@@ -47,6 +51,7 @@ export const DETECTION_RULES = deepFreeze([
   { key: "clone-origin", title: "Clone detected", severity: "high", threshold: 1, window_s: 3600 },
   { key: "vulnerable-component", title: "Vulnerable component", severity: "high", threshold: 1, window_s: 3600 },
   { key: "exploit-attempt", title: "Exploit attempt", severity: "high", threshold: 1, window_s: 3600 },
+  { key: "credential-stuffing", title: "Credential stuffing", severity: "high", threshold: 50, window_s: 300 },
 ] as const satisfies readonly {
   key: string;
   title: string;

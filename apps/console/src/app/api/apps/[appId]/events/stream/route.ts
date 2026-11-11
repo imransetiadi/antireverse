@@ -38,7 +38,7 @@ export async function GET(
     upstream = await openEventStream(key, appId, request.signal);
   } catch {
     // The error is not forwarded: a transport error may quote the request it could not send.
-    return problem(502, "The Anti Reverse API could not be reached");
+    return problem(502, "The Airverse API could not be reached");
   }
 
   if (!upstream.ok || !upstream.body) {

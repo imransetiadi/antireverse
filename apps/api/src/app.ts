@@ -8,6 +8,7 @@ import type { AppEnv, Principal } from "./auth/authenticate.ts";
 import type { EventBus } from "./bus.ts";
 import type { Db } from "./db/db.ts";
 import { type BeaconRecorder, createBeaconRecorder } from "./detect/beacon.ts";
+import type { PolicyPublished } from "./detect/detector.ts";
 import { createIncidentQueue, type IncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger, redacting } from "./log.ts";
 import { createNotifier, type Notifier } from "./notify/notifier.ts";
@@ -40,6 +41,12 @@ export interface AppDeps {
   signer: Signer;
   /** The clock that stamps `received_at`, `published_at` and a bundle's `issued_at`. Default: the system clock. */
   now?: () => Date;
+  /**
+   * Told the App Environment's new latest Policy version after a publish or rollback committed. `startApi` passes
+   * the Detector's `policyPublished`, so that Events naming the new version are judged by its Rules at once.
+   * Default: nobody is told.
+   */
+  onPolicyPublished?: (policy: PolicyPublished) => void;
   /** Interval of the comment heartbeat on live streams, in milliseconds. Default: 15,000. */
   heartbeatMs?: number;
   /** Receives one line per request and one per unexpected error; never a key, a header or a body. */

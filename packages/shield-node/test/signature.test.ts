@@ -623,9 +623,12 @@ describe("tokens with cnf.jwk: Shield's token verifier keeps the session key and
     expect(checker.checkBound(policy, given, NOW_S).binding).toBe(first.binding); // from the cache
     const without = checker.checkBound(policy, helpers.token(key, { ...good, cnf: { jkt: session.jkt } }), NOW_S);
     expect(without).toMatchObject({ result: { status: "valid" }, binding: { jwk: null } });
+    // Slice 08: a valid token also names its device (`sub`), for device-keyed limits; any other result names none.
+    expect(first.device).toBe(good.sub);
     expect(checker.checkBound(policy, "x.y.z", NOW_S)).toEqual({
       result: { status: "invalid", verdict: null, risk: null },
       binding: null,
+      device: null,
     });
   });
 });

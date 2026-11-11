@@ -284,7 +284,7 @@ describe("FindingList", () => {
     render(<FindingList findings={[]} appNames={appNames} query={{}} clearHref="/findings" />);
     const empty = screen.getByTestId("findings-empty");
     expect(empty.textContent).toContain(
-      "No findings. Anti Reverse checks the packages your builds ship and your servers run against known advisories.",
+      "No findings. Airverse checks the packages your builds ship and your servers run against known advisories.",
     );
     expect(empty.textContent).toContain("antireverse harden");
     expect(empty.textContent).toContain("--register");

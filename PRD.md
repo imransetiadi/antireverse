@@ -458,7 +458,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 05 | Harden path: `ar-range` bundle protected on `balanced` → Build Manifest in Console → app tests still pass — **done 2026-11-10** | 01 |
 | 06 | Detection path: rule match → Incident → Slack/email/webhook alert — **done 2026-11-10** (Slack and signed webhook; email waits for a provider) | 01 |
 | 07 | Leak scan and Canaries: a planted secret fails the build; Canary use raises an Incident within 60 s — **done 2026-11-11** | 05, 06 |
-| 08 | Abuse rules: rate limiting and credential-stuffing protection on the login route | 02 |
+| 08 | Abuse rules: rate limiting and credential-stuffing protection on the login route — **done 2026-11-11** | 02 |
 | 09 | Containment: block an Actor from an Incident → enforced on all Shields within 30 s — **done 2026-11-11** | 02, 06 |
 | 10 | Clone Beacon: protected bundle served from an unauthorized origin raises an Incident — **done 2026-11-11** | 05, 06 |
 | 11 | Policy simulation: replay the last 24 h against a draft rule | 02, 06 |

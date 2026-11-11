@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, context: RouteContext<"/api/apps
     upstream = await fetchEventList(key, appId, request.signal);
   } catch {
     // The error is not forwarded: a transport error may quote the request it could not send.
-    return problem(502, "The Anti Reverse API could not be reached");
+    return problem(502, "The Airverse API could not be reached");
   }
 
   // The API's own answer — the list, or its 401 / 404 — with its own status and content type.

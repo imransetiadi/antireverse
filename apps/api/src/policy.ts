@@ -1,4 +1,10 @@
-import { isBroadPattern, type ParsedPolicyRuleInput, type PolicyRule, type ProblemError } from "@antireverse/protocol";
+import {
+  isBroadPattern,
+  type ParsedPolicyRuleInput,
+  type PolicyRule,
+  type ProblemError,
+  type RuleLimit,
+} from "@antireverse/protocol";
 import { newId } from "@antireverse/protocol/server";
 
 // What the API decides about the Rules of a Policy beyond their shape (the shape is the protocol's schema).
@@ -14,6 +20,8 @@ const EVERY_PATH = "/**";
  * may block most of the App's traffic: it is refused the same way unless `allowBroad` acknowledges it.
  * The message never quotes the pattern. A Rule with a requirement (`requires: "signature"`) is judged exactly like
  * a block Rule: in Enforce mode it blocks every request on its paths that does not meet the requirement.
+ * So is a Rule with a limit (action throttle, slice 08): in Enforce mode it refuses every request on its paths from a
+ * client over the limit, and a limit can be as low as one request an hour.
  */
 export function guardrailErrors(
   rules: ReadonlyArray<Pick<PolicyRule, "path" | "mode">>,
@@ -37,6 +45,11 @@ export function guardrailErrors(
     }
   }
   return errors;
+}
+
+/** A limit with its members in the documented order. */
+export function storedLimit(limit: RuleLimit): RuleLimit {
+  return { requests: limit.requests, window_s: limit.window_s, key: limit.key, count: limit.count };
 }
 
 /** One error per Rule that repeats the id of an earlier Rule, at `rules.<index>.id`. */
@@ -71,6 +84,9 @@ export function prepareRules(
       mode: rule.mode,
       // Only when set: a Rule without a requirement has no `requires` member, as before slice 04.
       ...(rule.requires === undefined ? {} : { requires: rule.requires }),
+      // Only when set: a Rule without a limit has no `limit` member, as before slice 08. Complete: `count` is
+      // written out, so a stored limit never depends on a default.
+      ...(rule.limit === undefined ? {} : { limit: storedLimit(rule.limit) }),
     })),
   };
 }

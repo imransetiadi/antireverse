@@ -395,6 +395,56 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
   });
 });
 
+describe("LiveFeed — Throttled Decisions (slice 08)", () => {
+  const RULE_ID = "rul_fedcba9876543210fedcba98";
+  const throttled = (mode: "enforce" | "monitor", status: number) =>
+    eventAt(1_000, {
+      request: { method: "POST", route: "/login", status, latency_ms: 0.3 },
+      decision: {
+        action: "throttle",
+        mode,
+        rule_id: RULE_ID,
+        policy_version: 3,
+        containment_id: null,
+        patch_id: null,
+        patch_body: null,
+      },
+    });
+  const decisionCell = (row: HTMLElement | undefined) =>
+    within(row as HTMLElement).getAllByRole("cell")[1] as HTMLElement;
+
+  it("draws an enforced throttle as a solid Throttled chip with its own glyph and colour, the route and the 429", () => {
+    renderFeed([throttled("enforce", 429)]);
+    const cell = decisionCell(rows()[0]);
+    const chip = within(cell).getByTestId("decision-chip");
+    expect(cell.textContent).toBe("Throttled");
+    expect(chip.getAttribute("data-decision")).toBe("throttle");
+    expect(chip.getAttribute("data-mode")).toBe("enforce");
+    expect(chip.className).toContain("border-solid");
+    expect(chip.className).toContain("text-dec-throttle");
+    expect(chip.querySelector("svg")?.getAttribute("data-shape")).toBe("hourglass-medium");
+    expect(within(cell).queryByTestId("mode-tag")).toBeNull();
+    const cells = within(rows()[0] as HTMLElement)
+      .getAllByRole("cell")
+      .map((one) => one.textContent);
+    expect(cells.slice(4, 7)).toEqual(["POST", "/login", "429"]);
+    // The row names no identifier of the Rule: like a Blocked row, it shows the Decision and the route.
+    expect((rows()[0] as HTMLElement).textContent).not.toContain(RULE_ID);
+  });
+
+  it("draws a throttle in Monitor mode dashed and hollow with the Monitor mark: the response was unchanged", () => {
+    renderFeed([throttled("monitor", 401)]);
+    const cell = decisionCell(rows()[0]);
+    const chip = within(cell).getByTestId("decision-chip");
+    expect(chip.textContent).toBe("Throttled");
+    expect(chip.getAttribute("data-mode")).toBe("monitor");
+    expect(chip.className).toContain("border-dashed");
+    expect(chip.className).toContain("bg-transparent");
+    expect(within(cell).getByTestId("mode-tag").textContent).toBe("Monitor");
+    expect(within(rows()[0] as HTMLElement).getAllByRole("cell")[6]?.textContent).toBe("401");
+  });
+});
+
 describe("LiveFeed — the stream", () => {
   it("connects once, to the Console's own proxy for this App", () => {
     const { source } = renderFeed();

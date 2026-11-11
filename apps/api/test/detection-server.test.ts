@@ -135,6 +135,61 @@ describe("startApi: detection and alerts", () => {
     }
   });
 
+  it("wires the publish hook: failures naming a version published a moment ago open Credential stuffing, not a Failed sign-in burst", async () => {
+    const r = await receiver();
+    closers.push(r.close);
+    const api = await startApi({ logger: captureLogger(), allowPrivateAlertUrls: true, alertBackoffMs: 5 });
+    running.push(api);
+    const { admin, shield, appId } = await setUp(api, r.url);
+    const publish = async (rules: unknown[]) => {
+      const res = await fetch(`${api.url}/v1/apps/${appId}/policies/development`, {
+        ...json({ rules }, bearer(admin)),
+        method: "PUT",
+      });
+      expect(res.status).toBe(201);
+    };
+    const failures = (version: number, count: number, status: number) =>
+      batchOf(
+        Array.from({ length: count }, (_, i) => ({
+          ...shieldEvent(Date.now() + i),
+          request: { method: "POST", route: "/login", status, latency_ms: 1 },
+          // A Shield from before plan amendment A7: no limit_rule_id, so the coverage guess judges it.
+          decision: (({ limit_rule_id: _stamp, ...legacy }) => ({ ...legacy, policy_version: version }))(
+            shieldEvent(0).decision,
+          ),
+          actor: { ip_prefix: "203.0.113.0/24", ip_hash: `iph_${String(i).padStart(32, "0")}` },
+        })),
+      );
+    const rules = async () =>
+      ListIncidentsResponseSchema.parse(
+        await (await fetch(`${api.url}/v1/incidents`, { headers: bearer(admin) })).json(),
+      ).incidents.map((incident) => incident.rule);
+
+    // Version 1 without a limit Rule; one Event makes the Detector read that it is the latest.
+    await publish([{ name: "Admin", path: "/api/admin/**" }]);
+    expect((await fetch(`${api.url}/v1/events`, json(failures(1, 1, 401), bearer(shield)))).status).toBe(202);
+    await tick(100);
+    // Version 2 protects the login route; the failures naming it follow at once.
+    await publish([
+      {
+        name: "Login protection",
+        path: "/login",
+        methods: ["POST"],
+        limit: { requests: 10, window_s: 300, key: "ip", count: "failures" },
+      },
+    ]);
+    expect((await fetch(`${api.url}/v1/events`, json(failures(2, 50, 401), bearer(shield)))).status).toBe(202);
+    await within(
+      (async () => {
+        while ((await rules()).length === 0) await tick(10);
+      })(),
+      5_000,
+      "the Incident",
+    );
+    await tick(100);
+    expect(await rules()).toEqual(["credential-stuffing"]);
+  });
+
   it("drains an alert in flight on close() before the database closes", async () => {
     const r = await receiver(200);
     closers.push(r.close);
