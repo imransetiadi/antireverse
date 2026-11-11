@@ -21,10 +21,26 @@
 // signature verify and nonce check), cold (token and key never seen: token verify, key import, signature verify,
 // nonce insert), and a replay (the same signed headers every time: verify, then the nonce is found). Signed runs make
 // fewer iterations so that the fresh nonces of one run stay below the 100,000-entry nonce store.
+// A sixth run (slice 20) adds Virtual patches to the fifth run's bundle: 50 patches, as many conditions each as the
+// bundle's 16,384-byte `patches` budget allows, measured against PB-01. The conditions are built so that every one
+// but the last holds for the benchmark request, and the last fails: every condition of every patch is evaluated and
+// no patch decides. 50 patches × 8 such conditions do not fit in the budget, so a last run applies exactly that
+// (built in the process, beyond what a bundle can carry) behind the middleware, with the 50 Rules, as the bound of
+// the cost (`PATCH_LIMITS`: at most 50 patches × 8 conditions per request).
+// A last run (amendment A6, F8) measures the body side: the nine patches of the first catalog (qs, lodash, xml2js;
+// copied here, the bench imports nothing of the API) in a bundle, and a benign 100 KB JSON body with `\u00e9`
+// escapes (so the JSON-escape form is a second form to scan) through the middleware and `shield.verifyBody`. Each
+// distinct form of the body is lower-cased once and every body condition searches it with the native `indexOf`.
+// Held to PB-01 (p99 <= 1.5 ms; Jev native_indexof_latin1).
 import { createHash, createHmac, generateKeyPairSync, type KeyObject, randomBytes, sign } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { setImmediate as tick } from "node:timers/promises";
+import { decide } from "../src/decide.ts";
+import { createExpressMiddleware } from "../src/express.ts";
 import { createShield, type Shield, type ShieldMiddleware } from "../src/index.ts";
+import { createPatchChecker, type PatchInput, readPatch } from "../src/patches.ts";
+import { compilePattern } from "../src/policy/match.ts";
+import { buildPolicy, routeOfDecision } from "../src/policy/store.ts";
 
 const ITERATIONS = 200_000;
 const WARMUP = 20_000;
@@ -298,9 +314,68 @@ function signedHeaders(
   };
 }
 
+/** Patches in the bundle and conditions in a patch at most (`PATCH_LIMITS` of the protocol). */
+const PATCHES = 50;
+const CONDITIONS_MAX = 8;
+const PATCH_BUDGET_BYTES = 16_384;
+/** The query key of the probe patch: a request that carries it is refused, to check that the patches were applied. */
+const PROBE_KEY = "__bench_probe__";
+
+/**
+ * Conditions that all hold for the first scenario's request (`GET /api/products/42?token=secret` with the Canary
+ * run's headers), each a different target and operator; the patch's last condition (`failing`) never holds.
+ */
+const HOLDING = [
+  { target: "path", op: "contains", value: "products" },
+  { target: "query_key", op: "equals", value: "token" },
+  { target: "query_value", name: "token", op: "starts_with", value: "sec" },
+  { target: "header", name: "x-api-key", op: "contains", value: "ak_live_" },
+  { target: "header_name", op: "ends_with", value: "-key" },
+  { target: "method", op: "equals", value: "GET" },
+  { target: "path", op: "length_over", value: "5" },
+];
+const failing = (i: number) => ({ target: "query_value", op: "contains", value: `no-such-value-${i}` });
+
+/**
+ * `count` patches of `conditions` conditions each (all holding but the last), alternately enforce and monitor; with
+ * `probe`, the first is replaced by an enforced patch on `PROBE_KEY`.
+ */
+function benchPatches(count: number, conditions: number, probe: boolean): PatchInput[] {
+  return Array.from({ length: count }, (_, i) => {
+    const id = `vp_bench_${String(i).padStart(2, "0")}`;
+    if (probe && i === 0) {
+      return {
+        id,
+        mode: "enforce",
+        conditions: [{ target: "query_key", op: "equals", value: PROBE_KEY }],
+        advisory: "CVE-2026-10001",
+      } as PatchInput;
+    }
+    return {
+      id,
+      mode: i % 2 === 0 ? "enforce" : "monitor",
+      conditions: [...HOLDING.slice(0, conditions - 1), failing(i)],
+      advisory: "CVE-2026-10001",
+    } as PatchInput;
+  });
+}
+
+/** The most conditions per patch (≤ 8) for which 50 patches fit in the bundle's patch budget. */
+const BUNDLE_CONDITIONS = (() => {
+  for (let c = CONDITIONS_MAX; c >= 1; c--) {
+    if (Buffer.byteLength(JSON.stringify(benchPatches(PATCHES, c, true)), "utf8") <= PATCH_BUDGET_BYTES) return c;
+  }
+  return 1;
+})();
+
 /** What the API would answer for `GET /v1/policy-bundle`: a bundle of 50 Rules, signed with `privateKey`. */
 const signing = generateKeyPairSync("ed25519");
-function signedBundle(withCanaries: boolean, withContainment: boolean, withAttestation = false): string {
+function signedBundle(
+  withCanaries: boolean,
+  withContainment: boolean,
+  withAttestation = false,
+  withPatches = false,
+): string {
   const bundle = JSON.stringify({
     format: 1,
     audience: createHash("sha256").update(KEY, "utf8").digest("hex").slice(0, 32),
@@ -316,12 +391,13 @@ function signedBundle(withCanaries: boolean, withContainment: boolean, withAttes
     ...(withAttestation
       ? { attestation_keys: attestationKeys.map((key) => ({ kid: key.kid, public_key: key.raw })) }
       : {}),
+    ...(withPatches ? { patches: benchPatches(PATCHES, BUNDLE_CONDITIONS, true) } : {}),
   });
   const signature = sign(null, Buffer.from(bundle, "utf8"), signing.privateKey).toString("base64url");
   return JSON.stringify({ bundle, signature, key_id: "0123456789abcdef" });
 }
 
-type Run = "built-in" | "rules" | "canaries" | "containment" | "attestation";
+type Run = "built-in" | "rules" | "canaries" | "containment" | "attestation" | "patches";
 
 /** Batch bodies handed to the transport, kept only until the Canary check has read them. */
 let sentBodies: string[] = [];
@@ -337,8 +413,9 @@ function makeShield(run: Run): Shield {
     // Batches are built and handed over, nothing is sent; the Policy request is answered from memory.
     transport: async (request) => {
       if (request.method === "GET") {
-        const full = run === "containment" || run === "attestation";
-        const body = signedBundle(run === "canaries" || full, full, run === "attestation");
+        const full = run === "containment" || run === "attestation" || run === "patches";
+        const attested = run === "attestation" || run === "patches";
+        const body = signedBundle(run === "canaries" || full, full, attested, run === "patches");
         return { status: 200, body, etag: '"bench"' };
       }
       if (sentBodies.length < 10) sentBodies.push(request.body ?? "");
@@ -391,7 +468,7 @@ let worst = 0;
 let worstAttested = 0;
 let internalErrors = 0;
 const attestedResults: string[] = [];
-for (const run of ["built-in", "rules", "canaries", "containment", "attestation"] as const) {
+for (const run of ["built-in", "rules", "canaries", "containment", "attestation", "patches"] as const) {
   const withRules = run !== "built-in";
   const shield = makeShield(run);
   if (withRules) {
@@ -411,6 +488,43 @@ for (const run of ["built-in", "rules", "canaries", "containment", "attestation"
     }
   }
   const middleware = shield.express();
+  if (run === "patches") {
+    // The patches must be applied: the probe patch refuses a request that carries its key, and nothing of the
+    // request (its query) leaves the process.
+    sentBodies = [];
+    const res = new ResponseDouble();
+    middleware(requestDouble(`/check?${PROBE_KEY}=1`, NO_HEADERS), res as unknown as ServerResponse, next);
+    res.close?.();
+    await shield.flush();
+    const sent = sentBodies.join("\n");
+    if (res.statusCode !== 403 || !sent.includes('"patch_id":"vp_bench_00","patch_body":"checked"')) {
+      console.error(`FAIL: the ${PATCHES} patches were not applied (the probe was answered ${res.statusCode}).`);
+      process.exit(1);
+    }
+    if (sent.includes(PROBE_KEY)) {
+      console.error("FAIL: a query key left the process.");
+      process.exit(1);
+    }
+    sentBodies = [];
+    console.log(
+      `\nAs the attestation run, plus ${PATCHES} Virtual patches × ${BUNDLE_CONDITIONS} conditions (the most that fit in the ${PATCH_BUDGET_BYTES}-byte patch budget; all but the last hold, none decides); every request carries the Canary run's headers (budget PB-01: p99 <= ${ATTESTED_BUDGET_P99_US} µs)`,
+    );
+    for (const scenario of scenarios) {
+      const result = await measure(middleware, scenario, CANARY_RUN_HEADERS);
+      worstAttested = Math.max(worstAttested, result.p99);
+      const line = `p50 ${result.p50.toFixed(2)} µs   p99 ${result.p99.toFixed(2)} µs   mean ${result.mean.toFixed(2)} µs   max ${result.max.toFixed(2)} µs`;
+      attestedResults.push(`patches, ${scenario.name}: ${line}`);
+      console.log(`  ${scenario.name}`);
+      console.log(`    ${line}`);
+    }
+    await shield.close();
+    const stats = shield.stats();
+    internalErrors += stats.internalErrors;
+    console.log(
+      `  Events: ${stats.sent.toLocaleString("en-US")} handed to the transport, ${stats.dropped.toLocaleString("en-US")} dropped by the full buffer, ${stats.internalErrors} internal errors`,
+    );
+    continue;
+  }
   if (run === "canaries" || run === "containment" || run === "attestation") {
     // The Canaries must be applied, or the run would measure nothing new: a decoy key must add its signal.
     sentBodies = [];
@@ -588,6 +702,177 @@ for (const run of ["built-in", "rules", "canaries", "containment", "attestation"
     `  Events: ${stats.sent.toLocaleString("en-US")} handed to the transport, ${stats.dropped.toLocaleString("en-US")} dropped by the full buffer, ${stats.internalErrors} internal errors`,
   );
 }
+// The bound of the cost: 50 patches × 8 conditions, which no bundle can carry within its patch budget, applied in the
+// process behind the middleware together with the 50 Rules. Measured against PB-01.
+{
+  const patches = benchPatches(PATCHES, CONDITIONS_MAX, false).map((patch) => {
+    const read = readPatch(patch);
+    if (typeof read === "string") throw new Error(`bench patch: ${read}`);
+    return read;
+  });
+  const rules = (fiftyRules() as { id: string; path: string; methods: string[]; mode: "monitor" | "enforce" }[]).map(
+    (rule) => {
+      const pattern = compilePattern(rule.path);
+      if (pattern === null) throw new Error("bench rule");
+      return { ...rule, pattern };
+    },
+  );
+  const policy = buildPolicy({
+    version: 1,
+    issuedAt: Date.now(),
+    notAfter: Date.now() + 86_400_000,
+    rules,
+    patches,
+  });
+  const checker = createPatchChecker();
+  let recorded = 0;
+  let errors = 0;
+  const middleware = createExpressMiddleware({
+    decide: (input) => decide(policy, input),
+    patches: (request, method, recordMonitor) => checker.evaluate(policy, request, method, false, recordMonitor),
+    routeOf: routeOfDecision,
+    record: () => {
+      recorded += 1;
+    },
+    now: Date.now,
+    clientAddress: undefined,
+    onInternalError: () => {
+      errors += 1;
+    },
+  });
+  const base = scenarios[0] as Scenario;
+  const result = await measure(middleware, base, CANARY_RUN_HEADERS);
+  worstAttested = Math.max(worstAttested, result.p99);
+  internalErrors += errors;
+  const line = `p50 ${result.p50.toFixed(2)} µs   p99 ${result.p99.toFixed(2)} µs   mean ${result.mean.toFixed(2)} µs   max ${result.max.toFixed(2)} µs`;
+  attestedResults.push(`${PATCHES} patches × ${CONDITIONS_MAX} conditions (bound): ${line}`);
+  console.log(
+    `\n${PATCHES} patches × ${CONDITIONS_MAX} conditions (the cost bound, beyond the bundle budget: applied in the process) and ${RULES} Rules, middleware only (budget PB-01)`,
+  );
+  console.log(`  ${base.name}`);
+  console.log(`    ${line}`);
+  console.log(`  Events: ${recorded.toLocaleString("en-US")} recorded, ${errors} internal errors`);
+}
+
+// The body side (A6, F8): the first catalog's patches against a 100 KB JSON body, middleware + verifyBody + close.
+{
+  const CATALOG_PATCHES = [
+    { id: "vp_qs_proto_query_key", conditions: [{ target: "query_key", op: "contains", value: "__proto__" }] },
+    { id: "vp_qs_proto_form_body", conditions: [{ target: "body", op: "contains", value: "[__proto__]" }] },
+    {
+      id: "vp_lodash_constructor_prototype",
+      conditions: [
+        { target: "body", op: "json_key", value: "constructor" },
+        { target: "body", op: "json_key", value: "prototype" },
+      ],
+    },
+    {
+      id: "vp_lodash_constructor_prototype_query",
+      conditions: [{ target: "query_key", op: "contains", value: "constructor[prototype]" }],
+    },
+    {
+      id: "vp_lodash_constructor_prototype_form",
+      conditions: [{ target: "body", op: "contains", value: "constructor[prototype]" }],
+    },
+    {
+      id: "vp_lodash_proto_json",
+      conditions: [
+        { target: "header", name: "content-type", op: "contains", value: "json" },
+        { target: "body", op: "json_key", value: "__proto__" },
+      ],
+    },
+    { id: "vp_lodash_proto_path", conditions: [{ target: "body", op: "contains", value: "__proto__." }] },
+    {
+      id: "vp_lodash_constructor_path",
+      conditions: [{ target: "body", op: "contains", value: "constructor.prototype" }],
+    },
+    { id: "vp_xml2js_proto_element", conditions: [{ target: "body", op: "contains", value: "<__proto__" }] },
+  ].map((patch) => ({ ...patch, mode: "enforce", advisory: "CVE-2026-10001" }));
+  const bundle = JSON.stringify({
+    format: 1,
+    audience: createHash("sha256").update(KEY, "utf8").digest("hex").slice(0, 32),
+    epoch: "0123456789abcdef0123456789abcdef",
+    app_id: APP_ID,
+    environment: "development",
+    version: 1,
+    issued_at: new Date().toISOString(),
+    not_after: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+    rules: fiftyRules(),
+    patches: CATALOG_PATCHES,
+  });
+  const envelope = JSON.stringify({
+    bundle,
+    signature: sign(null, Buffer.from(bundle, "utf8"), signing.privateKey).toString("base64url"),
+    key_id: "0123456789abcdef",
+  });
+  const shield = createShield({
+    key: KEY,
+    endpoint: "http://127.0.0.1:9",
+    disabled: false,
+    actorKey: ACTOR_KEY,
+    flushIntervalMs: 50,
+    transport: async (request) =>
+      request.method === "GET" ? { status: 200, body: envelope, etag: '"body"' } : { status: 202 },
+    logger: { warn: () => {} },
+    policyPublicKey: signing.publicKey.export({ format: "jwk" }).x as string,
+    policyPollIntervalMs: 3_600_000,
+  });
+  await shield.refreshPolicy();
+  const items: unknown[] = [];
+  let json = "";
+  for (let i = 0; JSON.stringify({ items }).length < 100 * 1024; i++) {
+    items.push({ id: i, name: `item\u00e9 ${i}`, tags: ["a", "b"], price: i * 3 });
+  }
+  // `é` written as the JSON escape `é`: the body then has a second, JSON-escape-decoded form to scan.
+  json = JSON.stringify({ items }).replaceAll("é", "\\u00e9");
+  if (!json.includes("\\u00e9")) throw new Error("the bench body has no JSON escape");
+  const buffer = Buffer.from(json, "utf8");
+  const headers = { "content-type": "application/json", "content-length": String(buffer.length) };
+  const middleware = shield.express();
+  const ROUNDS = 2_000;
+  const nanos = new Float64Array(ROUNDS);
+  for (let i = -200; i < ROUNDS; i++) {
+    const req = { ...requestDouble("/api/items", headers), method: "POST" } as unknown as Routed;
+    const res = new ResponseDouble();
+    const started = process.hrtime.bigint();
+    middleware(req, res as unknown as ServerResponse, next);
+    shield.verifyBody(req, res as unknown as ServerResponse, buffer, "utf8");
+    res.close?.();
+    const elapsed = Number(process.hrtime.bigint() - started);
+    if (i >= 0) nanos[i] = elapsed;
+    if (res.statusCode !== 200) throw new Error("the benign 100 KB body was refused");
+    if (i % 100 === 0) await tick();
+  }
+  // The patches must be applied: the same body with a lodash key is refused.
+  const probe = Buffer.from(json.replace('"items"', '"constructor":{"prototype":{}},"items"'), "utf8");
+  let refused = false;
+  try {
+    const req = { ...requestDouble("/api/items", headers), method: "POST" } as unknown as Routed;
+    middleware(req, new ResponseDouble() as unknown as ServerResponse, next);
+    shield.verifyBody(req, new ResponseDouble() as unknown as ServerResponse, probe, "utf8");
+  } catch {
+    refused = true;
+  }
+  if (!refused) {
+    console.error("FAIL: the catalog patches were not applied to the body.");
+    process.exit(1);
+  }
+  nanos.sort();
+  const at = (quantile: number): number =>
+    (nanos[Math.min(ROUNDS - 1, Math.floor(ROUNDS * quantile))] as number) / 1_000;
+  let sum = 0;
+  for (const value of nanos) sum += value;
+  console.log(
+    `\nThe first catalog's ${CATALOG_PATCHES.length} patches and ${RULES} Rules; a benign ${(buffer.length / 1024).toFixed(1)} KB JSON body with \\u escapes through the middleware and verifyBody (${ROUNDS.toLocaleString("en-US")} calls; budget PB-01: p99 <= ${ATTESTED_BUDGET_P99_US} µs)`,
+  );
+  console.log(
+    `  p50 ${at(0.5).toFixed(2)} µs   p99 ${at(0.99).toFixed(2)} µs   mean ${(sum / ROUNDS / 1_000).toFixed(2)} µs   max ${at(1).toFixed(2)} µs`,
+  );
+  worstAttested = Math.max(worstAttested, at(0.99));
+  await shield.close();
+  internalErrors += shield.stats().internalErrors;
+}
+
 console.log("");
 if (internalErrors > 0) {
   console.error("FAIL: Shield reported internal errors during the benchmark.");

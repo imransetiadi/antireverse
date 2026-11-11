@@ -5,6 +5,8 @@ import type { AttestationKeys } from "../attestation/keys.ts";
 import { type AppEnv, presentedKey, requireKey } from "../auth/authenticate.ts";
 import { createBundleIssuer } from "../bundle.ts";
 import type { Db } from "../db/db.ts";
+import { bundlePatches } from "../patches/activation.ts";
+import type { PatchCatalog } from "../patches/catalog.ts";
 import { problem } from "../problem.ts";
 import type { Signer } from "../signer.ts";
 import { allowlistCidrs } from "../stores/allowlist.ts";
@@ -26,6 +28,8 @@ export function bundleRoutes(deps: {
   db: Db;
   signer: Signer;
   attestation: AttestationKeys;
+  /** The Virtual patch catalog: the App Environment's active patches travel in the bundle. */
+  patches: PatchCatalog;
   now?: () => Date;
 }): Hono<AppEnv> {
   const { db, signer } = deps;
@@ -54,12 +58,15 @@ export function bundleRoutes(deps: {
     // App and Environment's active blocks (by the clock: an expiry changes them too) and the Organization's
     // allowlist.
     const at = now();
-    const { epoch, policy, canaries, blocks, allowlist } = await db.tx({ organizationId }, async (q) => ({
+    // So are its active Virtual patches and their modes: a Finding opened, fixed, withdrawn or ignored, or a mode
+    // changed, is a new bundle.
+    const { epoch, policy, canaries, blocks, allowlist, patches } = await db.tx({ organizationId }, async (q) => ({
       epoch: await databaseEpoch(q),
       policy: await currentPolicy(q, { organizationId, appId, environment }),
       canaries: await activeCanaries(q, { organizationId, appId, environment }),
       blocks: await activeBlocks(q, { organizationId, appId, environment }, at),
       allowlist: await allowlistCidrs(q),
+      patches: await bundlePatches(q, deps.patches, { appId, environment }),
     }));
     const { signed, etag } = issuer.issue({
       audience: bundleAudience(key),
@@ -71,6 +78,7 @@ export function bundleRoutes(deps: {
       canaries,
       blocks,
       allowlist,
+      patches,
       // Read on every request: a rotation that fell due changes the set, so the bundle is issued again.
       attestationKeys: deps.attestation.attestationKeys(),
     });

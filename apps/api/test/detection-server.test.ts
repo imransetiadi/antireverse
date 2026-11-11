@@ -65,7 +65,15 @@ const blockedBatch = () =>
   batchOf(
     Array.from({ length: DETECTION_RULES[0].threshold }, (_, i) => ({
       ...shieldEvent(Date.now() + i),
-      decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+      decision: {
+        action: "block",
+        mode: "enforce",
+        rule_id: null,
+        policy_version: 1,
+        containment_id: null,
+        patch_id: null,
+        patch_body: null,
+      },
     })),
   );
 

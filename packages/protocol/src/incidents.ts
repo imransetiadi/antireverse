@@ -36,6 +36,8 @@ export type AlertChannelKind = (typeof ALERT_CHANNEL_KINDS)[number];
  * `vulnerable-component` counts new Critical or High Findings (slice 19), not Events, per (App, Environment,
  * advisory). Its Incident takes the Finding's severity (critical or high), so for this rule alone the
  * Incident's severity may differ from the table's `severity`, which is the rule's nominal level.
+ * `exploit-attempt` (slice 20) counts Events whose decision names a Virtual patch (`decision.patch_id`), per (App,
+ * Environment, advisory): the first match opens a High Incident with `advisory_id` set.
  * Deeply frozen: no consumer can change a threshold at run time.
  */
 export const DETECTION_RULES = deepFreeze([
@@ -44,6 +46,7 @@ export const DETECTION_RULES = deepFreeze([
   { key: "canary-touched", title: "Canary used", severity: "high", threshold: 1, window_s: 300 },
   { key: "clone-origin", title: "Clone detected", severity: "high", threshold: 1, window_s: 3600 },
   { key: "vulnerable-component", title: "Vulnerable component", severity: "high", threshold: 1, window_s: 3600 },
+  { key: "exploit-attempt", title: "Exploit attempt", severity: "high", threshold: 1, window_s: 3600 },
 ] as const satisfies readonly {
   key: string;
   title: string;
@@ -85,7 +88,7 @@ const RuleKeySchema = z.enum(RULE_KEYS);
 const IpPrefixSchema = z.string().regex(IP_PREFIX_PATTERN).nullable();
 /** The foreign origin a `clone-origin` Detection or Incident is about; null for every other rule. */
 const IncidentOriginSchema = OriginSchema.nullable();
-/** The advisory a `vulnerable-component` Incident is about; null for every other rule. */
+/** The advisory a `vulnerable-component` or `exploit-attempt` Incident is about; null for every other rule. */
 const IncidentAdvisoryIdSchema = AdvisoryIdSchema.nullable();
 /** The Canary a `canary-touched` Detection or Incident is about; null for every other rule. */
 const CanaryIdSchema = z.string().regex(ID_PATTERNS.cny).nullable();

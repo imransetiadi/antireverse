@@ -4,6 +4,7 @@ import { AppShell } from "@/components/app-shell.tsx";
 import { blockRequestFrom, liftFrom } from "@/features/containment/query.ts";
 import { IncidentDetail } from "@/features/incidents/incident-detail.tsx";
 import { confirmResolveFrom } from "@/features/incidents/query.ts";
+import { patchesOrNull, patchTitles } from "@/features/patches/load.ts";
 import { getApp, getBuild, getIncident, NotFoundError, UnauthorizedError } from "@/lib/api.ts";
 import { requireSession } from "@/lib/guard.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -19,8 +20,9 @@ function orIfGone<T>(fallback: T): (error: unknown) => T {
 async function load(key: string, incidentId: string) {
   try {
     const detail = await getIncident(key, incidentId);
-    const { app_id: appId, build_id: buildId } = detail.incident;
-    const [appName, canaryBuild] = await Promise.all([
+    const { app_id: appId, build_id: buildId, environment } = detail.incident;
+    const hasPatch = detail.evidence.some((event) => (event.decision.patch_id ?? null) !== null);
+    const [appName, canaryBuild, patches] = await Promise.all([
       // The App is gone: the Incident stays readable and names the App by its id.
       getApp(key, appId).then((response) => response.app.name, orIfGone(appId)),
       // A Canary Incident names its Build: the Build gives the Canary's kind and the version. Without it
@@ -28,8 +30,10 @@ async function load(key: string, incidentId: string) {
       buildId === null
         ? Promise.resolve(null)
         : getBuild(key, appId, buildId).then((response) => response.build, orIfGone(null)),
+      // Patch titles, only when the evidence names a patch: without them the ids are shown.
+      hasPatch ? patchesOrNull(key, appId, environment) : Promise.resolve(null),
     ]);
-    return { ...detail, appName, canaryBuild };
+    return { ...detail, appName, canaryBuild, patchTitles: patchTitles(patches) };
   } catch (error) {
     // An unknown Incident and an Incident of another Organization look the same.
     if (error instanceof NotFoundError) notFound();
@@ -46,7 +50,10 @@ export default async function IncidentPage({ params, searchParams }: PageProps<"
   const { key, organization } = await requireSession();
   const { incidentId } = await params;
   if (!ID_PATTERNS.inc.test(incidentId)) notFound();
-  const { incident, detections, evidence, actors, containments, appName, canaryBuild } = await load(key, incidentId);
+  const { incident, detections, evidence, actors, containments, appName, canaryBuild, patchTitles } = await load(
+    key,
+    incidentId,
+  );
   const query = await searchParams;
   const open = incident.status !== "resolved";
   const confirmLiftId = liftFrom(query.lift, containments);
@@ -71,6 +78,7 @@ export default async function IncidentPage({ params, searchParams }: PageProps<"
         now={Date.now()}
         block={block}
         confirmLiftId={confirmLiftId}
+        patchTitles={patchTitles}
       />
     </AppShell>
   );

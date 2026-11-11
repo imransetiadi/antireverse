@@ -152,6 +152,8 @@ describe("an Enforce Rule on /files/private/** in front of express.static", () =
         rule_id: PRIVATE.id,
         policy_version: 3,
         containment_id: null,
+        patch_id: null,
+        patch_body: null,
       });
     }
   });

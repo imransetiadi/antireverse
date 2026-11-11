@@ -326,7 +326,7 @@ export interface SignatureChecker {
 }
 
 /** A request has a body when `content-length` is above 0 or `transfer-encoding` is present. */
-function hasBody(request: IncomingMessage): boolean {
+export function hasBody(request: IncomingMessage): boolean {
   const headers = request.headers ?? {};
   if (headers["transfer-encoding"] !== undefined) return true;
   const length = headers["content-length"];

@@ -3,6 +3,8 @@ import type { EventBus } from "../bus.ts";
 import type { Db } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
 import type { Notifier } from "../notify/notifier.ts";
+import { exploitAdvisory } from "../patches/activation.ts";
+import { PATCH_CATALOG, type PatchCatalog } from "../patches/catalog.ts";
 import { findCanaryBuild } from "../stores/canaries.ts";
 import { recordDetection } from "../stores/incidents.ts";
 import { recordAndAlert } from "./record.ts";
@@ -32,6 +34,8 @@ export interface DetectorDeps {
   maxKeys?: number | undefined;
   /** Windows kept at once for one Organization. Default 1,000. */
   maxKeysPerOrg?: number | undefined;
+  /** The Virtual patch catalog, for the advisory of an `exploit-attempt` Event. Default: `PATCH_CATALOG`. */
+  patches?: PatchCatalog | undefined;
 }
 
 export interface Detector {
@@ -60,7 +64,10 @@ interface Window {
   rule: DetectionRule;
   /** The Canary counted, for `canary-touched`; null for every other rule. */
   canaryId: string | null;
-  ipPrefix: string;
+  /** The Virtual patch the Event names, for `exploit-attempt`; null for every other rule. */
+  patchId: string | null;
+  /** The network prefix counted; null only for `exploit-attempt`, which counts Events without one too. */
+  ipPrefix: string | null;
   entries: Entry[];
 }
 
@@ -70,6 +77,7 @@ export function createDetector(deps: DetectorDeps): Detector {
   const logger = redacting(deps.logger ?? consoleLogger);
   const maxKeys = deps.maxKeys ?? DEFAULT_MAX_KEYS;
   const maxKeysPerOrg = deps.maxKeysPerOrg ?? DEFAULT_MAX_KEYS_PER_ORG;
+  const catalog = deps.patches ?? PATCH_CATALOG;
 
   // Windows per Organization. Insertion order is recency: a window is deleted and re-inserted on every update,
   // so the first key of an Organization's map is its least recently updated window.
@@ -101,7 +109,7 @@ export function createDetector(deps: DetectorDeps): Detector {
     const windowStart = times[0];
     const windowEnd = times.at(-1);
     if (windowStart === undefined || windowEnd === undefined) return;
-    const { organizationId, appId, environment, canaryId } = window;
+    const { organizationId, appId, environment, canaryId, patchId } = window;
     // Shared with the Clone Beacon: retry once on a unique violation (join the Incident another writer opened),
     // alert only a new Incident. A second failure is logged and the Detection dropped.
     const promise = recordAndAlert(db, notifier, organizationId, async (q) => {
@@ -111,6 +119,13 @@ export function createDetector(deps: DetectorDeps): Detector {
         // Unknown, or another Organization's, App's or Environment's: not this App's Canary.
         if (buildId === null) return null;
         canary = { id: canaryId, buildId };
+      }
+      let exploit: { advisoryId: string } | undefined;
+      if (patchId !== null) {
+        const advisoryId = await exploitAdvisory(q, catalog, { appId, environment }, patchId);
+        // A patch id the catalog does not know: stored with its Event, but no Incident.
+        if (advisoryId === null) return null;
+        exploit = { advisoryId };
       }
       return recordDetection(q, {
         organizationId,
@@ -123,6 +138,7 @@ export function createDetector(deps: DetectorDeps): Detector {
         windowEnd: new Date(windowEnd).toISOString(),
         detectedAt,
         canary,
+        exploit,
       });
     }).then(() => {}, failed);
     writes.add(promise);
@@ -131,23 +147,26 @@ export function createDetector(deps: DetectorDeps): Detector {
 
   function count(event: StoredEvent): void {
     const ipPrefix = event.actor.ip_prefix;
-    if (ipPrefix === null) return;
-    const rules = matchingRules(event);
+    // Without a prefix only `exploit-attempt` counts: its Incident is grouped by advisory, not by network.
+    const rules = matchingRules(event).filter((rule) => ipPrefix !== null || rule.key === "exploit-attempt");
     if (rules.length === 0) return;
     const at = now();
     const ms = at.getTime();
-    const counted = rules.flatMap((rule): { rule: DetectionRule; canaryId: string | null }[] =>
+    const counted = rules.flatMap((rule): { rule: DetectionRule; canaryId: string | null; patchId: string | null }[] =>
       rule.key === "canary-touched"
-        ? touchedCanaries(event).map((canaryId) => ({ rule, canaryId }))
-        : [{ rule, canaryId: null }],
+        ? touchedCanaries(event).map((canaryId) => ({ rule, canaryId, patchId: null }))
+        : rule.key === "exploit-attempt"
+          ? [{ rule, canaryId: null, patchId: event.decision.patch_id ?? null }]
+          : [{ rule, canaryId: null, patchId: null }],
     );
-    for (const { rule, canaryId } of counted) {
+    for (const { rule, canaryId, patchId } of counted) {
       const key = JSON.stringify([
         event.organization_id,
         event.app_id,
         event.environment,
         rule.key,
         canaryId,
+        patchId,
         ipPrefix,
       ]);
       const organizationId = event.organization_id;
@@ -157,6 +176,7 @@ export function createDetector(deps: DetectorDeps): Detector {
         environment: event.environment,
         rule,
         canaryId,
+        patchId,
         ipPrefix,
         entries: [],
       };

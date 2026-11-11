@@ -30,7 +30,15 @@ const THRESHOLD = DETECTION_RULES[0].threshold;
 
 const blocked = (ms: number, prefix = PREFIX): ShieldEvent => ({
   ...shieldEvent(ms),
-  decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+  decision: {
+    action: "block",
+    mode: "enforce",
+    rule_id: null,
+    policy_version: 1,
+    containment_id: null,
+    patch_id: null,
+    patch_body: null,
+  },
   actor: { ip_prefix: prefix, ip_hash: null },
 });
 const allowed = (ms: number, prefix = PREFIX): ShieldEvent => ({
@@ -177,7 +185,15 @@ describe("Incidents", () => {
       allowed(T0 + 18_500),
       {
         ...blocked(T0 + 18_600),
-        decision: { action: "block", mode: "monitor", rule_id: null, policy_version: 1, containment_id: null },
+        decision: {
+          action: "block",
+          mode: "monitor",
+          rule_id: null,
+          policy_version: 1,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       },
     ]);
     await ingest(shieldA, [allowed(T0 + 3_500, OTHER_PREFIX), allowed(T0 + 900_000)]);

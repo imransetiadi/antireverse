@@ -17,6 +17,7 @@ import { z } from "zod";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
+import type { PatchCatalog } from "../patches/catalog.ts";
 import { problem } from "../problem.ts";
 import { lockOrganization } from "../stores/alert-channels.ts";
 import { allowlistCidrs } from "../stores/allowlist.ts";
@@ -48,7 +49,12 @@ type Outcome =
   | { kind: "confirm-mismatch" }
   | { kind: "conflict"; reason: ConflictReason };
 
-export function containmentRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv> {
+export function containmentRoutes(deps: {
+  db: Db;
+  now?: () => Date;
+  /** The Virtual patch catalog: the Actors of an exploit-attempt Incident come from its advisory's patches. */
+  patches?: PatchCatalog | undefined;
+}): Hono<AppEnv> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
@@ -77,19 +83,24 @@ export function containmentRoutes(deps: { db: Db; now?: () => Date }): Hono<AppE
         if (incident === null) return { kind: "not-found" };
         // A clone Incident has no network prefix and no Actors: containment does not apply to it (take the copy
         // down at its host).
+        // An exploit-attempt Incident (slice 20) is grouped by advisory, not network: its Actors can be blocked, a
+        // network cannot (it has no prefix of its own).
         const ipPrefix = incident.ip_prefix;
-        if (incident.rule === "clone-origin" || ipPrefix === null) {
+        const actorsOnly = incident.rule === "exploit-attempt";
+        if (incident.rule === "clone-origin" || (ipPrefix === null && !actorsOnly)) {
           return { kind: "conflict", reason: "containment-not-applicable" };
         }
         if (incident.status === "resolved") return { kind: "conflict", reason: "incident-resolved" };
 
         let target: ContainmentTarget;
         if (request.target.kind === "actor") {
-          // Only an Actor of this Incident: its App, Environment, prefix, time span and rule.
-          if (!(await hasActor(q, incident, request.target.ip_hash))) {
+          // Only an Actor of this Incident: its App, Environment, prefix (or patches), time span and rule.
+          if (!(await hasActor(q, incident, request.target.ip_hash, deps.patches))) {
             return { kind: "conflict", reason: "actor-unknown" };
           }
           target = { kind: "actor", ip_hash: request.target.ip_hash };
+        } else if (ipPrefix === null) {
+          return { kind: "conflict", reason: "containment-not-applicable" };
         } else {
           if (request.confirm_prefix !== ipPrefix) return { kind: "confirm-mismatch" };
           // The allowlist always wins: a network that shares any address with an allowlisted range is refused.

@@ -59,6 +59,8 @@ describe("ShieldEventSchema", () => {
       rule_id: null,
       policy_version: 0,
       containment_id: null,
+      patch_id: null,
+      patch_body: null,
     });
     expect(parsed.actor).toEqual({ ip_prefix: "203.0.113.0/24", ip_hash: null });
     expect(parsed.attestation).toBeNull();
@@ -216,7 +218,15 @@ describe("ShieldEventSchema: actor.ip_hash and decision.containment_id (slice 09
     const blocked: ShieldEvent = {
       ...EXAMPLE_SHIELD_EVENT,
       request: { ...EXAMPLE_SHIELD_EVENT.request, status: 403 },
-      decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 3, containment_id: CONTAINMENT },
+      decision: {
+        action: "block",
+        mode: "enforce",
+        rule_id: null,
+        policy_version: 3,
+        containment_id: CONTAINMENT,
+        patch_id: null,
+        patch_body: null,
+      },
       actor: { ip_prefix: "203.0.113.0/24", ip_hash: HASH },
     };
     expect(ShieldEventSchema.parse(blocked)).toEqual(blocked);
@@ -265,6 +275,77 @@ describe("ShieldEventSchema: actor.ip_hash and decision.containment_id (slice 09
   it("accepts a containment id and null", () => {
     expect(accepts(withDecision({ action: "block", mode: "enforce", containment_id: CONTAINMENT }))).toBe(true);
     expect(accepts(withDecision({ containment_id: null }))).toBe(true);
+  });
+});
+
+describe("ShieldEventSchema: decision.patch_id (slice 20)", () => {
+  const PATCH = "vp_qs_proto";
+  /** An Event exactly as a Shield from before slice 20 sends it: neither patch_id nor patch_body. */
+  const older = () => {
+    const { patch_id: _patch, patch_body: _body, ...decision } = EXAMPLE_SHIELD_EVENT.decision;
+    return { ...EXAMPLE_SHIELD_EVENT, decision };
+  };
+
+  it("documents an Event without a patch: patch_id null", () => {
+    expect(EXAMPLE_SHIELD_EVENT.decision.patch_id).toBeNull();
+  });
+
+  it("still parses an older Shield's Event and batch: absent means null", () => {
+    expect(older().decision).not.toHaveProperty("patch_id");
+    const parsed = ShieldEventSchema.parse(older());
+    expect(parsed.decision.patch_id).toBeNull();
+    expect(parsed).toEqual(EXAMPLE_SHIELD_EVENT);
+    const batch = EventBatchSchema.parse({ ...EXAMPLE_EVENT_BATCH, events: [older()] });
+    expect(batch.events).toEqual([EXAMPLE_SHIELD_EVENT]);
+    expect(ShieldEventSchema.parse(withDecision({ patch_id: undefined })).decision.patch_id).toBeNull();
+    expect(parsed.decision.patch_body).toBeNull();
+    expect(ShieldEventSchema.parse(withDecision({ patch_body: undefined })).decision.patch_body).toBeNull();
+  });
+
+  it("records whether a patch's body condition was checked: checked, unchecked or null", () => {
+    for (const patch_body of ["checked", "unchecked", "undecodable", null]) {
+      expect(accepts(withDecision({ patch_id: PATCH, patch_body })), String(patch_body)).toBe(true);
+    }
+    for (const patch_body of ["mismatch", "none", "", "CHECKED", true, 0]) {
+      expect(accepts(withDecision({ patch_id: PATCH, patch_body })), String(patch_body)).toBe(false);
+    }
+  });
+
+  it("round-trips a patch decision in monitor and in enforce through JSON: action block, no Rule, no Containment", () => {
+    for (const mode of ["monitor", "enforce"] as const) {
+      const decided: ShieldEvent = {
+        ...EXAMPLE_SHIELD_EVENT,
+        decision: {
+          action: "block",
+          mode,
+          rule_id: null,
+          policy_version: 4,
+          containment_id: null,
+          patch_id: PATCH,
+          patch_body: "checked",
+        },
+      };
+      expect(ShieldEventSchema.parse(JSON.parse(JSON.stringify(decided)))).toEqual(decided);
+      const stored: StoredEvent = { ...EXAMPLE_STORED_EVENT, ...decided };
+      expect(StoredEventSchema.parse(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+    }
+  });
+
+  it.each([
+    "vp_ab",
+    "vp_QS_PROTO",
+    "vp_qs-proto",
+    "rul_0123456789abcdef01234567",
+    "cnt_0123456789abcdef01234567",
+    "vp_qs_proto\u0000",
+    "",
+  ])("rejects the patch id %j", (value) => {
+    expect(accepts(withDecision({ patch_id: value }))).toBe(false);
+  });
+
+  it("rejects a patch id that is not text", () => {
+    expect(accepts(withDecision({ patch_id: 7 }))).toBe(false);
+    expect(accepts(withDecision({ patch_id: [PATCH] }))).toBe(false);
   });
 });
 

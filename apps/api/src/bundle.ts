@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   type BundleAttestationKey,
   type BundleBlock,
+  type BundlePatch,
   type BundlePayload,
   type BundleRule,
   type Canary,
@@ -40,6 +41,11 @@ export interface BundleSubject {
    * `attestation_keys` member, as before slice 03.
    */
   attestationKeys?: readonly BundleAttestationKey[] | undefined;
+  /**
+   * The active Virtual patches of the App and Environment, in the order and modes the bundle carries them, already
+   * within `PATCH_LIMITS` (`selectShipped`). None or empty: no `patches` member, as before slice 20.
+   */
+  patches?: readonly BundlePatch[] | undefined;
 }
 
 export interface IssuedBundle {
@@ -75,6 +81,8 @@ interface Kept {
   containment: string;
   /** `attestationDigest` of the attestation keys the kept bundle carries. */
   attestation: string;
+  /** `patchDigest` of the Virtual patches the kept bundle carries. */
+  patches: string;
   issuedAt: number;
   /** The issuer's clock when it signed the bundle: the age counts from here (`issuedAt` may be 1 ms ahead). */
   signedAt: number;
@@ -116,6 +124,11 @@ function attestationDigest(keys: readonly BundleAttestationKey[]): string {
   const hash = createHash("sha256");
   for (const key of keys) hash.update(JSON.stringify([key.kid, key.public_key]));
   return hash.digest("hex");
+}
+
+/** Names the Virtual patches, order and modes included, like `canaryDigest`: activation or a mode change changes it. */
+function patchDigest(patches: readonly BundlePatch[]): string {
+  return createHash("sha256").update(JSON.stringify(patches)).digest("hex");
 }
 
 /** A block as the bundle carries it: the members in the documented order, nothing else. */
@@ -166,6 +179,8 @@ export function createBundleIssuer(options: { signer: Signer; now?: () => Date; 
     if (attestationKeys.length > 0) {
       payload.attestation_keys = attestationKeys.map((key) => ({ kid: key.kid, public_key: key.public_key }));
     }
+    const patches = subject.patches ?? [];
+    if (patches.length > 0) payload.patches = patches.map((patch) => ({ ...patch }));
     // Serialised exactly once: the signature covers these bytes, and these bytes are what is transmitted.
     const bundle = JSON.stringify(payload);
     const bytes = Buffer.from(bundle, "utf8");
@@ -192,6 +207,7 @@ export function createBundleIssuer(options: { signer: Signer; now?: () => Date; 
       const blocks = (subject.blocks ?? []).filter((block) => Date.parse(block.expires_at) > at);
       const containment = containmentDigest(blocks, subject.allowlist ?? []);
       const attestation = attestationDigest(subject.attestationKeys ?? []);
+      const patches = patchDigest(subject.patches ?? []);
       const age = current === undefined ? Number.NaN : at - current.signedAt;
       let entry: Kept;
       if (
@@ -201,6 +217,7 @@ export function createBundleIssuer(options: { signer: Signer; now?: () => Date; 
         current.canaries === canaries &&
         current.containment === containment &&
         current.attestation === attestation &&
+        current.patches === patches &&
         age >= 0 &&
         age < BUNDLE_REISSUE_AFTER_MS
       ) {
@@ -221,6 +238,7 @@ export function createBundleIssuer(options: { signer: Signer; now?: () => Date; 
           canaries,
           containment,
           attestation,
+          patches,
           issuedAt,
           signedAt: at,
           issued: sign(subject, blocks, issuedAt),

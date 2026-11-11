@@ -71,7 +71,7 @@ describe("incident constants", () => {
     expect(ALERT_CHANNEL_KINDS).toEqual([kind, "slack"]);
   });
 
-  it("has the five managed rules of the plans' tables", () => {
+  it("has the six managed rules of the plans' tables", () => {
     const key: DetectionRuleKey = "blocked-burst";
     expect(DETECTION_RULES).toEqual([
       { key, title: "Blocked burst", severity: "high", threshold: 20, window_s: 300 },
@@ -79,6 +79,7 @@ describe("incident constants", () => {
       { key: "canary-touched", title: "Canary used", severity: "high", threshold: 1, window_s: 300 },
       { key: "clone-origin", title: "Clone detected", severity: "high", threshold: 1, window_s: 3600 },
       { key: "vulnerable-component", title: "Vulnerable component", severity: "high", threshold: 1, window_s: 3600 },
+      { key: "exploit-attempt", title: "Exploit attempt", severity: "high", threshold: 1, window_s: 3600 },
     ]);
     for (const rule of DETECTION_RULES) expect(SEVERITIES).toContain(rule.severity);
   });
@@ -293,6 +294,26 @@ describe("IncidentSchema", () => {
       origin: null,
     });
     expect(Object.isFrozen(EXAMPLE_FINDING_INCIDENT)).toBe(true);
+  });
+
+  it("parses an exploit-attempt Incident and Detection: High, grouped per advisory, no prefix (slice 20)", () => {
+    const rule = DETECTION_RULES.find((candidate) => candidate.key === "exploit-attempt");
+    expect(rule).toEqual({
+      key: "exploit-attempt",
+      title: "Exploit attempt",
+      severity: "high",
+      threshold: 1,
+      window_s: 3600,
+    });
+    const exploit = {
+      ...EXAMPLE_FINDING_INCIDENT,
+      rule: "exploit-attempt",
+      title: "Exploit attempt",
+      severity: "high",
+      build_id: null,
+    };
+    expect(IncidentSchema.parse(exploit)).toEqual(exploit);
+    expect(ok(DetectionSchema, { ...EXAMPLE_DETECTION, rule: "exploit-attempt" })).toBe(true);
   });
 
   it("lets a vulnerable-component Incident carry the Finding's severity, Critical included", () => {

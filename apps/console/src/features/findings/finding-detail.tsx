@@ -1,10 +1,12 @@
-import type { Advisory, Build, Finding } from "@antireverse/protocol";
+import type { Advisory, Build, Finding, PatchSummary } from "@antireverse/protocol";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { EnvironmentTag } from "@/components/environment-tag.tsx";
 import { Icon } from "@/components/icons.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
 import { SeverityBadge } from "@/components/severity-badge.tsx";
+import { FindingPatch } from "@/features/patches/finding-patch.tsx";
+import { patchForFinding } from "@/features/patches/query.ts";
 import { formatDateTime } from "@/lib/format.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
@@ -21,6 +23,13 @@ interface FindingDetailProps {
   build: Build | null;
   /** True when the address asks for the ignore step. */
   confirmIgnore: boolean;
+  /**
+   * The virtual patches of the Finding's App and Environment (slice 20); null when they could not be read.
+   * Default: none.
+   */
+  patches?: readonly PatchSummary[] | null | undefined;
+  /** True when the address asks for the step that enforces the Finding's patch. */
+  confirmEnforce?: boolean | undefined;
   /** The render time, in ms. */
   now: number;
 }
@@ -109,7 +118,16 @@ function IgnoreFacts({ finding }: { finding: Finding }) {
  * seen, aliases); the affected versions; and the fix. The advisory's own page is a plain link to osv.dev —
  * the Console never looks anything up there itself.
  */
-export function FindingDetail({ finding, advisory, appName, build, confirmIgnore, now }: FindingDetailProps) {
+export function FindingDetail({
+  finding,
+  advisory,
+  appName,
+  build,
+  confirmIgnore,
+  patches = [],
+  confirmEnforce = false,
+  now,
+}: FindingDetailProps) {
   const { ranges, versions } = affectedRanges(advisory, finding.package);
   const fix = suggestedFix(finding);
 
@@ -156,6 +174,25 @@ export function FindingDetail({ finding, advisory, appName, build, confirmIgnore
         </h2>
         <IgnoreFacts finding={finding} />
         <FindingActions finding={finding} appName={appName} confirmIgnore={confirmIgnore} now={now} />
+      </section>
+
+      <section aria-labelledby="finding-patch-title" data-testid="finding-patch" className={SECTION}>
+        <h2 id="finding-patch-title" className={SECTION_TITLE}>
+          {t("patch.title")}
+        </h2>
+        <p data-testid="patch-note" className="text-fg-muted">
+          {t("patch.note")}
+        </p>
+        {patches === null ? (
+          <p data-testid="patch-unavailable">{t("patch.unavailable")}</p>
+        ) : (
+          <FindingPatch
+            finding={finding}
+            appName={appName}
+            patch={patchForFinding(patches, finding)}
+            confirmEnforce={confirmEnforce}
+          />
+        )}
       </section>
 
       <section aria-labelledby="finding-facts-title" className={SECTION}>

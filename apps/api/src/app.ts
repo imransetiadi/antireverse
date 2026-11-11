@@ -12,6 +12,7 @@ import { createIncidentQueue, type IncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger, redacting } from "./log.ts";
 import { createNotifier, type Notifier } from "./notify/notifier.ts";
 import { defaultResolve, type Resolve } from "./notify/ssrf.ts";
+import { PATCH_CATALOG, type PatchCatalog } from "./patches/catalog.ts";
 import { problem } from "./problem.ts";
 import { alertChannelRoutes } from "./routes/alert-channels.ts";
 import { allowlistRoutes } from "./routes/allowlist.ts";
@@ -28,6 +29,7 @@ import { incidentRoutes } from "./routes/incidents.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { inventoryRoutes } from "./routes/inventory.ts";
 import { organizationRoutes } from "./routes/organizations.ts";
+import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
 import type { Signer } from "./signer.ts";
 
@@ -72,6 +74,8 @@ export interface AppDeps {
    * notifier (`startApi` passes the one it flushes on close; tests flush it themselves).
    */
   exposureIncidents?: IncidentQueue;
+  /** The Virtual patch catalog (slice 20). Default: `PATCH_CATALOG`; tests pass a fixture catalog. */
+  patches?: PatchCatalog;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -124,6 +128,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const attestation = deps.attestation ?? createAttestationKeys({ now: deps.now, logger });
   const clientAddress = deps.clientAddress ?? socketAddress;
   const exposureIncidents = deps.exposureIncidents ?? createIncidentQueue({ db: deps.db, notifier, logger });
+  const patches = deps.patches ?? PATCH_CATALOG;
 
   app.route("/", healthRoutes());
   app.route("/", organizationRoutes(deps));
@@ -141,9 +146,10 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/", eventRoutes(deps));
   app.route("/", ingestRoutes(deps));
   app.route("/", policyRoutes(deps));
-  app.route("/", bundleRoutes({ ...deps, attestation }));
-  app.route("/", incidentRoutes(deps));
-  app.route("/", containmentRoutes(deps));
+  app.route("/", bundleRoutes({ ...deps, attestation, patches }));
+  app.route("/", patchRoutes({ db: deps.db, patches, now: deps.now }));
+  app.route("/", incidentRoutes({ ...deps, patches }));
+  app.route("/", containmentRoutes({ ...deps, patches }));
   app.route("/", allowlistRoutes(deps));
   // Public: no key. Outside every key middleware (each route above requires its own).
   app.route("/", beaconRoutes({ recorder: beacon, clientAddress }));

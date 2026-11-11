@@ -470,7 +470,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 17 | Usage metering, plan limits, billing | 01 |
 | 18 | GA hardening: audit log, data controls, SLO dashboards, all release gates green | all |
 | 19 | Exposure step 1: component inventory (build and runtime) → CVE Findings with fix versions → Incident, alert and CI gate — **done 2026-11-11** | 05, 06 |
-| 20 | Exposure step 2: virtual patches for known-exploit CVEs, active only where the vulnerable version runs | 19, 02 |
+| 20 | Exposure step 2: virtual patches for known-exploit CVEs, active only where the vulnerable version runs — **done 2026-11-11** | 19, 02 |
 
 ## 19. References and how they are used
 

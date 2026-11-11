@@ -83,9 +83,12 @@ function appFindings(appId: string, query: FindingQuery = {}): string {
   return `/apps/${appId}/findings${findingSearch(query)}`;
 }
 
-/** One Finding. With `confirm: "ignore"` it opens the step that asks for a reason and a date before ignoring. */
-function finding(findingId: string, options: { confirm?: "ignore" } = {}): string {
-  return `/findings/${findingId}${options.confirm === "ignore" ? "?confirm=ignore" : ""}`;
+/**
+ * One Finding. With `confirm: "ignore"` it opens the step that asks for a reason and a date before ignoring; with
+ * `confirm: "enforce"` the step that asks for the typed patch id before enforcing its virtual patch.
+ */
+function finding(findingId: string, options: { confirm?: "ignore" | "enforce" } = {}): string {
+  return `/findings/${findingId}${options.confirm === undefined ? "" : `?confirm=${options.confirm}`}`;
 }
 
 // The Console's addresses. None of them ever carries a key, a signing secret or a channel URL.

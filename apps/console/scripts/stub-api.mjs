@@ -23,6 +23,12 @@
 // the future and at most 90 days ahead) and reopen work as in the API, as do the list filters advisory_id (id or
 // alias) and build_id; an ignore past its date is open again.
 // Every Incident carries `advisory_id`.
+// Slice 20: a three-entry virtual patch catalog. A patch is active for an App and Environment with an open or
+// ignored Finding for one of its advisories in its package (so the high build Finding's patch is active, the
+// ignored one's too, and the third never); the ignored Finding's patch is reported as not shipped (bundle
+// budget). Modes are kept per App, Environment and patch; enforcing needs `confirm` equal to the patch id (400
+// otherwise). Every fifth streamed Event names an active patch, alternating body checked and unchecked, and the
+// first App also gets an open "Exploit attempt" Incident for the high Finding's advisory.
 // Channel URLs and signing secrets are never logged or returned after creation. Not used by any test.
 //
 //   PORT=39201 node apps/console/scripts/stub-api.mjs
@@ -325,7 +331,12 @@ const signatureFor = (n) => SIGNATURES[n % SIGNATURES.length];
 function makeEvent(organizationId, app, n) {
   const now = Date.now();
   const [method, template, templateStatus] = ROUTES[n % ROUTES.length];
-  const { route, status, decision } = decide(app, n, template, templateStatus);
+  const decided = decide(app, n, template, templateStatus);
+  // Every fifth Event matched an active, shipped virtual patch (slice 20).
+  const patched = n % 5 === 3 ? patchDecision(organizationId, app, n, decided.decision.policy_version) : null;
+  const { route, status, decision } = patched
+    ? { route: "/api/search", status: patched.mode === "enforce" ? 403 : 200, decision: patched }
+    : decided;
   const iso = new Date(now).toISOString();
   return {
     event_id: uuidv7(now),
@@ -560,6 +571,7 @@ function seedIncidents(organizationId, app) {
   const canary = build?.canaries?.find((one) => one.kind === "key") ?? null;
   incidents.set(organizationId, [
     ...vulnerableIncident(organizationId, app, now),
+    ...exploitIncident(organizationId, app, now),
     makeCloneIncident(app, {
       origin: "https://clone.example",
       build,
@@ -874,6 +886,160 @@ const IGNORE_MAX_MS = 90 * 86_400_000;
 
 const INCIDENT_STATUSES = ["open", "acknowledged", "resolved"];
 const TRANSITIONS = { open: ["acknowledged", "resolved"], acknowledged: ["resolved"], resolved: [] };
+
+// ── Virtual patches (slice 20) ────────────────────────────────────────────────────────────────────────
+
+const PATCH_CATALOG = [
+  {
+    id: "vp_example_parser_proto",
+    title: "Prototype pollution through query keys in example-parser",
+    advisories: ["GHSA-2c3m-4p5q-6r7v"],
+    package: "example-parser",
+  },
+  {
+    id: "vp_test_runner_path",
+    title: "Path traversal in the example-test-runner report server",
+    advisories: ["GHSA-6v4c-h8rt-q2nm"],
+    package: "example-test-runner",
+    // Stands for an active patch the signed bundle had no room for.
+    shipped: false,
+  },
+  {
+    id: "vp_unused_xml_proto",
+    title: "Prototype pollution through XML elements in example-xml",
+    advisories: ["GHSA-0000-1111-2222"],
+    package: "example-xml",
+  },
+];
+/** @type {Map<string, "monitor" | "enforce">} "<App id>/<Environment>/<patch id>" → mode */
+const patchModes = new Map();
+/** @type {Map<string, number[]>} "<App id>/<Environment>/<patch id>" → hit times in ms, newest first */
+const patchHits = new Map();
+
+/** The catalog as `GET /v1/apps/:appId/patches?environment=` returns it for one App and Environment. */
+function patchesFor(organizationId, appId, environment) {
+  const now = Date.now();
+  const live = (findings.get(organizationId) ?? [])
+    .map(currentFinding)
+    .filter(
+      (finding) =>
+        finding.app_id === appId &&
+        finding.environment === environment &&
+        (finding.status === "open" || finding.status === "ignored"),
+    );
+  return PATCH_CATALOG.map((entry) => {
+    const slot = `${appId}/${environment}/${entry.id}`;
+    const matched = live.filter(
+      (finding) =>
+        finding.package === entry.package &&
+        [finding.advisory_id, ...finding.aliases].some((id) => entry.advisories.includes(id)),
+    );
+    const hits = (patchHits.get(slot) ?? []).filter((at) => at > now - 86_400_000);
+    return {
+      id: entry.id,
+      title: entry.title,
+      advisories: entry.advisories,
+      package: entry.package,
+      mode: patchModes.get(slot) ?? "monitor",
+      active: matched.length > 0,
+      shipped: matched.length > 0 && entry.shipped !== false,
+      findings: matched.map((finding) => finding.id),
+      hits_24h: hits.length,
+      last_hit: hits.length === 0 ? null : new Date(hits[0]).toISOString(),
+    };
+  });
+}
+
+/** Records a hit and returns the patch decision of a request that matched an active, shipped patch. */
+function patchDecision(organizationId, app, n, policyVersion) {
+  const shipped = patchesFor(organizationId, app.id, app.environment).filter((patch) => patch.shipped);
+  const patch = shipped[n % Math.max(shipped.length, 1)];
+  if (!patch) return null;
+  const slot = `${app.id}/${app.environment}/${patch.id}`;
+  patchHits.set(slot, [Date.now(), ...(patchHits.get(slot) ?? [])].slice(0, 1000));
+  return {
+    action: "block",
+    mode: patch.mode,
+    rule_id: null,
+    policy_version: policyVersion,
+    containment_id: null,
+    patch_id: patch.id,
+    patch_body: n % 2 === 0 ? "checked" : "unchecked",
+  };
+}
+
+/** An open "Exploit attempt" Incident for the first App's high build Finding, with one monitored Event. */
+function exploitIncident(organizationId, app, now) {
+  const finding = (findings.get(organizationId) ?? []).find(
+    (one) => one.app_id === app.id && one.severity === "high" && one.status === "open",
+  );
+  const patch = PATCH_CATALOG.find((entry) => finding && entry.advisories.includes(finding.advisory_id));
+  if (!finding || !patch) return [];
+  const atMs = now - 40 * 60_000;
+  const at = new Date(atMs).toISOString();
+  const prefix = "198.51.100.0/24";
+  const slot = `${app.id}/${app.environment}/${patch.id}`;
+  patchHits.set(slot, [atMs, ...(patchHits.get(slot) ?? [])]);
+  const evidence = [
+    {
+      event_id: uuidv7(atMs),
+      ts: at,
+      type: "request.decision",
+      surface: "api",
+      request: { method: "GET", route: "/api/search", status: 200, latency_ms: 3.4 },
+      decision: {
+        action: "block",
+        mode: "monitor",
+        rule_id: null,
+        policy_version: currentPolicy(app.id, app.environment).version,
+        containment_id: null,
+        patch_id: patch.id,
+        patch_body: "unchecked",
+      },
+      actor: { ip_prefix: prefix },
+      signals: [],
+      attestation: null,
+      signature: null,
+      organization_id: organizationId,
+      app_id: app.id,
+      environment: app.environment,
+      received_at: at,
+    },
+  ];
+  const detection = {
+    id: newId("dtc"),
+    rule: "exploit-attempt",
+    app_id: app.id,
+    environment: app.environment,
+    ip_prefix: prefix,
+    count: 1,
+    window_start: at,
+    window_end: at,
+    detected_at: at,
+    canary_id: null,
+    origin: null,
+  };
+  const incident = {
+    id: newId("inc"),
+    app_id: app.id,
+    environment: app.environment,
+    rule: "exploit-attempt",
+    severity: "high",
+    title: "Exploit attempt",
+    status: "open",
+    ip_prefix: prefix,
+    first_seen: at,
+    last_seen: at,
+    detection_count: 1,
+    created_at: at,
+    updated_at: at,
+    canary_id: null,
+    build_id: null,
+    origin: null,
+    advisory_id: finding.advisory_id,
+  };
+  return [{ incident, detections: [detection], evidence, actors: actorsOf(evidence) }];
+}
 
 // ── Alert channels (slice 06) ─────────────────────────────────────────────────────────────────────────
 
@@ -1355,6 +1521,36 @@ const server = http.createServer(async (req, res) => {
     const build = list.find((candidate) => candidate.build_id === buildId);
     if (!build) return problem(res, 404, "Not Found");
     return json(res, 200, { build });
+  }
+
+  // Virtual patches (slice 20): the catalog per App and Environment, and the mode change.
+  const patchMatch = /^\/v1\/apps\/([^/]+)\/patches(?:\/([^/]+)\/mode)?$/.exec(path);
+  if (patchMatch) {
+    const app = ownApps.find((candidate) => candidate.id === patchMatch[1]);
+    if (!app) return problem(res, 404, "Not Found");
+    if (req.method === "GET" && !patchMatch[2]) {
+      const environment = url.searchParams.get("environment");
+      if (!Object.keys(TAGS).includes(environment ?? "")) {
+        return problem(res, 400, "Bad Request", { errors: [{ path: "environment", message: "Invalid option" }] });
+      }
+      return json(res, 200, { patches: patchesFor(organization.id, app.id, environment) });
+    }
+    if (req.method === "POST" && patchMatch[2]) {
+      const entry = PATCH_CATALOG.find((one) => one.id === patchMatch[2]);
+      if (!entry) return problem(res, 404, "Not Found");
+      const body = await readBody(req);
+      const errors = [];
+      if (!Object.keys(TAGS).includes(body?.environment)) errors.push({ path: "environment", message: "Invalid" });
+      if (!["monitor", "enforce"].includes(body?.mode)) errors.push({ path: "mode", message: "Invalid" });
+      if (body?.mode === "enforce" && body?.confirm !== entry.id) {
+        errors.push({ path: "confirm", message: "Must equal the patch id" });
+      }
+      if (errors.length > 0) return problem(res, 400, "Bad Request", { errors });
+      patchModes.set(`${app.id}/${body.environment}/${entry.id}`, body.mode);
+      const patch = patchesFor(organization.id, app.id, body.environment).find((one) => one.id === entry.id);
+      return json(res, 200, { patch });
+    }
+    return problem(res, 405, "Method Not Allowed");
   }
 
   const match = /^\/v1\/apps\/([^/]+)(\/events(\/stream)?)?$/.exec(path);

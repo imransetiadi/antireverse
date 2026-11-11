@@ -13,12 +13,14 @@ import {
   CONTAINMENT_LIMITS,
   DECISION_MODES,
   ENVIRONMENTS,
+  EXAMPLE_BUNDLE_PATCH,
   EXAMPLE_BUNDLE_PAYLOAD,
   EXAMPLE_CANARIES,
   EXAMPLE_POLICY,
   EXAMPLE_POLICY_RULE,
   EXAMPLE_STORED_EVENT,
   isBroadPattern,
+  PATCH_LIMITS,
   PATH_PATTERN,
   type ParsedPolicyRuleInput,
   POLICY_LIMITS,
@@ -1159,5 +1161,68 @@ describe("Rule requirement (slice 04)", () => {
       expect(parsed).toEqual(EXAMPLE_BUNDLE_PAYLOAD);
       expect(parsed).not.toHaveProperty("signature_rules");
     });
+  });
+});
+
+describe("BundlePayloadSchema patches (slice 20)", () => {
+  const accepts = (patch: Record<string, unknown>): boolean => BundlePayloadSchema.safeParse(payload(patch)).success;
+  const entry = (n: number) => ({ ...EXAMPLE_BUNDLE_PATCH, id: `vp_patch_${n}` });
+  const entries = (count: number) => Array.from({ length: count }, (_, n) => entry(n));
+
+  it("leaves a payload without patches valid: absent stays absent", () => {
+    expect(BundlePayloadSchema.parse(EXAMPLE_BUNDLE_PAYLOAD)).not.toHaveProperty("patches");
+  });
+
+  it("round-trips a payload with patches through JSON", () => {
+    const full: BundlePayload = { ...EXAMPLE_BUNDLE_PAYLOAD, patches: [EXAMPLE_BUNDLE_PATCH, entry(1)] };
+    expect(BundlePayloadSchema.parse(JSON.parse(JSON.stringify(full)))).toEqual(full);
+  });
+
+  it("accepts 0..50 patches and rejects 51", () => {
+    expect(PATCH_LIMITS.perBundle).toBe(50);
+    expect(accepts({ patches: [] })).toBe(true);
+    expect(accepts({ patches: entries(50) })).toBe(true);
+    expect(accepts({ patches: entries(51) })).toBe(false);
+    expect(accepts({ patches: null })).toBe(false);
+    expect(accepts({ patches: {} })).toBe(false);
+  });
+
+  it("rejects a patch id listed twice", () => {
+    expect(accepts({ patches: [entry(1), entry(1)] })).toBe(false);
+  });
+
+  it("rejects an invalid patch entry", () => {
+    expect(accepts({ patches: [{ ...EXAMPLE_BUNDLE_PATCH, mode: "block" }] })).toBe(false);
+    expect(accepts({ patches: [{ ...EXAMPLE_BUNDLE_PATCH, conditions: [] }] })).toBe(false);
+  });
+
+  it("holds patches of at most 16,384 bytes of JSON together, exactly at the boundary", () => {
+    expect(PATCH_LIMITS.bundleBytesMax).toBe(16_384);
+    const condition = (length: number) => ({ target: "body", op: "contains", value: "v".repeat(length) });
+    const big = (n: number) => ({ ...entry(n), conditions: Array.from({ length: 8 }, () => condition(256)) });
+    const fill = (count: number, last: number) => ({
+      ...entry(99),
+      // Fixed conditions shorter than the variable one leave no gap in the sizes searched.
+      conditions: [...Array.from({ length: count - 1 }, () => condition(200)), condition(last)],
+    });
+    const sized = (target: number) => {
+      for (let count = 1; count <= 8; count++) {
+        for (let last = 1; last <= 256; last++) {
+          const patches = [big(1), big(2), big(3), big(4), big(5), big(6), fill(count, last)];
+          if (new TextEncoder().encode(JSON.stringify(patches)).length === target) return patches;
+        }
+      }
+      throw new Error(`no patch set of ${target} bytes`);
+    };
+    expect(accepts({ patches: sized(16_384) })).toBe(true);
+    expect(accepts({ patches: sized(16_385) })).toBe(false);
+    expect(accepts({ patches: [big(1), big(2), big(3), big(4), big(5), big(6), big(7)] })).toBe(false);
+  });
+
+  it("is stripped by an older Shield's schema (a copy without the field)", () => {
+    const older = z.object(BundlePayloadSchema.shape).omit({ patches: true });
+    const parsed = older.parse({ ...EXAMPLE_BUNDLE_PAYLOAD, patches: entries(2) });
+    expect(parsed).toEqual(EXAMPLE_BUNDLE_PAYLOAD);
+    expect(parsed).not.toHaveProperty("patches");
   });
 });

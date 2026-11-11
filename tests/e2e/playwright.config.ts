@@ -33,8 +33,9 @@ export default defineConfig({
       name: "api",
       // The fixture advisories (slice 19) are imported into the fresh data directory with the real sync command
       // before the API takes it over (PGlite allows one owner at a time). Advisories are global, not tenant data.
+      // The API is main.ts with the fixture Virtual patch catalog (slice 20): see fixtures/api-fixture-patches.ts.
       command:
-        "npx tsx apps/api/src/vulns/cli.ts --fixture apps/api/test/fixtures/advisories.json && exec npx tsx apps/api/src/main.ts",
+        "npx tsx apps/api/src/vulns/cli.ts --fixture apps/api/test/fixtures/advisories.json && exec npx tsx tests/e2e/fixtures/api-fixture-patches.ts",
       cwd: root,
       // Alert channels may point at a receiver on loopback over http (slice 06): tests only.
       env: {

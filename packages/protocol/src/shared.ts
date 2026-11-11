@@ -38,6 +38,16 @@ export const HttpMethodSchema = z
   .max(16)
   .regex(/^[A-Z-]+$/);
 
+/** Characters of a path pattern (`POLICY_LIMITS.pathMax`). */
+export const RULE_PATH_MAX = 256;
+
+const SEGMENT = "(?:[A-Za-z0-9._~-]+|\\*)";
+/**
+ * The path pattern of a Rule and of a Virtual patch (`PATH_PATTERN` of policy.ts): `/` alone, or `/`-separated
+ * segments without a trailing slash, each literal text over `A-Z a-z 0-9 . _ ~ -` or `*`, the last one also `**`.
+ */
+export const RULE_PATH_PATTERN = new RegExp(`^(?=.{1,${RULE_PATH_MAX}}$)(?:/|(?:/${SEGMENT})*/(?:${SEGMENT}|\\*\\*))$`);
+
 export function deepFreeze<T>(value: T): T {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     for (const member of Object.values(value)) deepFreeze(member);

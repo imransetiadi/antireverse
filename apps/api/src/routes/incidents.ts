@@ -14,6 +14,7 @@ import { z } from "zod";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
+import type { PatchCatalog } from "../patches/catalog.ts";
 import { problem } from "../problem.ts";
 import { CONTAINMENTS_LISTED, listIncidentContainments } from "../stores/containments.ts";
 import {
@@ -39,7 +40,12 @@ const TRANSITIONS: Record<IncidentStatus, readonly IncidentStatus[]> = {
   resolved: [],
 };
 
-export function incidentRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv> {
+export function incidentRoutes(deps: {
+  db: Db;
+  now?: () => Date;
+  /** The Virtual patch catalog: an exploit-attempt Incident's evidence is the Events of its advisory's patches. */
+  patches?: PatchCatalog | undefined;
+}): Hono<AppEnv> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
@@ -69,8 +75,8 @@ export function incidentRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv>
           return {
             incident,
             detections: await listDetections(q, incident.id, INCIDENT_LIMITS.detectionsListed),
-            evidence: await listEvidence(q, incident, INCIDENT_LIMITS.evidence),
-            actors: await listActors(q, incident, CONTAINMENT_LIMITS.actorsListed),
+            evidence: await listEvidence(q, incident, INCIDENT_LIMITS.evidence, deps.patches),
+            actors: await listActors(q, incident, CONTAINMENT_LIMITS.actorsListed, deps.patches),
             // Status from the clock: a block past its expiry is `expired`.
             containments: await listIncidentContainments(q, incident.id, now(), CONTAINMENTS_LISTED),
           };

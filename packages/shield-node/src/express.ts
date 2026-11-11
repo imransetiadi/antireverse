@@ -4,6 +4,7 @@ import { type AttestationResult, INVALID_RESULT } from "./attestation.ts";
 import type { Signal } from "./canary.ts";
 import { type Client, type ContainmentHit, UNKNOWN_CLIENT } from "./containment.ts";
 import { truncateIp } from "./ip.ts";
+import { type PatchBody, type PatchState, recordedPatch } from "./patches.ts";
 import { trackRoute } from "./route.ts";
 import type { SignatureState } from "./signature.ts";
 import type { DecideInput, Decision, ShieldErrorHandler, ShieldMiddleware } from "./types.ts";
@@ -46,6 +47,13 @@ export interface AdapterDeps {
    * validly signed body of a listed type defers an Enforce requirement to the hook. Left out: none.
    */
   bodyTypes?: ReadonlySet<string>;
+  /**
+   * The Virtual patches of the request (slice 20), evaluated after Containments and Rules, when neither blocked it.
+   * `recordMonitor` is false when a Rule in monitor already decided: only an enforced patch can still change the
+   * outcome. Synchronous, no I/O. The state is read again when the response closes, so that the body hook's result
+   * is recorded. Left out, or null: no patches. A throw is counted and the request proceeds (fail open).
+   */
+  patches?(request: IncomingMessage, method: string, recordMonitor: boolean): PatchState | null;
   /** The path pattern of the Rule behind a block Decision of `decide`, if it is one of Shield's own. */
   routeOf(decision: Decision): string | undefined;
   /** Buffers the Event. Synchronous, no I/O. */
@@ -201,6 +209,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
     client: Client,
     attestation: AttestationResult | null,
     signature: SignatureState | null,
+    patches: PatchState | null,
   ): void {
     const startedAt = deps.now();
     const eventId = uuidv7(startedAt);
@@ -214,14 +223,30 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
         // (review F1: an honest record; the response has already gone out) — names the requirement Rule.
         let recorded = decision;
         let route = blockedBy;
+        let patchId: string | null = null;
+        let patchBody: PatchBody | null = null;
         const deferred = signature?.deferred as Decision | undefined;
-        if (
+        if (patches !== null && patches.blocked !== null) {
+          // An enforced patch refused the request, when it arrived or in the body hook.
+          recorded = patches.blocked.decision;
+          patchId = patches.blocked.id;
+          patchBody = patches.blockedBody;
+        } else if (
           signature !== null &&
           deferred !== undefined &&
           (signature.body === "mismatch" || signature.body === "unchecked")
         ) {
           recorded = deferred;
           route = deps.routeOf(deferred) ?? route;
+        } else if (patches !== null && recorded.action === "allow") {
+          // Nothing before the patches decided: a monitor patch that matched, else one whose body was never checked
+          // (recorded, never blocking).
+          const patch = recordedPatch(patches);
+          if (patch !== null) {
+            recorded = patch.decision;
+            patchId = patch.patch.id;
+            patchBody = patch.body;
+          }
         }
         deps.record({
           event_id: eventId,
@@ -240,6 +265,8 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
             rule_id: recorded.ruleId,
             policy_version: recorded.policyVersion,
             containment_id: containmentId,
+            patch_id: patchId,
+            patch_body: patchBody,
           },
           actor: { ip_prefix: ipPrefix, ip_hash: client.hash },
           signals,
@@ -351,6 +378,25 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
       blockedBy = undefined;
       containmentId = null;
     }
+    // The Virtual patches, after Containments and Rules, unless one of them refused the request already. Whatever
+    // fails here fails open: the request proceeds as the Rules decided.
+    let patches: PatchState | null = null;
+    if (blockedBy === undefined && deps.patches !== undefined) {
+      const ruled = decision;
+      try {
+        patches = deps.patches(request, methodOf(request), decision.action === "allow");
+        if (patches !== null && patches.blocked !== null) {
+          decision = patches.blocked.decision;
+          block(response);
+          blockedBy = UNMATCHED_ROUTE; // the request never reached a route
+        }
+      } catch {
+        contained();
+        patches = null;
+        decision = ruled;
+        blockedBy = undefined;
+      }
+    }
     try {
       observe(
         request,
@@ -364,6 +410,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
         client,
         attestation,
         signature,
+        patches,
       );
     } catch {
       contained(); // the Event is lost; the Decision stands

@@ -49,6 +49,8 @@ function event(target: Target, ms: number, overrides: Partial<StoredEvent> = {},
       rule_id: "rul_0123456789abcdef01234567",
       policy_version: 1,
       containment_id: null,
+      patch_id: null,
+      patch_body: null,
     },
     actor: { ip_prefix: prefix, ip_hash: null },
     organization_id: target.organizationId,
@@ -127,11 +129,27 @@ describe("managed rules", () => {
   it("counts a block in Enforce mode for blocked-burst only", () => {
     expect(matchingRules(event(target, T0)).map((rule) => rule.key)).toEqual(["blocked-burst"]);
     const monitored = event(target, T0, {
-      decision: { action: "block", mode: "monitor", rule_id: null, policy_version: 1, containment_id: null },
+      decision: {
+        action: "block",
+        mode: "monitor",
+        rule_id: null,
+        policy_version: 1,
+        containment_id: null,
+        patch_id: null,
+        patch_body: null,
+      },
     });
     expect(matchingRules(monitored)).toEqual([]);
     const throttled = event(target, T0, {
-      decision: { action: "throttle", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+      decision: {
+        action: "throttle",
+        mode: "enforce",
+        rule_id: null,
+        policy_version: 1,
+        containment_id: null,
+        patch_id: null,
+        patch_body: null,
+      },
     });
     expect(matchingRules(throttled)).toEqual([]);
   });
@@ -145,6 +163,8 @@ describe("managed rules", () => {
         rule_id: null,
         policy_version: 1,
         containment_id: "cnt_0123456789abcdef01234567",
+        patch_id: null,
+        patch_body: null,
       },
     });
     expect(matchingRules(containmentBlock)).toEqual([]);
@@ -166,7 +186,15 @@ describe("managed rules", () => {
   it("still counts a 403 under a block in Monitor mode as a failed sign-in: Shield did not answer it (F6)", () => {
     const monitored = event(target, T0, {
       request: { ...EXAMPLE_SHIELD_EVENT.request, status: 403 },
-      decision: { action: "block", mode: "monitor", rule_id: null, policy_version: 1, containment_id: null },
+      decision: {
+        action: "block",
+        mode: "monitor",
+        rule_id: null,
+        policy_version: 1,
+        containment_id: null,
+        patch_id: null,
+        patch_body: null,
+      },
     });
     expect(matchingRules(monitored).map((rule) => rule.key)).toEqual(["failed-signin-burst"]);
   });
@@ -567,7 +595,15 @@ describe("detector", () => {
       try {
         const events = Array.from({ length: BLOCKED.threshold }, (_, i) => ({
           ...shieldEvent(T0 + i),
-          decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+          decision: {
+            action: "block",
+            mode: "enforce",
+            rule_id: null,
+            policy_version: 1,
+            containment_id: null,
+            patch_id: null,
+            patch_body: null,
+          },
         }));
         const res = await api.app.request("/v1/events", json(batchOf(events), bearer(shieldA)));
         expect(res.status).toBe(202);
@@ -595,7 +631,15 @@ describe("detector", () => {
         const events = [
           {
             ...shieldEvent(T0 + 500),
-            decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+            decision: {
+              action: "block",
+              mode: "enforce",
+              rule_id: null,
+              policy_version: 1,
+              containment_id: null,
+              patch_id: null,
+              patch_body: null,
+            },
           },
         ];
         const res = await api.app.request("/v1/events", json(batchOf(events), bearer(shieldA)));

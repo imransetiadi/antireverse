@@ -4,6 +4,8 @@ import { AppNav } from "@/components/app-nav.tsx";
 import { AppShell } from "@/components/app-shell.tsx";
 import { EnvironmentTag } from "@/components/environment-tag.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
+import { patchesOrNull } from "@/features/patches/load.ts";
+import { PolicyPatches } from "@/features/patches/policy-patches.tsx";
 import { AddRuleForm } from "@/features/policy/add-rule-form.tsx";
 import { newlyBroad } from "@/features/policy/broad.ts";
 import { EnvironmentSwitch } from "@/features/policy/environment-switch.tsx";
@@ -26,13 +28,14 @@ import { t } from "@/lib/t.ts";
 
 async function load(key: string, appId: string, environment: ReturnType<typeof environmentFrom>) {
   try {
-    const [{ app }, { policy }, { versions }, publicKey] = await Promise.all([
+    const [{ app }, { policy }, { versions }, publicKey, patches] = await Promise.all([
       getApp(key, appId),
       getPolicy(key, appId, environment),
       listPolicyVersions(key, appId, environment),
       policyPublicKey(),
+      patchesOrNull(key, appId, environment),
     ]);
-    return { app, policy, versions, publicKey };
+    return { app, policy, versions, publicKey, patches };
   } catch (error) {
     // Another Organization's App and an App that does not exist look the same.
     if (error instanceof NotFoundError) notFound();
@@ -69,7 +72,7 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
   if (!ID_PATTERNS.app.test(appId)) notFound();
   const query = await searchParams;
   const environment = environmentFrom(query.environment);
-  const { app, policy, versions, publicKey } = await load(key, appId, environment);
+  const { app, policy, versions, publicKey, patches } = await load(key, appId, environment);
   const confirmation = confirmationFrom(query, policy, versions);
   const confirmBroad =
     confirmation.rollback === undefined
@@ -114,6 +117,14 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
         </h2>
         <p className="text-fg-muted">{t("policy.rule.add.lead")}</p>
         <AddRuleForm key={revision} appId={app.id} environment={environment} version={policy.version} />
+      </section>
+
+      <section aria-labelledby="policy-patches-title" data-testid="policy-patches" className={SECTION}>
+        <h2 id="policy-patches-title" className={SECTION_TITLE}>
+          {t("policy.patches.title")}
+        </h2>
+        <p className="text-fg-muted">{t("policy.patches.lead")}</p>
+        <PolicyPatches environment={environment} patches={patches} />
       </section>
 
       <section aria-labelledby="policy-history-title" className={SECTION}>

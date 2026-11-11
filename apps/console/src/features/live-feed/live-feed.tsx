@@ -15,6 +15,8 @@ interface LiveFeedProps {
   appName: string;
   /** The latest Events, fetched by the server when the page was rendered. */
   initialEvents: StoredEvent[];
+  /** Virtual patch titles by id (slice 20), to name the patch of a Decision. */
+  patchTitles?: Readonly<Record<string, string>> | undefined;
   /** Runs when the API no longer accepts the session. Default: go to sign-in. */
   onSessionExpired?: () => void;
 }
@@ -27,7 +29,7 @@ function goToSignIn(): void {
  * SCR-03 Live: the Events of one App, newest first, as they arrive. The connection indicator is the only
  * status region; the table is deliberately not a live region (UIUX.md §12).
  */
-export function LiveFeed({ appId, appName, initialEvents, onSessionExpired = goToSignIn }: LiveFeedProps) {
+export function LiveFeed({ appId, appName, initialEvents, patchTitles, onSessionExpired = goToSignIn }: LiveFeedProps) {
   const { events, connection, lastContact } = useEventStream(ROUTES.stream(appId), initialEvents, {
     listUrl: ROUTES.events(appId),
     onSessionExpired,
@@ -70,7 +72,7 @@ export function LiveFeed({ appId, appName, initialEvents, onSessionExpired = goT
                 </td>
               </tr>
             ) : (
-              events.map((event) => <EventRow key={event.event_id} event={event} />)
+              events.map((event) => <EventRow key={event.event_id} event={event} patchTitles={patchTitles} />)
             )}
           </tbody>
         </table>

@@ -236,6 +236,8 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-058 | Where an enforced signature requirement applies, Shield fails closed on internal errors and accepts bodies only of the content types listed in `bodyVerified.types` (checked by `shield.verifyBody`); everywhere else Shield still fails open and monitor never changes a response | Owner's decisions 2026-11-11 (Jev split) | accepted |
 | D-059 | Scope change: Anti Reverse finds known vulnerabilities (CVE/GHSA) in what an App ships and runs, from a local copy of OSV (no third-party lookups), in three steps — Findings (19), virtual patches (20), discovery via Prove | Owner's request and approval 2026-11-11; Jev 1.0, 1.0, 0.75 | accepted |
 | D-060 | A Finding whose advisory is withdrawn, or whose advisory no longer lists the installed version after a sync, becomes `withdrawn` (not `fixed`); it never counts as open, opens no Incident and returns to open if a later sync lists the version again | Owner's decision 2026-11-11 (Jev split 0.47/0.43, confidence 0.36) | accepted |
+| D-061 | Virtual patches: a curated catalog of request-level exploit patterns (declarative conditions, no regular expressions), shipped automatically in monitor only to App+Environments with an open or ignored Finding for the advisory; an admin promotes to enforce; body conditions only through `verifyBody` and never block when unchecked | Owner approved 2026-11-11; Jev 1.0, 0.98, 0.66, 0.92 | accepted |
+| D-062 | A request body in a character set Shield cannot decode (other than UTF-8, UTF-16, UTF-32) is refused under an enforced virtual patch whose other conditions match; a body never seen by `verifyBody` still never blocks and is recorded as allow | Owner's decision 2026-11-11; Jev 0.82 | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -469,6 +471,12 @@ Next step for whoever continues:
 - Review: M1–M4 and L1, then a second review M-A and L-A–L-D, fixed test-first; plan amendments A1–A10. Jev review escalate on low confidence only (no defect named); owner accepted. Pushed to the private GitHub repo imransetiadi/antireverse on 2026-11-11. Owner chose per-instance runtime inventories, limit and prune, check-then-write sync, and the Withdrawn status.
 - Next: slice 20 (virtual patches), or 08, 11, 12.
 
+**2026-11-11 — slice 20, Exposure: virtual patches**
+
+- Done: patch catalog `2026-11-11.4` (9 patches for qs CVE-2022-24999, lodash CVE-2019-10744 and CVE-2020-8203, xml2js CVE-2023-0842, ids checked against OSV); declarative conditions without regular expressions, `json_key`, matched as the real parsers read a request (qs key split, UTF-8/16/32 and Latin-1 family charsets, JSON escapes); automatic monitor where a Finding is open or ignored, typed confirmation to enforce, `patches` bundle member older Shields skip; "Exploit attempt" Incidents with Actor Containment; `patch_body` checked / unchecked / undecodable; Console Finding and Policy sections. Evidence: `npm run verify` 5,273 tests; e2e HTTP 85 + browser 14; bench worst attested p99 927 us (108 KB body).
+- Review: two independent reviews (6 HIGH in total, all evasions or false alerts) fixed test-first; decisions D-061, D-062; plan amendments A1–A12; Jev verified 6 of 6 claims. Limits listed in ticket 20.
+- Next: Exposure step 3 (discovery through Prove) needs slices 14 and 15; otherwise 08, 11 or 12.
+
 ## 13. Safety rules for memory
 
 1. No secrets, credentials, tokens or personal data in memory — here or in the memory server.
@@ -494,3 +502,4 @@ Next step for whoever continues:
 | 2026-11-11 | Slice 03 built; decisions D-054–D-056; Guard, attestation, verdict per request |
 | 2026-11-11 | Slice 04 built; decisions D-057–D-058; signed requests, replay protection |
 | 2026-11-11 | Slice 19 built; decision D-060; Exposure: CVE Findings |
+| 2026-11-11 | Slice 20 built; decisions D-061–D-062; virtual patches |

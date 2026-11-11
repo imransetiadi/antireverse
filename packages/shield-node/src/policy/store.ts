@@ -1,6 +1,7 @@
 // The applied Policy: what `decide` reads. Replaced as a whole when a verified bundle arrives, never edited.
 import type { KeyObject } from "node:crypto";
 import type { ParsedCidr } from "../address.ts";
+import { type MatchablePatch, type PatchInput, preparePatch } from "../patches.ts";
 import type { Decision } from "../types.ts";
 import type { PathPattern } from "./match.ts";
 
@@ -52,6 +53,29 @@ export interface AppliedPolicy {
   readonly appId: string | null;
   /** The attestation public keys of the bundle by kid, each imported once per bundle. Empty: no token verifies. */
   readonly attestationKeys: ReadonlyMap<string, AttestationKey>;
+  /** The Virtual patches of the bundle in order (slice 20). Evaluated after the Rules. */
+  readonly patches: readonly AppliedPatch[];
+  /**
+   * Entries of the bundle's `patches` this Shield could not read and skipped (forward compatibility), plus 1 when the
+   * member was ignored as a whole. Internal: `ShieldStats` (contract C3) is unchanged.
+   */
+  readonly patchesSkipped: number;
+}
+
+/** One Virtual patch of the applied Policy (slice 20), prepared once per bundle. */
+export interface AppliedPatch extends MatchablePatch {
+  readonly id: string;
+  readonly mode: "monitor" | "enforce";
+  /** The advisory of the Finding that activated the patch. */
+  readonly advisory: string;
+  /** The Decision of a request this patch decides: block, its mode, no Rule. One frozen object per patch. */
+  readonly decision: Decision;
+  /**
+   * The Decision recorded when the patch's body was never checked (A6, F2), or could not be read under a monitor
+   * patch (A11, M2): allow in monitor — it did not block and
+   * never counts as an exploit attempt or a hit; the Event still names the patch with `patch_body` "unchecked".
+   */
+  readonly uncheckedDecision: Decision;
 }
 
 /** One attestation public key of the applied bundle. */
@@ -102,6 +126,10 @@ export function buildPolicy(input: {
   appId?: string | null;
   /** Left out: none. */
   attestationKeys?: readonly AttestationKey[];
+  /** Left out: none. */
+  patches?: readonly PatchInput[];
+  /** Left out: 0. */
+  patchesSkipped?: number;
 }): AppliedPolicy {
   const { version } = input;
   const compile = (rule: Pick<AppliedRule, "id" | "path" | "methods" | "mode" | "pattern">): AppliedRule => {
@@ -164,6 +192,25 @@ export function buildPolicy(input: {
     containedDecision: Object.freeze({ action: "block", mode: "enforce", ruleId: null, policyVersion: version }),
     appId: input.appId ?? null,
     attestationKeys,
+    patches: Object.freeze(
+      (input.patches ?? []).map(
+        (patch): AppliedPatch =>
+          Object.freeze({
+            ...preparePatch(patch),
+            id: patch.id,
+            mode: patch.mode,
+            advisory: patch.advisory,
+            decision: Object.freeze({ action: "block", mode: patch.mode, ruleId: null, policyVersion: version }),
+            uncheckedDecision: Object.freeze({
+              action: "allow",
+              mode: "monitor",
+              ruleId: null,
+              policyVersion: version,
+            }),
+          }),
+      ),
+    ),
+    patchesSkipped: input.patchesSkipped ?? 0,
   });
 }
 

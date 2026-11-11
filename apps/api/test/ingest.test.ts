@@ -392,7 +392,7 @@ describe("ingest", () => {
     expect(Object.keys(payload.actor ?? {}).sort()).toEqual(["ip_hash", "ip_prefix"]);
     expect(payload.actor?.ip_hash).toMatch(/^iph_[0-9a-f]{32}$/);
     expect(Object.keys(payload.decision ?? {}).sort()).toEqual(
-      ["action", "containment_id", "mode", "policy_version", "rule_id"].sort(),
+      ["action", "containment_id", "mode", "patch_body", "patch_id", "policy_version", "rule_id"].sort(),
     );
     expect(JSON.stringify(rows)).not.toMatch(/leaked|203\.0\.113\.77|token|headers|query|user_agent/);
     expect(JSON.stringify(await list(t))).not.toMatch(/leaked|203\.0\.113\.77/);

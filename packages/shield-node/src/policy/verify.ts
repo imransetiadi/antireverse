@@ -11,6 +11,7 @@ import { createHash, createPublicKey, type KeyObject, verify } from "node:crypto
 import type { BundlePayload, BundleRule, SignedBundle } from "@antireverse/protocol";
 import { type ParsedCidr, parseCidr } from "../address.ts";
 import { APP_ID_PATTERN, KEYS_MAX, KID_PATTERN, PUBLIC_KEY_PATTERN } from "../attestation.ts";
+import { type PatchInput, readPatches } from "../patches.ts";
 import { compilePattern } from "./match.ts";
 import { type AppliedPolicy, type AttestationKey, type BlockInput, buildPolicy } from "./store.ts";
 
@@ -356,6 +357,16 @@ export function verifyBundle(envelope: unknown, context: VerifyContext): Verifie
       attestationKeys.push(key);
     }
   }
+  // Optional (slice 20): a bundle from before slice 20 has no Virtual patches. Unlike the other members it never
+  // refuses the bundle (forward compatibility, decided with Jev: fix_2_3_5): a patch this Shield cannot read is
+  // skipped and counted, and a member that is not a list or is over its byte budget is ignored as a member.
+  let patches: PatchInput[] = [];
+  let patchesSkipped = 0;
+  if (payload.patches !== undefined) {
+    const read = readPatches(payload.patches);
+    patches = read.patches;
+    patchesSkipped = read.skipped + (read.ignored === null ? 0 : 1);
+  }
   return {
     ok: true,
     policy: buildPolicy({
@@ -370,6 +381,8 @@ export function verifyBundle(envelope: unknown, context: VerifyContext): Verifie
       allowlist,
       appId: appId ?? null,
       attestationKeys,
+      patches,
+      patchesSkipped,
     }),
   };
 }

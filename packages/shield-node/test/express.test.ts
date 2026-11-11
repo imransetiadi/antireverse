@@ -150,6 +150,8 @@ describe("shield.express(): one Event per request, from the allowlist only", () 
       "action",
       "containment_id",
       "mode",
+      "patch_body",
+      "patch_id",
       "policy_version",
       "rule_id",
     ]);

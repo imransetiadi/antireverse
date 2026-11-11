@@ -70,7 +70,15 @@ interface AppUnderTest {
 function blockedFrom(shieldKey: string, ms: number, address: string | null, prefix = PREFIX): ShieldEvent {
   return {
     ...shieldEvent(ms),
-    decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+    decision: {
+      action: "block",
+      mode: "enforce",
+      rule_id: null,
+      policy_version: 1,
+      containment_id: null,
+      patch_id: null,
+      patch_body: null,
+    },
     actor: { ip_prefix: prefix, ip_hash: address === null ? null : actorHash(shieldKey, address) },
   };
 }

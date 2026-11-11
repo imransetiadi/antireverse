@@ -24,6 +24,7 @@ import {
   isBroadPattern,
   LIMITS,
   type Organization,
+  PATCH_ID_PATTERN,
   PATH_PATTERN,
   POLICY_LIMITS,
   type PolicyRule,
@@ -52,9 +53,11 @@ import {
   ignoreFinding,
   liftContainment,
   NotFoundError,
+  type PatchModeRequest,
   publishPolicy,
   reopenFinding,
   rollbackPolicy,
+  setPatchMode,
   testAlertChannel,
   UnauthorizedError,
   updateIncident,
@@ -864,6 +867,57 @@ export async function reopenFindingAction(
   revalidatePath(ROUTES.finding(findingId));
   revalidatePath(ROUTES.findings());
   revalidatePath(ROUTES.appFindings(appId));
+  redirect(ROUTES.finding(findingId));
+}
+
+// ── Virtual patches (slice 20) ────────────────────────────────────────────────────────────────────────
+// Enforcing a patch is refused unless the form carries the patch id, typed by the person exactly as the
+// question named it; the API checks it again. Going back to monitor reduces enforcement and needs none.
+
+export type PatchModeState = null | { ok: false; errors: FieldError[] };
+
+const patchStale = (): { ok: false; errors: FieldError[] } => failed("", t("error.patch.stale"));
+const patchMismatch = (patchId: string): { ok: false; errors: FieldError[] } =>
+  failed("confirm", t("patch.confirm.mismatch", { patch: patchId }));
+
+/** Sets the mode of a virtual patch in one App and Environment, from the Finding page, then goes back to it. */
+export async function setPatchModeAction(_previous: PatchModeState, formData: FormData): Promise<PatchModeState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const appId = text(formData, "appId");
+  const environment = text(formData, "environment");
+  const patchId = text(formData, "patchId");
+  const findingId = text(formData, "findingId");
+  const mode = text(formData, "mode");
+  if (
+    !ID_PATTERNS.app.test(appId) ||
+    !isEnvironment(environment) ||
+    !PATCH_ID_PATTERN.test(patchId) ||
+    !ID_PATTERNS.fnd.test(findingId) ||
+    !isMode(mode)
+  ) {
+    return patchStale();
+  }
+  const request: PatchModeRequest = { environment, mode };
+  if (mode === "enforce") {
+    // Exactly as typed: not trimmed, not folded.
+    if (formData.get("confirm") !== patchId) return patchMismatch(patchId);
+    request.confirm = patchId;
+  }
+
+  try {
+    await setPatchMode(key, appId, patchId, request);
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ConflictError || error instanceof NotFoundError) return patchStale();
+    if (error instanceof ValidationError && error.errors.some((entry) => entry.path === "confirm")) {
+      return patchMismatch(patchId);
+    }
+    return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.finding(findingId));
+  revalidatePath(ROUTES.policy(appId));
   redirect(ROUTES.finding(findingId));
 }
 

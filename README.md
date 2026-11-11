@@ -132,6 +132,14 @@ antireverse harden dist --register --lockfile package-lock.json --fail-on high
 - **Console:** Findings for the Organization and per App, a Finding page with Ignore and Reopen, and a Findings section on each Build.
 - **Honest limits:** npm only; no lockfile means no build Findings; severity is the advisory's, not whether your code reaches the vulnerable function; fixing means upgrading.
 
+### Virtual patches
+
+For some advisories Anti Reverse ships a virtual patch: Shield recognises the known exploit request for the vulnerable package. A patch is added automatically, in monitor, wherever a Finding for its advisory is open or ignored, and removed when the Finding is fixed. Promote it to Enforce on the Finding page (type the patch id to confirm); return to monitor in one action. A match opens a High "Exploit attempt" Incident.
+
+- Catalog today: qs (CVE-2022-24999), lodash (CVE-2019-10744, CVE-2020-8203), xml2js (CVE-2023-0842).
+- Body checks need `shield.verifyBody` on your body parsers; a body Shield never saw is recorded as "body not checked" and is never blocked. Under an enforced patch, a body in a character set Shield cannot read is refused.
+- **Honest limits:** a patch stops the known shape of an exploit, not every variant; some patterns can match ordinary text, so read the hits in monitor before enforcing. Upgrading is the fix.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

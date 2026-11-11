@@ -51,6 +51,8 @@ import {
   ListFindingsResponseSchema,
   type ListIncidentsResponse,
   ListIncidentsResponseSchema,
+  type ListPatchesResponse,
+  ListPatchesResponseSchema,
   type OrganizationResponse,
   OrganizationResponseSchema,
   type PolicyResponse,
@@ -61,6 +63,7 @@ import {
   type ProblemError,
   ProblemSchema,
   type RollbackPolicyRequest,
+  type SetPatchModeRequest,
   type SigningKeyResponse,
   SigningKeyResponseSchema,
   type TestAlertChannelResponse,
@@ -540,4 +543,27 @@ export function ignoreFinding(
 /** `POST /v1/findings/:findingId/reopen` — ends an ignore now. */
 export function reopenFinding(key: string, findingId: string): Promise<FindingResponse> {
   return call(`/v1/findings/${encodeURIComponent(findingId)}/reopen`, FindingResponseSchema, { method: "POST", key });
+}
+
+// ── Virtual patches (slice 20) ────────────────────────────────────────────────────────────────────────
+
+/** `GET /v1/apps/:appId/patches?environment=` — every catalog patch with its mode, activity and hits there. */
+export function listPatches(key: string, appId: string, environment: Environment): Promise<ListPatchesResponse> {
+  const query = new URLSearchParams({ environment });
+  return call(`/v1/apps/${encodeURIComponent(appId)}/patches?${query}`, ListPatchesResponseSchema, { key });
+}
+
+/** The body of a mode change: `confirm` is the patch id, required when going to enforce. */
+export type PatchModeRequest = SetPatchModeRequest;
+
+/**
+ * `POST /v1/apps/:appId/patches/:patchId/mode` — stores the mode and re-issues the bundle. The response body is
+ * not read: the page is rendered again from the list.
+ */
+export function setPatchMode(key: string, appId: string, patchId: string, request: PatchModeRequest): Promise<void> {
+  return callNoContent(`/v1/apps/${encodeURIComponent(appId)}/patches/${encodeURIComponent(patchId)}/mode`, {
+    method: "POST",
+    key,
+    body: request,
+  });
 }

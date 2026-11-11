@@ -270,6 +270,7 @@ describe("data directory", () => {
         { version: "0015_finding_withdrawn.sql" },
         { version: "0016_exposure_review.sql" },
         { version: "0017_exposure_review2.sql" },
+        { version: "0018_patches.sql" },
       ]);
     } finally {
       await second.close();

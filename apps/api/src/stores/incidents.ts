@@ -13,6 +13,7 @@ import {
 import { newId } from "@antireverse/protocol/server";
 import type { Queryable } from "../db/db.ts";
 import { ruleConditionSql } from "../detect/rules.ts";
+import type { PatchCatalog } from "../patches/catalog.ts";
 
 interface IncidentRow {
   id: string;
@@ -122,6 +123,12 @@ export interface DetectionInput {
    * Environment, advisory); the Incident names the first Finding's Build.
    */
   vulnerability?: { advisoryId: string; severity: "critical" | "high"; buildId: string | null } | undefined;
+  /**
+   * For `exploit-attempt` only (slice 20): the advisory of the Virtual patch the Event names. The advisory is the
+   * group: one Incident per (App, Environment, advisory), without a prefix or Build; the Detection keeps the Event's
+   * prefix (or none).
+   */
+  exploit?: { advisoryId: string } | undefined;
 }
 
 /**
@@ -136,10 +143,13 @@ export async function recordDetection(
   const at = input.detectedAt.toISOString();
   const canaryId = input.canary?.id ?? null;
   const origin = input.clone?.origin ?? null;
-  const advisoryId = input.vulnerability?.advisoryId ?? null;
+  const advisoryId = input.vulnerability?.advisoryId ?? input.exploit?.advisoryId ?? null;
   const buildId = input.canary?.buildId ?? input.clone?.buildId ?? input.vulnerability?.buildId ?? null;
   // A clone Incident is grouped by origin and has no prefix of its own; a vulnerable-component Incident by advisory.
-  const incidentPrefix = input.clone === undefined && input.vulnerability === undefined ? input.ipPrefix : null;
+  const incidentPrefix =
+    input.clone === undefined && input.vulnerability === undefined && input.exploit === undefined
+      ? input.ipPrefix
+      : null;
   const severity = input.vulnerability?.severity ?? input.rule.severity;
   // The row is locked, so that a status change and a Detection never interleave.
   const found = await q.query<IncidentRow>(
@@ -296,9 +306,29 @@ interface EvidenceRow {
  * and network prefix, with `ts` within `first_seen..last_seen`, that the Incident's rule counts (for a Canary
  * Incident: the Events carrying that Canary's signal). A caller appends its own parameters after these. Null
  * for a Canary Incident without its Canary (the table's check rules it out): it has no evidence. Null for a clone
- * Incident too: it counts Clone Beacon reports, not Events, so it has no evidence and no Actors.
+ * or vulnerable-component Incident too: it counts Clone Beacon reports or Findings, not Events, so it has no
+ * evidence and no Actors.
+ * An exploit-attempt Incident (slice 20) has no prefix: its Events are those of its App and Environment, in its span,
+ * whose `decision.patch_id` is a patch of `catalog` covering its advisory (the id or one of the advisory's aliases).
+ * Without a catalog, or without such a patch, it has none.
  */
-function evidenceScope(incident: Incident): { where: string; params: unknown[] } | null {
+async function evidenceScope(
+  q: Queryable,
+  incident: Incident,
+  catalog?: PatchCatalog,
+): Promise<{ where: string; params: unknown[] } | null> {
+  if (incident.rule === "exploit-attempt") {
+    if (catalog === undefined || incident.advisory_id === null) return null;
+    const patchIds = await coveringPatches(q, catalog, incident.advisory_id);
+    if (patchIds.length === 0) return null;
+    return {
+      where: `app_id = $1 AND environment = $2
+       AND ts BETWEEN $3::timestamptz AND $4::timestamptz
+       AND payload->'decision'->>'patch_id' = ANY($5::text[])
+       AND COALESCE(payload->'decision'->>'patch_body', 'checked') NOT IN ('unchecked', 'undecodable')`,
+      params: [incident.app_id, incident.environment, incident.first_seen, incident.last_seen, patchIds],
+    };
+  }
   if (incident.rule === "clone-origin" || incident.rule === "vulnerable-component" || incident.ip_prefix === null) {
     return null;
   }
@@ -325,6 +355,13 @@ function evidenceScope(incident: Incident): { where: string; params: unknown[] }
   };
 }
 
+/** The ids of the catalog patches whose advisories name `advisoryId` or one of its aliases (as last synced). */
+async function coveringPatches(q: Queryable, catalog: PatchCatalog, advisoryId: string): Promise<string[]> {
+  const { rows } = await q.query<{ aliases: string[] }>("SELECT aliases FROM advisories WHERE id = $1", [advisoryId]);
+  const names = new Set([advisoryId, ...(rows[0]?.aliases ?? [])]);
+  return catalog.patches.filter((patch) => patch.advisories.some((id) => names.has(id))).map((patch) => patch.id);
+}
+
 /** `$n` of the parameter that follows `params`. */
 const nextParam = (params: unknown[]): `$${number}` => `$${params.length + 1}`;
 
@@ -336,8 +373,9 @@ export async function listActors(
   q: Queryable,
   incident: Incident,
   limit: number,
+  catalog?: PatchCatalog,
 ): Promise<{ ip_hash: string; events: number }[]> {
-  const scope = evidenceScope(incident);
+  const scope = await evidenceScope(q, incident, catalog);
   if (scope === null) return [];
   const { rows } = await q.query<{ ip_hash: string; events: number }>(
     `SELECT payload->'actor'->>'ip_hash' AS ip_hash, count(*)::int AS events FROM events
@@ -351,8 +389,13 @@ export async function listActors(
 }
 
 /** Whether the actor hash occurs in the Incident's evidence (`evidenceScope`): an Actor of the Incident. */
-export async function hasActor(q: Queryable, incident: Incident, ipHash: string): Promise<boolean> {
-  const scope = evidenceScope(incident);
+export async function hasActor(
+  q: Queryable,
+  incident: Incident,
+  ipHash: string,
+  catalog?: PatchCatalog,
+): Promise<boolean> {
+  const scope = await evidenceScope(q, incident, catalog);
   if (scope === null) return false;
   const { rows } = await q.query(
     `SELECT 1 FROM events WHERE ${scope.where} AND payload->'actor'->>'ip_hash' = ${nextParam(scope.params)} LIMIT 1`,
@@ -365,8 +408,13 @@ export async function hasActor(q: Queryable, incident: Incident, ipHash: string)
  * The stored Events behind an Incident (`evidenceScope`), newest first (by `ts`, then id), at most `limit`.
  * As stored: the Event allowlist.
  */
-export async function listEvidence(q: Queryable, incident: Incident, limit: number): Promise<StoredEvent[]> {
-  const scope = evidenceScope(incident);
+export async function listEvidence(
+  q: Queryable,
+  incident: Incident,
+  limit: number,
+  catalog?: PatchCatalog,
+): Promise<StoredEvent[]> {
+  const scope = await evidenceScope(q, incident, catalog);
   if (scope === null) return [];
   const { rows } = await q.query<EvidenceRow>(
     `SELECT organization_id, app_id, environment, received_at, payload FROM events

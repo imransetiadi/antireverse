@@ -11,10 +11,11 @@ import {
   type InventorySender,
   readInventory,
 } from "./inventory.ts";
+import { createPatchChecker } from "./patches.ts";
 import { createPoller, type Poller } from "./policy/poller.ts";
 import { BUILT_IN_POLICY, createPolicyStore, routeOfDecision } from "./policy/store.ts";
 import { audienceOf, importPublicKey } from "./policy/verify.ts";
-import { BodyMismatchError, createSignatureChecker, type SessionBinding } from "./signature.ts";
+import { BodyMismatchError, createSignatureChecker, hasBody, type SessionBinding } from "./signature.ts";
 import { createNodeTransport } from "./transport.ts";
 import {
   POLICY_DEFAULTS,
@@ -244,6 +245,8 @@ function activeShield(
   const attestation = createAttestationChecker();
   // Request signatures (slice 04): verified against the binding of the request's valid token, nonces per instance.
   const signatures = createSignatureChecker();
+  // Virtual patches (slice 20): evaluated per request after the Rules; body conditions completed by `verifyBody`.
+  const patchChecker = createPatchChecker();
   /** The binding of each request's token, from `attest` to `signature` of the same request. */
   const bindings = new WeakMap<object, SessionBinding>();
 
@@ -277,6 +280,8 @@ function activeShield(
           return result;
         },
         signature: (request) => signatures.check(request, bindings.get(request) ?? null, now()),
+        patches: (request, method, recordMonitor) =>
+          patchChecker.evaluate(store.current(), request, method, hasBody(request), recordMonitor),
         ...(bodyTypes === null ? {} : { bodyTypes }),
         routeOf: routeOfDecision,
         record: (event) => emitter.record(event),
@@ -290,6 +295,9 @@ function activeShield(
     },
     // A plain function, so that `express.json({ verify: shield.verifyBody })` works unbound. Only the fixed 403 error
     // of a body mismatch is thrown; anything else is contained and the parser goes on: fail open.
+    // The patches' body conditions follow the signature (Rules before patches), on whatever body the hook sees —
+    // `bodyVerified.types` governs signature requirements only; an enforced match throws the same 403 error. A
+    // failure in them is contained.
     verifyBody: (req, _res, buf) => {
       try {
         signatures.verifyBody(req, buf);
@@ -297,6 +305,14 @@ function activeShield(
         if (error instanceof BodyMismatchError) throw error;
         internalErrors += 1;
       }
+      let refuse = false;
+      try {
+        refuse = patchChecker.verifyBody(req, buf);
+      } catch {
+        internalErrors += 1;
+        refuse = false;
+      }
+      if (refuse) throw new BodyMismatchError();
     },
     errorHandler: () => createErrorHandler(isRefusal),
     flush: () => emitter.flush(),

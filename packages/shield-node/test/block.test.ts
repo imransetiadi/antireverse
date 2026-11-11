@@ -236,21 +236,57 @@ describe("an Enforce Rule on /api/admin/**", () => {
     }
     const events = await guarded.events(4);
     expect(events.map((event) => [event.request.route, event.request.status, event.decision])).toEqual([
-      ["/api/login", 401, { action: "allow", mode: "enforce", rule_id: null, policy_version: 7, containment_id: null }],
+      [
+        "/api/login",
+        401,
+        {
+          action: "allow",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
+      ],
       [
         "/api/administrator",
         200,
-        { action: "allow", mode: "enforce", rule_id: null, policy_version: 7, containment_id: null },
+        {
+          action: "allow",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       ],
       [
         "/api/:section/list",
         200,
-        { action: "allow", mode: "enforce", rule_id: null, policy_version: 7, containment_id: null },
+        {
+          action: "allow",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       ],
       [
         UNMATCHED_ROUTE,
         404,
-        { action: "allow", mode: "enforce", rule_id: null, policy_version: 7, containment_id: null },
+        {
+          action: "allow",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       ],
     ]);
   });
@@ -492,12 +528,28 @@ describe("a Monitor Rule on /api/products/**", () => {
       [
         "/api/products/:id",
         200,
-        { action: "block", mode: "monitor", rule_id: PRODUCTS.id, policy_version: 7, containment_id: null },
+        {
+          action: "block",
+          mode: "monitor",
+          rule_id: PRODUCTS.id,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       ],
       [
         UNMATCHED_ROUTE,
         404,
-        { action: "block", mode: "monitor", rule_id: PRODUCTS.id, policy_version: 7, containment_id: null },
+        {
+          action: "block",
+          mode: "monitor",
+          rule_id: PRODUCTS.id,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       ],
     ]);
     expect(guarded.sent()).not.toContain("zq");

@@ -12,6 +12,7 @@ import { createDetector } from "./detect/detector.ts";
 import { createIncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { createNotifier, DEFAULT_CONSOLE_URL, type Notifier } from "./notify/notifier.ts";
+import type { PatchCatalog } from "./patches/catalog.ts";
 import { createSigner, type Signer } from "./signer.ts";
 
 export interface Listening {
@@ -68,6 +69,8 @@ export interface StartApiOptions {
   consoleUrl?: string;
   /** The wait after a failed first alert attempt; it doubles after each further one. Default 1,000 ms. */
   alertBackoffMs?: number;
+  /** The Virtual patch catalog (slice 20). Default: `PATCH_CATALOG`; tests pass a fixture catalog. */
+  patches?: PatchCatalog;
 }
 
 export interface RunningApi extends Listening {
@@ -140,6 +143,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   if (options.logger !== undefined) deps.logger = options.logger;
   if (options.heartbeatMs !== undefined) deps.heartbeatMs = options.heartbeatMs;
   if (options.now !== undefined) deps.now = options.now;
+  if (options.patches !== undefined) deps.patches = options.patches;
   const app = createApp(deps);
 
   let listening: Listening;
@@ -152,7 +156,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const { server } = listening;
   const graceMs = options.shutdownGraceMs ?? 2_000;
   // Started once the server listens: a failed start leaves nothing subscribed.
-  const detector = createDetector({ db, bus, notifier, now: options.now, logger });
+  const detector = createDetector({ db, bus, notifier, now: options.now, logger, patches: options.patches });
   const stopDetector = detector.start();
 
   let closing: Promise<void> | undefined;

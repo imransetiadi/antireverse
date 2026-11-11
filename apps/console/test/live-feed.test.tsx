@@ -206,7 +206,15 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
     renderFeed([
       eventAt(1_000, {
         request: { method: "GET", route: "/api/admin/**", status: 403, latency_ms: 0.2 },
-        decision: { action: "block", mode: "enforce", rule_id: RULE_ID, policy_version: 3, containment_id: null },
+        decision: {
+          action: "block",
+          mode: "enforce",
+          rule_id: RULE_ID,
+          policy_version: 3,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
     ]);
     const { text, chip, mark } = decisionCell(rows()[0]);
@@ -227,7 +235,15 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
     renderFeed([
       eventAt(1_000, {
         request: { method: "GET", route: "/api/admin/**", status: 403, latency_ms: 0.2 },
-        decision: { action: "block", mode: "enforce", rule_id: RULE_ID, policy_version: 3, containment_id: null },
+        decision: {
+          action: "block",
+          mode: "enforce",
+          rule_id: RULE_ID,
+          policy_version: 3,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
     ]);
     const cells = within(rows()[0] as HTMLElement)
@@ -250,7 +266,15 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
     renderFeed([
       eventAt(1_000, {
         request: { method: "GET", route: "/api/products/:id", status: 200, latency_ms: 2 },
-        decision: { action: "block", mode: "monitor", rule_id: RULE_ID, policy_version: 3, containment_id: null },
+        decision: {
+          action: "block",
+          mode: "monitor",
+          rule_id: RULE_ID,
+          policy_version: 3,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
     ]);
     const { text, chip, mark } = decisionCell(rows()[0]);
@@ -267,11 +291,27 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
   it("draws Allowed under a published Policy without the Monitor mark", () => {
     renderFeed([
       eventAt(1_000, {
-        decision: { action: "allow", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null },
+        decision: {
+          action: "allow",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 1,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
       // Even if a Shield still says monitor: under a published Policy an allowed request has no Monitor mark.
       eventAt(2_000, {
-        decision: { action: "allow", mode: "monitor", rule_id: null, policy_version: 7, containment_id: null },
+        decision: {
+          action: "allow",
+          mode: "monitor",
+          rule_id: null,
+          policy_version: 7,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
     ]);
     for (const row of rows()) {
@@ -286,7 +326,15 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
   it("keeps the Monitor mark on Allowed while no Policy is published", () => {
     renderFeed([
       eventAt(1_000, {
-        decision: { action: "allow", mode: "monitor", rule_id: null, policy_version: 0, containment_id: null },
+        decision: {
+          action: "allow",
+          mode: "monitor",
+          rule_id: null,
+          policy_version: 0,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        },
       }),
     ]);
     const { text, chip, mark } = decisionCell(rows()[0]);
@@ -302,19 +350,43 @@ describe("LiveFeed — Blocked and enforced Decisions", () => {
         "security-event",
         eventAt(3_000, {
           request: { method: "GET", route: "/api/admin/**", status: 403, latency_ms: 0.1 },
-          decision: { action: "block", mode: "enforce", rule_id: RULE_ID, policy_version: 2, containment_id: null },
+          decision: {
+            action: "block",
+            mode: "enforce",
+            rule_id: RULE_ID,
+            policy_version: 2,
+            containment_id: null,
+            patch_id: null,
+            patch_body: null,
+          },
         }),
       );
       source.emit(
         "security-event",
         eventAt(2_000, {
-          decision: { action: "block", mode: "monitor", rule_id: RULE_ID, policy_version: 2, containment_id: null },
+          decision: {
+            action: "block",
+            mode: "monitor",
+            rule_id: RULE_ID,
+            policy_version: 2,
+            containment_id: null,
+            patch_id: null,
+            patch_body: null,
+          },
         }),
       );
       source.emit(
         "security-event",
         eventAt(1_000, {
-          decision: { action: "allow", mode: "enforce", rule_id: null, policy_version: 2, containment_id: null },
+          decision: {
+            action: "allow",
+            mode: "enforce",
+            rule_id: null,
+            policy_version: 2,
+            containment_id: null,
+            patch_id: null,
+            patch_body: null,
+          },
         }),
       );
     });

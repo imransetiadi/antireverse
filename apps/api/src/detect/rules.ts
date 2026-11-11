@@ -41,8 +41,21 @@ export function touchedCanaries(event: StoredEvent): string[] {
  */
 const containmentBlock = (event: StoredEvent) => event.decision.containment_id !== null;
 
+/**
+ * A Virtual patch decided the request (slice 20), recorded under monitor or refused under enforce. It counts toward
+ * `exploit-attempt` only: an enforced patch block is the response to a known exploit, which already opens its own
+ * Incident, so it does not count toward `blocked-burst` as well. A patch whose body condition was never checked
+ * (`patch_body: "unchecked"`, recorded as allow; plan A6 F2) is not an exploit attempt and never counts; nor is one
+ * whose body was in a character set Shield cannot read (`"undecodable"`, plan A11 M2) — refused under enforce, that
+ * block counts like any other enforced block.
+ */
+const patchDecision = (event: StoredEvent) =>
+  (event.decision.patch_id ?? null) !== null &&
+  event.decision.patch_body !== "unchecked" &&
+  event.decision.patch_body !== "undecodable";
+
 const COUNTS: Record<DetectionRuleKey, (event: StoredEvent) => boolean> = {
-  "blocked-burst": (event) => enforcedBlock(event) && !containmentBlock(event),
+  "blocked-burst": (event) => enforcedBlock(event) && !containmentBlock(event) && !patchDecision(event),
   // A 401 or 403 from the app. Shield's own enforced block also ends in 403; counting it here would open a
   // second Incident for one blocked attack.
   "failed-signin-burst": (event) =>
@@ -54,11 +67,16 @@ const COUNTS: Record<DetectionRuleKey, (event: StoredEvent) => boolean> = {
   "clone-origin": () => false,
   // Counts new Critical or High Findings (slice 19), never Events: no Event opens a vulnerable-component Incident.
   "vulnerable-component": () => false,
+  // Counted per (App, Environment, advisory of the patch); the advisory is resolved in the tenant transaction.
+  "exploit-attempt": patchDecision,
 };
 
 const ENFORCED_BLOCK_SQL = "(payload->'decision'->>'action' = 'block' AND payload->'decision'->>'mode' = 'enforce')";
 /** `containmentBlock`: `->>` is SQL NULL both for a JSON null and for a member an older Event does not have. */
 const CONTAINMENT_BLOCK_SQL = "(payload->'decision'->>'containment_id' IS NOT NULL)";
+/** `patchDecision`, likewise. */
+const PATCH_DECISION_SQL =
+  "(payload->'decision'->>'patch_id' IS NOT NULL AND COALESCE(payload->'decision'->>'patch_body', 'checked') NOT IN ('unchecked', 'undecodable'))";
 
 /**
  * The same conditions as `COUNTS`, over the `payload` column of `events`. Constant text: no value goes in.
@@ -68,8 +86,9 @@ const COUNTS_SQL: Record<
   Exclude<DetectionRuleKey, "canary-touched" | "clone-origin" | "vulnerable-component">,
   string
 > = {
-  "blocked-burst": `(${ENFORCED_BLOCK_SQL} AND NOT ${CONTAINMENT_BLOCK_SQL})`,
+  "blocked-burst": `(${ENFORCED_BLOCK_SQL} AND NOT ${CONTAINMENT_BLOCK_SQL} AND NOT ${PATCH_DECISION_SQL})`,
   "failed-signin-burst": `((payload->'request'->>'status') IN ('401', '403') AND NOT ${ENFORCED_BLOCK_SQL})`,
+  "exploit-attempt": PATCH_DECISION_SQL,
 };
 
 /** The managed rules an Event counts toward, in the order of `DETECTION_RULES`. */

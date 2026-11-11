@@ -51,6 +51,8 @@ interface IncidentDetailProps {
   block?: BlockRequest | null;
   /** The block whose lifting the address asks to confirm, if any. */
   confirmLiftId?: string | undefined;
+  /** Virtual patch titles by id (slice 20), to name the patch of an Event in the evidence. */
+  patchTitles?: Readonly<Record<string, string>> | undefined;
 }
 
 const SECTION = "flex flex-col gap-3";
@@ -170,6 +172,7 @@ export function IncidentDetail({
   now,
   block = null,
   confirmLiftId,
+  patchTitles,
 }: IncidentDetailProps) {
   const timeline = [...detections].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
   const clone = incident.rule === "clone-origin";
@@ -262,7 +265,7 @@ export function IncidentDetail({
             <div className="flex min-w-0 flex-col gap-1">
               <dt className={TERM}>{t("incident.fact.advisory")}</dt>
               <dd>
-                {/* A vulnerable component Incident (slice 19): its advisory's Findings, in the Finding list. */}
+                {/* A vulnerable component (slice 19) or exploit attempt (slice 20) Incident: its advisory's Findings. */}
                 <Link
                   href={ROUTES.findings({ advisory: incident.advisory_id })}
                   data-testid="fact-advisory-link"
@@ -402,7 +405,7 @@ export function IncidentDetail({
                   <EventTableHead />
                   <tbody>
                     {evidence.map((event) => (
-                      <EventRow key={event.event_id} event={event} />
+                      <EventRow key={event.event_id} event={event} patchTitles={patchTitles} />
                     ))}
                   </tbody>
                 </table>

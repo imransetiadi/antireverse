@@ -76,7 +76,55 @@ export function EventTableHead() {
   );
 }
 
-export const EventRow = memo(function EventRow({ event }: { event: StoredEvent }) {
+/**
+ * The virtual patch a Decision names (slice 20): "Patch: <title>", by its id when the title is not known, and
+ * "body not checked" when its body condition could not be checked (the request then passed), "body in an unreadable
+ * character set" when the body could not be decoded (plan A11 M2; refused under enforce). Nothing for an
+ * Event without a patch, an older Shield's Event without the fields among them.
+ */
+function PatchMark({
+  decision,
+  titles,
+}: {
+  decision: StoredEvent["decision"];
+  titles: Readonly<Record<string, string>> | undefined;
+}) {
+  const patchId = decision.patch_id ?? null;
+  if (patchId === null) return null;
+  const title = titles !== undefined && Object.hasOwn(titles, patchId) ? titles[patchId] : undefined;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <span data-testid="event-patch" data-patch-id={patchId} className="caption-1 text-fg-muted">
+        {t("live.patch", { patch: title ?? patchId })}
+      </span>
+      {decision.patch_body === "unchecked" ? (
+        <span
+          data-testid="event-patch-unchecked"
+          className="inline-flex h-6 items-center rounded-control border border-border-strong border-dashed px-2 caption-1 text-fg-muted"
+        >
+          {t("live.patch.unchecked")}
+        </span>
+      ) : null}
+      {decision.patch_body === "undecodable" ? (
+        <span
+          data-testid="event-patch-undecodable"
+          className="inline-flex h-6 items-center rounded-control border border-border-strong border-dashed px-2 caption-1 text-fg-muted"
+        >
+          {t("live.patch.undecodable")}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+export const EventRow = memo(function EventRow({
+  event,
+  patchTitles,
+}: {
+  event: StoredEvent;
+  /** Virtual patch titles by id, to name the patch of a Decision; without one the id is shown. */
+  patchTitles?: Readonly<Record<string, string>> | undefined;
+}) {
   const time = formatTime(event.ts);
   const status = statusClass(event.request.status);
   // UIUX.md §4.2: observed is dashed and carries the Monitor mark; enforced is solid and carries none.
@@ -92,6 +140,7 @@ export const EventRow = memo(function EventRow({ event }: { event: StoredEvent }
         <span className="inline-flex items-center gap-2">
           <DecisionChip action={event.decision.action} mode={observed ? "monitor" : "enforce"} />
           {observed ? <ModeTag mode="monitor" /> : null}
+          <PatchMark decision={event.decision} titles={patchTitles} />
         </span>
       </td>
       <td className={`${CELL} whitespace-nowrap`}>

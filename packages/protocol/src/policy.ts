@@ -5,7 +5,8 @@ import { CANARY_LIMITS, CanarySchema } from "./canaries.ts";
 import { DECISION_MODES, ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
 import { ActorHashSchema, CidrSchema, CONTAINMENT_LIMITS } from "./containment.ts";
 import { IP_PREFIX_PATTERN } from "./events.ts";
-import { deepFreeze, HttpMethodSchema, trimmedText } from "./shared.ts";
+import { BundlePatchSchema, PATCH_LIMITS } from "./patches.ts";
+import { deepFreeze, HttpMethodSchema, RULE_PATH_MAX, RULE_PATH_PATTERN, trimmedText } from "./shared.ts";
 
 // The Policy contract: Rules as the Console sends and the API stores them, and the signed bundle Shield
 // applies. Every object schema is a plain `z.object`, which strips unknown keys. Shield validates the
@@ -27,7 +28,7 @@ export const POLICY_LIMITS = {
   /** Rules per Policy. */
   rulesMax: 50,
   /** Characters of a path pattern. */
-  pathMax: 256,
+  pathMax: RULE_PATH_MAX,
   /** Methods per Rule. An empty list means every method. */
   methodsMax: 8,
   /** Characters of a Rule name, after trimming. */
@@ -41,16 +42,13 @@ export const POLICY_LIMITS = {
 /** The whole body of a block response (status 403, `content-type: application/json`). */
 export const BLOCK_RESPONSE_BODY = '{"error":"request_blocked"}';
 
-const SEGMENT = "(?:[A-Za-z0-9._~-]+|\\*)";
 /**
  * A path pattern of 1..256 characters: `/` alone, or `/`-separated segments without a trailing slash.
  * A segment is literal text over `A-Z a-z 0-9 . _ ~ -`, or a single star (exactly one segment), or, as the
  * last segment only, two stars (zero or more segments). Examples: `/login`, `/api/admin/**`, and
- * `/api/users/` + star + `/export`.
+ * `/api/users/` + star + `/export`. Defined in shared.ts, which patches.ts (Virtual patches) shares.
  */
-export const PATH_PATTERN = new RegExp(
-  `^(?=.{1,${POLICY_LIMITS.pathMax}}$)(?:/|(?:/${SEGMENT})*/(?:${SEGMENT}|\\*\\*))$`,
-);
+export const PATH_PATTERN = RULE_PATH_PATTERN;
 
 const BASE64URL_ED25519_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 const BASE64URL_ED25519_PUBLIC_KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -249,6 +247,24 @@ export const BundlePayloadSchema = z
       .array(BundleAttestationKeySchema)
       .max(ATTESTATION_LIMITS.keysMax)
       .refine((keys) => new Set(keys.map((key) => key.kid)).size === keys.length, "Must not list a kid twice.")
+      .optional(),
+    /**
+     * The active Virtual patches of the App and Environment (slice 20), each id once, each in the mode the admin
+     * chose (monitor until promoted), at most `PATCH_LIMITS.bundleBytesMax` UTF-8 bytes as JSON together (the API
+     * ships them by severity, then id, within that budget). Optional: a bundle from before slice 20 has none, and an older Shield strips
+     * the field.
+     */
+    patches: z
+      .array(BundlePatchSchema)
+      .max(PATCH_LIMITS.perBundle)
+      .refine(
+        (patches) => new Set(patches.map((patch) => patch.id)).size === patches.length,
+        "Must not list a patch twice.",
+      )
+      .refine(
+        (patches) => new TextEncoder().encode(JSON.stringify(patches)).length <= PATCH_LIMITS.bundleBytesMax,
+        `Patches hold at most ${PATCH_LIMITS.bundleBytesMax} bytes of JSON together.`,
+      )
       .optional(),
   })
   .refine((payload) => payload.rules.length + (payload.signature_rules?.length ?? 0) <= POLICY_LIMITS.rulesMax, {

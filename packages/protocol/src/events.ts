@@ -10,6 +10,7 @@ import {
   LIMITS,
   PROTOCOL_VERSION,
 } from "./constants.ts";
+import { PATCH_BODY_STATES, PATCH_ID_PATTERN } from "./patches.ts";
 import { deepFreeze, HttpMethodSchema, isoDateTime, text } from "./shared.ts";
 import { EventSignatureSchema } from "./signature.ts";
 
@@ -44,6 +45,22 @@ const DecisionSchema = z.object({
    * null otherwise. Optional on the wire: a Shield from before slice 09 does not send it, and absent means null.
    */
   containment_id: z.string().regex(ID_PATTERNS.cnt).nullable().default(null),
+  /**
+   * The Virtual patch that decided the request (slice 20); null otherwise. A patch decision has `action` block,
+   * `mode` as the bundle shipped the patch (monitor or enforce), `rule_id` null and `containment_id` null — except a
+   * patch whose body was never checked (`patch_body` "unchecked", amendment A6 F2): it did not block, so `action` is
+   * allow and `mode` monitor, and it never counts as an exploit attempt or a hit. As for
+   * `containment_id`, the schema does not enforce that combination. Optional on the wire: a Shield from before
+   * slice 20 does not send it, and absent means null.
+   */
+  patch_id: z.string().regex(PATCH_ID_PATTERN).nullable().default(null),
+  /**
+   * Whether the body condition of the patch in `patch_id` was checked (`verifyBody`) or not ("unchecked": the patch
+   * was recorded with action allow, mode monitor, and the request passed); null when `patch_id` is null. A patch without a body condition records
+   * "checked". As for `patch_id`, the schema does not enforce the combination. Optional on the wire: absent means
+   * null.
+   */
+  patch_body: z.enum(PATCH_BODY_STATES).nullable().default(null),
 });
 
 const ActorSchema = z.object({
@@ -64,7 +81,7 @@ const SignalSchema = z.object({
 
 /**
  * One Event as Shield sends it. The inferred type is the parsed form: `actor.ip_hash`,
- * `decision.containment_id`, `attestation` and `signature` are always present (null when an older Shield left
+ * `decision.containment_id`, `decision.patch_id`, `decision.patch_body`, `attestation` and `signature` are always present (null when an older Shield left
  * them out).
  */
 export const ShieldEventSchema = z.object({
@@ -117,7 +134,15 @@ export const EXAMPLE_SHIELD_EVENT: ShieldEvent = deepFreeze({
   type: "request.decision",
   surface: "api",
   request: { method: "GET", route: "/api/products/:id", status: 200, latency_ms: 3.25 },
-  decision: { action: "allow", mode: "monitor", rule_id: null, policy_version: 0, containment_id: null },
+  decision: {
+    action: "allow",
+    mode: "monitor",
+    rule_id: null,
+    policy_version: 0,
+    containment_id: null,
+    patch_id: null,
+    patch_body: null,
+  },
   actor: { ip_prefix: "203.0.113.0/24", ip_hash: null },
   signals: [],
   attestation: null,

@@ -405,7 +405,15 @@ describe("Canaries", () => {
       expect(matchingRules(base).map((rule) => rule.key)).toEqual(["canary-touched"]);
       const blocked = {
         ...base,
-        decision: { action: "block", mode: "enforce", rule_id: null, policy_version: 1, containment_id: null } as const,
+        decision: {
+          action: "block",
+          mode: "enforce",
+          rule_id: null,
+          policy_version: 1,
+          containment_id: null,
+          patch_id: null,
+          patch_body: null,
+        } as const,
       };
       expect(matchingRules(blocked).map((rule) => rule.key)).toEqual(["blocked-burst", "canary-touched"]);
       // A near miss is no Canary signal.
@@ -621,6 +629,8 @@ describe("Canaries", () => {
             rule_id: null,
             policy_version: 1,
             containment_id: null,
+            patch_id: null,
+            patch_body: null,
           },
         })),
       );
