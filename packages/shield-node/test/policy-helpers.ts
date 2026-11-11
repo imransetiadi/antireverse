@@ -90,7 +90,7 @@ export interface FakeApi {
   policyAnswer(answer: Answer | Error | (() => Promise<Answer>) | null): void;
 }
 
-/** A fake Anti Reverse API: it serves the published bundle with ETag handling and accepts every batch and inventory. */
+/** A fake Airverse API: it serves the published bundle with ETag handling and accepts every batch and inventory. */
 export function fakeApi(): FakeApi {
   const gets: Sent[] = [];
   const posts: Sent[] = [];

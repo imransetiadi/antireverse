@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — UI and UX"
+title: "Airverse — UI and UX"
 aliases: [UIUX]
 project: anti-reverse
 doc: UIUX
@@ -20,7 +20,7 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — UI and UX
+# Airverse — UI and UX
 
 The design of the Console, the developer experience of the SDKs and CLI, and the rules every screen must pass. This file is the **design-system master**: page-level decisions may override it only by recording the override here. Users and their needs are in [PRD.md §4](PRD.md); performance budgets in [PERFORMANCE.md](PERFORMANCE.md); checks in [QASUITE.md §13](QASUITE.md).
 
@@ -28,7 +28,7 @@ The design of the Console, the developer experience of the SDKs and CLI, and the
 
 ## 1. Design intent
 
-Anti Reverse is used in two moods: **calm** (setting up, reviewing trends, tuning rules) and **urgent** (an alert at 02:00). The interface serves both by being quiet until something needs a decision, then making that decision obvious and reversible.
+Airverse is used in two moods: **calm** (setting up, reviewing trends, tuning rules) and **urgent** (an alert at 02:00). The interface serves both by being quiet until something needs a decision, then making that decision obvious and reversible.
 
 | # | Principle | In practice |
 |---|---|---|
@@ -247,7 +247,7 @@ Sidebar     Overview
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│ Anti Reverse   Acme ▾   shop-web ▾   [PRODUCTION]      Search  Ctrl K     ● Live    (2)   NS │
+│ Airverse   Acme ▾   shop-web ▾   [PRODUCTION]      Search  Ctrl K     ● Live    (2)   NS │
 ├───────────┬────────────────────────────────────────────────────────────────────────────────┤
 │ Overview  │ ● PROTECTED · 12 of 15 rules enforced · RRS 78 (+4) · SDKs current               │
 │ Live      │ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐              │
@@ -310,7 +310,7 @@ Policies / production / Require attestation on API                    Mode: ◌ 
 │ When    attestation verdict is not trusted │ │ Would block      3,902 requests   0.08 %       │
 │ On      /api/**  except /api/public/**     │ │ Actors affected  211                           │
 │ Then    Block                              │ │ Known-good hit   0   ✓                         │
-│ If Anti Reverse errors   ( ) Open (•) Close│ │ Top routes ▸     Sample events ▸               │
+│ If Airverse errors   ( ) Open (•) Close│ │ Top routes ▸     Sample events ▸               │
 └────────────────────────────────────────────┘ └────────────────────────────────────────────────┘
 Rollout   ○ 10 %   ○ 50 %   ○ 100 %                         [ Save draft ]  [ Promote to enforce ]
 History   v41 enforced 3 Nov by N. Sari ▸        Promoting affects production. Undo is one click.
@@ -505,7 +505,7 @@ $ antireverse harden ./dist --profile balanced
 
 ## 17. Open design questions
 
-1. Product name styling: "Anti Reverse", "AntiReverse" or "anti·reverse"; logo and mark.
+1. Product name styling: "Airverse", "AntiReverse" or "anti·reverse"; logo and mark.
 2. Whether a light interactive theme is needed for a specific customer segment.
 3. Map visual: choropleth vs bubble map as the default for origin data.
 4. How much of the Console the first additional locale must cover at launch.

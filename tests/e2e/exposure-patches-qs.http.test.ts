@@ -145,7 +145,7 @@ beforeAll(async () => {
   expect(synced.code, synced.stderr).toBe(0);
   expect(`${synced.stdout}${synced.stderr}`).toMatch(/advisories received=1 inserted=1/);
 
-  // No `patches` option: the catalog Anti Reverse ships.
+  // No `patches` option: the catalog Airverse ships.
   api = await startApi({ dataDir, logger: { info() {}, warn() {} } });
   const organization = CreateOrganizationResponseSchema.parse(
     await (await call("/v1/organizations", { method: "POST", body: { name: "Acme" } })).json(),

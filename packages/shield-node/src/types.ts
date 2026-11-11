@@ -48,7 +48,7 @@ export interface ShieldLogger {
 export interface ShieldConfig {
   /** The Shield key of the App: `ark_<prod|stg|dev>_<43 characters>`. */
   key: string;
-  /** Base URL of the Anti Reverse API, e.g. `http://127.0.0.1:8787`. */
+  /** Base URL of the Airverse API, e.g. `http://127.0.0.1:8787`. */
   endpoint: string;
   flushIntervalMs?: number;
   maxBatchSize?: number;
@@ -73,7 +73,7 @@ export interface ShieldConfig {
   /** Milliseconds between two requests for the Policy Bundle. Default 5,000; never less than 100. */
   policyPollIntervalMs?: number;
   /**
-   * The key of the actor hash: a secret the customer holds and Anti Reverse never sees (at least 32 characters,
+   * The key of the actor hash: a secret the customer holds and Airverse never sees (at least 32 characters,
    * no whitespace, not the Shield key). Default: `process.env.AR_ACTOR_KEY`. With it every Event carries
    * `actor.ip_hash`, a keyed hash of the client address, and actor blocks can match. Without a usable one
    * `ip_hash` is null and actor blocks never match; prefix blocks still apply. An unusable value is treated as

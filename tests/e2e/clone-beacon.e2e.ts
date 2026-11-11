@@ -1,6 +1,6 @@
 // Ticket 10 in a real browser: a bundle hardened with `--origin http://shop.example:<port> --register` is served
 // by one static server under two host names, which Chromium resolves to 127.0.0.1 (--host-resolver-rules). On
-// the allowed name the page loads and sends nothing to Anti Reverse; on the clone name the planted beacon sends
+// the allowed name the page loads and sends nothing to Airverse; on the clone name the planted beacon sends
 // exactly one navigator.sendBeacon report, and the Console shows a High "Clone detected" Incident with the origin
 // as plain text, a link to the Build and the clone note in place of the containment bar.
 //

@@ -31,7 +31,7 @@ related:
 
 Actor identity (D-017)
 
-- [x] Shield adds to every Event a keyed hash of the client address (`actor.ip_hash`): HMAC over the full IPv4 address or the IPv6 /64 with an **actor key the customer holds** (`AR_ACTOR_KEY`), never sent to Anti Reverse — so Anti Reverse cannot recover the address (owner's decision, plan amendment A7). Without the key no hash is sent and only network blocks are possible. The full address never leaves the customer's server.
+- [x] Shield adds to every Event a keyed hash of the client address (`actor.ip_hash`): HMAC over the full IPv4 address or the IPv6 /64 with an **actor key the customer holds** (`AR_ACTOR_KEY`), never sent to Airverse — so Airverse cannot recover the address (owner's decision, plan amendment A7). Without the key no hash is sent and only network blocks are possible. The full address never leaves the customer's server.
 - [x] An Incident shows its Actors: the distinct hashes in its evidence with their request counts.
 
 Containment

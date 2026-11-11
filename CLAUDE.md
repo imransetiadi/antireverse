@@ -1,4 +1,4 @@
-# Anti Reverse — rules for every session and every agent
+# Airverse — rules for every session and every agent
 
 Read [MEMORY.md](MEMORY.md) first: glossary, decisions, lessons, handoffs. The specification is the seven documents beside it.
 

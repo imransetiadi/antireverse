@@ -1,4 +1,4 @@
-// A stand-in for the Anti Reverse API, for looking at the Console without the real API.
+// A stand-in for the Airverse API, for looking at the Console without the real API.
 // It implements the responses of contracts C2 and P2 in memory, with well-formed identifiers and keys, a
 // live stream that emits one synthetic Event per second for every App, and Policies: every new App starts
 // with two published versions in development, one in production and none in staging. Slice 06: the first

@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Security"
+title: "Airverse — Security"
 aliases: [SECURITY]
 project: anti-reverse
 doc: SECURITY
@@ -20,9 +20,9 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — Security
+# Airverse — Security
 
-Anti Reverse is a security product, an attractive target, and a holder of offensive capability. This document covers all three: the threats it defends customers against (§4), the threats to the platform itself (§5), and the misuse of the platform as a weapon (§6). Architecture is in [SDD.md](SDD.md); verification of every control is in [QASUITE.md](QASUITE.md); response procedures are in [OPERATION.md](OPERATION.md).
+Airverse is a security product, an attractive target, and a holder of offensive capability. This document covers all three: the threats it defends customers against (§4), the threats to the platform itself (§5), and the misuse of the platform as a weapon (§6). Architecture is in [SDD.md](SDD.md); verification of every control is in [QASUITE.md](QASUITE.md); response procedures are in [OPERATION.md](OPERATION.md).
 
 ---
 
@@ -45,7 +45,7 @@ Customers must be able to rely on what follows being true.
 - **Guard can be bypassed by a sufficiently skilled attacker.** That is why Guard only reports and Shield decides, and why Radar looks for the bypass itself.
 - **An attacker can drive a genuine client.** Request signing stops scripts, not humans or full-browser automation; behaviour rules and rate limits cover that gap.
 - **RRS is empirical and relative.** It measures resistance against a stated agent, model and budget. It is not a certification.
-- **Anti Reverse is not a volumetric DDoS service, a WAF replacement, an EDR, or a substitute for secure server-side design.**
+- **Airverse is not a volumetric DDoS service, a WAF replacement, an EDR, or a substitute for secure server-side design.**
 - **Protection through obscurity alone is a recognised weakness.** Every obscurity measure here is paired with detection or server-side enforcement.
 
 ## 3. Assets and trust boundaries
@@ -63,7 +63,7 @@ Trust zones Z0–Z8 are defined in SDD §3. Assets ranked by impact if compromis
 
 ## 4. Threat model A — attacks on customer products
 
-What Anti Reverse defends against, which module answers, and how the answer is measured.
+What Airverse defends against, which module answers, and how the answer is measured.
 
 | ID | Threat | Typical technique | Modules | Reference taxonomy | Measured by |
 |---|---|---|---|---|---|
@@ -85,7 +85,7 @@ What Anti Reverse defends against, which module answers, and how the answer is m
 
 Taxonomy keys: OWASP MASVS, OWASP API Security Top 10 (2023), OWASP Automated Threats (OAT), MITRE ATT&CK, CWE.
 
-## 5. Threat model B — attacks on the Anti Reverse platform
+## 5. Threat model B — attacks on the Airverse platform
 
 STRIDE letters: **S**poofing, **T**ampering, **R**epudiation, **I**nformation disclosure, **D**enial of service, **E**levation of privilege. Control identifiers refer to §7.
 
@@ -110,7 +110,7 @@ STRIDE letters: **S**poofing, **T**ampering, **R**epudiation, **I**nformation di
 | TP-17 | Webhook forgery, or server-side request forgery through customer-supplied URLs | S, T | Medium | Signed webhooks, destination validation, egress proxy |
 | TP-18 | Compromise of the content delivery path for bundles, key sets or Guard assets | T | High | SC-KEY-03, SC-SUP-04 |
 
-## 6. Threat model C — misuse of Anti Reverse
+## 6. Threat model C — misuse of Airverse
 
 Prove contains a reverse-engineering toolbelt and an autonomous pentest engine. Both are dual-use. The design assumes someone will try to rent them.
 
@@ -226,7 +226,7 @@ Prove contains a reverse-engineering toolbelt and an autonomous pentest engine. 
 
 ## 8. Privacy and data protection
 
-**Roles.** For telemetry about a customer's end users, the customer is the controller and Anti Reverse the processor; a data-processing agreement and a public sub-processor list apply. For Console accounts, Anti Reverse is the controller.
+**Roles.** For telemetry about a customer's end users, the customer is the controller and Airverse the processor; a data-processing agreement and a public sub-processor list apply. For Console accounts, Airverse is the controller.
 
 | Data | Examples | Collected? | Default retention | Notes |
 |---|---|---|---|---|
@@ -235,12 +235,12 @@ Prove contains a reverse-engineering toolbelt and an autonomous pentest engine. 
 | Protected artifact | The bundle that ships publicly | Opt-in | Assessment + 30 days | Needed for Prove |
 | Guard reports | Signal identifiers, random device identifier, Build | Yes | 30 days | No personal data by design |
 | Request metadata | Method, route template, status, latency, network, country | Yes | By plan (7 days to 13 months) | No bodies, no query strings |
-| Account reference | Customer's user identifier | Hashed in Shield before sending | Same as events | Anti Reverse never receives the raw value |
+| Account reference | Customer's user identifier | Hashed in Shield before sending | Same as events | Airverse never receives the raw value |
 | Evidence bundles | Assessment and Campaign output | Yes | 13 months | Tenant-scoped encryption |
 | Console account | Name, email, authentication log | Yes | Account lifetime | — |
 | Model prompts and outputs | Agent transcripts | Yes, as evidence | 13 months | Subject to provider terms; opt-out available |
 
-**IP addresses.** Default *privacy mode*: Shield sends the address truncated to a prefix (IPv4 /24, IPv6 /48) plus a keyed hash made with the tenant's pseudonymisation key. Counting and blocking use the keyed hash, which Shield recomputes locally for each request — so individual addresses can be blocked without Anti Reverse storing them. *Network mode* (opt-in) sends full addresses, kept at most 7 days in the hot store and then truncated.
+**IP addresses.** Default *privacy mode*: Shield sends the address truncated to a prefix (IPv4 /24, IPv6 /48) plus a keyed hash made with the tenant's pseudonymisation key. Counting and blocking use the keyed hash, which Shield recomputes locally for each request — so individual addresses can be blocked without Airverse storing them. *Network mode* (opt-in) sends full addresses, kept at most 7 days in the hot store and then truncated.
 
 **Other rules.**
 

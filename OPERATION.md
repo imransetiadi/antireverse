@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Operation"
+title: "Airverse — Operation"
 aliases: [OPERATION]
 project: anti-reverse
 doc: OPERATION
@@ -20,9 +20,9 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — Operation
+# Airverse — Operation
 
-How Anti Reverse is built, released, run and recovered — by the team operating the cloud, and by customers operating the parts that live in their environment. Targets come from [PERFORMANCE.md](PERFORMANCE.md); controls from [SECURITY.md](SECURITY.md).
+How Airverse is built, released, run and recovered — by the team operating the cloud, and by customers operating the parts that live in their environment. Targets come from [PERFORMANCE.md](PERFORMANCE.md); controls from [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -31,11 +31,11 @@ How Anti Reverse is built, released, run and recovered — by the team operating
 | Part | Runs in | Operated by | If it fails |
 |---|---|---|---|
 | Harden CLI and plugins | Customer CI | Customer | Build fails loudly; `--skip` flag ships unprotected with a recorded warning |
-| Guard | Customer's shipped client | Customer deploys; Anti Reverse can disable remotely | Application continues without Guard |
+| Guard | Customer's shipped client | Customer deploys; Airverse can disable remotely | Application continues without Guard |
 | Shield | Customer backend | Customer | Fail-open by default; local environment switch disables it |
-| Edge: Attestation, Ingest, Policy CDN | Anti Reverse cloud, multi-region | Anti Reverse | Shield keeps last bundle; attestation grace period |
-| Control plane, Radar, Console | Anti Reverse cloud | Anti Reverse | Enforcement continues locally; visibility and updates pause |
-| Prove sandboxes | Isolated Anti Reverse account | Anti Reverse | Assessments queue or report `inconclusive` |
+| Edge: Attestation, Ingest, Policy CDN | Airverse cloud, multi-region | Airverse | Shield keeps last bundle; attestation grace period |
+| Control plane, Radar, Console | Airverse cloud | Airverse | Enforcement continues locally; visibility and updates pause |
+| Prove sandboxes | Isolated Airverse account | Airverse | Assessments queue or report `inconclusive` |
 
 **First rule of operation:** the customer's product stays up. Every procedure below prefers a temporary loss of protection to a loss of availability, unless the customer marked a route fail-closed.
 

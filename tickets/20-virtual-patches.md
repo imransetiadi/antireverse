@@ -21,7 +21,7 @@ related:
 
 # 20: Exposure — virtual patches
 
-**What to build:** For a known vulnerability with a request-level exploit, Shield recognises the exploit request and records it — or, once an admin enforces the patch, refuses it — but only in an App and Environment that actually runs the vulnerable version. Patches come from a small catalog that Anti Reverse maintains; they start in monitor, an admin promotes them to enforce, and they drop out when the Finding is fixed or withdrawn.
+**What to build:** For a known vulnerability with a request-level exploit, Shield recognises the exploit request and records it — or, once an admin enforces the patch, refuses it — but only in an App and Environment that actually runs the vulnerable version. Patches come from a small catalog that Airverse maintains; they start in monitor, an admin promotes them to enforce, and they drop out when the Finding is fixed or withdrawn.
 
 **Blocked by:** 19 (done) and 02 (done). Owner approved the design on 2026-11-11 (D-061).
 

@@ -14,7 +14,7 @@ const HOME_PAGE = `<!doctype html>
   </head>
   <body>
     <h1>ar-range</h1>
-    <p>A reference target for Anti Reverse. Shield sees every request to this server and applies the Policy of its App.</p>
+    <p>A reference target for Airverse. Shield sees every request to this server and applies the Policy of its App.</p>
     <ul>
       <li><code>GET /api/products/:id</code> — a synthetic product as JSON</li>
       <li><code>POST /api/login</code> — always answers 401</li>

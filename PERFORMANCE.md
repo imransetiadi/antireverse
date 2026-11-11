@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Performance"
+title: "Airverse — Performance"
 aliases: [PERFORMANCE]
 project: anti-reverse
 doc: PERFORMANCE
@@ -20,7 +20,7 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — Performance
+# Airverse — Performance
 
 **This document is the single source of truth for every performance number.** Other documents quote these budgets; if a figure differs elsewhere, this one wins. All targets are design targets set before the first measurement and are re-baselined after the first load test (§14).
 

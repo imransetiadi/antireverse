@@ -1,4 +1,6 @@
-# Anti Reverse
+# Airverse
+
+> Formerly Anti Reverse. Package names (`@antireverse/*`), the `antireverse` command, `AR_*` settings and wire names (`ar-*` headers) keep the old name so deployed clients keep working (D-065).
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
@@ -119,7 +121,7 @@ In the Console, tick **Require a signed request** on a Rule; run it in monitor f
 
 ## Known vulnerabilities (Exposure)
 
-Anti Reverse lists the open-source packages each App ships and runs, and matches them against a local copy of the OSV npm advisories. Your package list never goes to a third party.
+Airverse lists the open-source packages each App ships and runs, and matches them against a local copy of the OSV npm advisories. Your package list never goes to a third party.
 
 ```bash
 npm run vulns:sync -w @antireverse/api                 # download and import npm advisories (stop the API first)
@@ -134,7 +136,7 @@ antireverse harden dist --register --lockfile package-lock.json --fail-on high
 
 ### Virtual patches
 
-For some advisories Anti Reverse ships a virtual patch: Shield recognises the known exploit request for the vulnerable package. A patch is added automatically, in monitor, wherever a Finding for its advisory is open or ignored, and removed when the Finding is fixed. Promote it to Enforce on the Finding page (type the patch id to confirm); return to monitor in one action. A match opens a High "Exploit attempt" Incident.
+For some advisories Airverse ships a virtual patch: Shield recognises the known exploit request for the vulnerable package. A patch is added automatically, in monitor, wherever a Finding for its advisory is open or ignored, and removed when the Finding is fixed. Promote it to Enforce on the Finding page (type the patch id to confirm); return to monitor in one action. A match opens a High "Exploit attempt" Incident.
 
 - Catalog today: qs (CVE-2022-24999), lodash (CVE-2019-10744, CVE-2020-8203), xml2js (CVE-2023-0842).
 - Body checks need `shield.verifyBody` on your body parsers; a body Shield never saw is recorded as "body not checked" and is never blocked. Under an enforced patch, a body in a character set Shield cannot read is refused.
@@ -156,17 +158,17 @@ npx tsx packages/harden/src/cli.ts harden <bundle-dir> --out <out-dir> \
   --register --endpoint <api-url> --key-env AR_ADMIN_KEY --app <appId> --environment production --build-version <v>
 ```
 
-On an allowed origin, or on a local development host (localhost, `.test`, private addresses …), the beacon does nothing, so your visitors never contact Anti Reverse. When a copy of the bundle runs anywhere else — a phishing clone or a mirror — it sends one small report, and a High **Clone detected** Incident opens naming the origin and the Build, with an alert to your channels. The Console shows the origin as plain text, never as a link.
+On an allowed origin, or on a local development host (localhost, `.test`, private addresses …), the beacon does nothing, so your visitors never contact Airverse. When a copy of the bundle runs anywhere else — a phishing clone or a mirror — it sends one small report, and a High **Clone detected** Incident opens naming the origin and the Build, with an alert to your channels. The Console shows the origin as plain text, never as a link.
 
 - `--origin` needs `--register`; up to 20 origins, written exactly as browsers show them (`https://host[:port]`). To allow a new domain, harden and register a new Build.
-- Your Content-Security-Policy `connect-src` must allow the Anti Reverse API, or browsers drop the report.
+- Your Content-Security-Policy `connect-src` must allow the Airverse API, or browsers drop the report.
 - **Limits (honest):** a cloner who edits the bundle can remove the beacon; it catches wholesale copies. Anyone holding a bundle can forge reports, so each App counts at most 20 new origins per hour and the public endpoint is rate-limited. There is no origin lock — the beacon never stops your app.
 
 ## Containment
 
 From an Incident, **Block actor** stops one attacking client for 15 minutes, 1 hour or 24 hours; **Block network** stops a whole /24 (or IPv6 /48) after you type the prefix. A block applies to the Incident's App and Environment only, reaches every Shield within about 5 seconds (its poll), expires on its own — Shield enforces the expiry even offline — and can be lifted early; every block and lift records who and when, and a lift is final. Blocked requests get the standard `403 {"error":"request_blocked"}` and do not open new Incidents. At most 150 blocks are active per App and Environment.
 
-Actor identity is a keyed hash of the client address that **only you can compute**: set `AR_ACTOR_KEY` (or Shield's `actorKey` option) on every server running Shield for that App — 32 or more characters, not the Shield key — and keep it secret; Anti Reverse never receives it. Generate one with:
+Actor identity is a keyed hash of the client address that **only you can compute**: set `AR_ACTOR_KEY` (or Shield's `actorKey` option) on every server running Shield for that App — 32 or more characters, not the Shield key — and keep it secret; Airverse never receives it. Generate one with:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
@@ -174,7 +176,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 
 Without it Shield sends no hash: Incidents show no Actors and only network blocks are possible (`shield.stats().actorHashing` tells you which). **Never block** under Settings lists address ranges (CIDR) that containment can never block; it does not exempt them from your Rules.
 
-- **Limits (honest):** rotating the actor key, or running Shields with different keys, makes existing actor blocks stop matching (network blocks are unaffected). An IPv4 attacker who keeps changing addresses escapes an actor block — block the network. IPv6 Actors are hashed per /64. Blocks wait for Shield's next poll; there is no push channel yet. The never-block list is checked by Shield for actor blocks, since Anti Reverse cannot see the address behind a hash.
+- **Limits (honest):** rotating the actor key, or running Shields with different keys, makes existing actor blocks stop matching (network blocks are unaffected). An IPv4 attacker who keeps changing addresses escapes an actor block — block the network. IPv6 Actors are hashed per /64. Blocks wait for Shield's next poll; there is no push channel yet. The never-block list is checked by Shield for actor blocks, since Airverse cannot see the address behind a hash.
 
 ## Leak scan and Canaries
 

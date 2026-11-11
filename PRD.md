@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Product Requirements Document"
+title: "Airverse — Product Requirements Document"
 aliases: [PRD]
 project: anti-reverse
 doc: PRD
@@ -20,9 +20,9 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — Product Requirements Document (PRD)
+# Airverse — Product Requirements Document (PRD)
 
-> **One line.** Anti Reverse is a SaaS platform that makes a digital product expensive to reverse engineer, tamper with, clone and attack — and proves it on every release by attacking the product itself, with authorization, using AI agents.
+> **One line.** Airverse is a SaaS platform that makes a digital product expensive to reverse engineer, tamper with, clone and attack — and proves it on every release by attacking the product itself, with authorization, using AI agents.
 
 | Item | Value |
 |---|---|
@@ -57,9 +57,9 @@ One platform that closes the loop: **Harden → Guard → Shield → Radar → P
 | **Harden** | Build-time protection: obfuscation, string and asset encryption, integrity self-checks, per-build diversity, leak scanning (source maps, secrets), planted Canaries and Watermarks | The customer's CI (local-first — source never leaves) |
 | **Guard** | In-app runtime protection: detects debugging, hooking, tampering, automation and unauthorized origins; produces a short-lived Attestation Token; signs requests | Inside the shipped client (web first, then Android, iOS, desktop) |
 | **Shield** | Request-path enforcement: verifies attestation and signatures, rate-limits, stops bots, credential stuffing, scraping and enumeration; decides `allow / monitor / challenge / throttle / block / deceive` | Inside the customer's backend (library first, proxy and edge later) |
-| **Radar** | Telemetry, detection, Incidents, alerts and automated Playbooks; correlates client integrity with server behaviour | Anti Reverse cloud |
-| **Prove** | Continuous adversarial validation: a **Reverse Resistance Score (RRS)** for every Build, and autonomous Pentest Campaigns against Verified Targets; CI gates on both | Anti Reverse cloud, in isolated sandboxes |
-| **Console** | Onboarding, policy editing with simulation, live threat feed, incidents, findings, reports, API and integrations | Anti Reverse cloud |
+| **Radar** | Telemetry, detection, Incidents, alerts and automated Playbooks; correlates client integrity with server behaviour | Airverse cloud |
+| **Prove** | Continuous adversarial validation: a **Reverse Resistance Score (RRS)** for every Build, and autonomous Pentest Campaigns against Verified Targets; CI gates on both | Airverse cloud, in isolated sandboxes |
+| **Console** | Onboarding, policy editing with simulation, live threat feed, incidents, findings, reports, API and integrations | Airverse cloud |
 
 What is different: **evidence**. Every Build gets a score produced by an actual attack attempt, every policy change can be replayed against yesterday's traffic before it is enforced, and every block has a reason a human can read.
 
@@ -71,7 +71,7 @@ What is different: **evidence**. Every Build gets a score produced by an actual 
 
 ## 4. Users
 
-| Persona | Context | Needs from Anti Reverse |
+| Persona | Context | Needs from Airverse |
 |---|---|---|
 | **Builder** — founder or lead developer, team of 1–10 | No security staff; ships weekly | Protection in minutes, safe defaults, plain-language alerts, predictable price |
 | **AppSec engineer** — product security at a scale-up | Owns client and API security for several teams | Policy control, evidence for every decision, CI gates, API and SIEM export |
@@ -98,13 +98,13 @@ What is different: **evidence**. Every Build gets a score produced by an actual 
 | G2 | Measurable resistance | Reference app: RRS ≥ 70 on `balanced`, ≥ 85 on `maximum`, unprotected baseline ≤ 30 |
 | G3 | Detect and act fast | ≥ 95 % recall on the labeled attack replay suite at ≤ 0.1 % false positives; Canary use detected ≤ 60 s; block propagated ≤ 30 s |
 | G4 | Stay out of the way | Budgets in [PERFORMANCE.md](PERFORMANCE.md): Shield p99 ≤ 1.5 ms, Guard ≤ 35 KB gzip, zero render blocking |
-| G5 | Safe by default | Monitor-first, fail-open, one-click rollback; zero customer outages caused by Anti Reverse |
+| G5 | Safe by default | Monitor-first, fail-open, one-click rollback; zero customer outages caused by Airverse |
 | G6 | A platform worth trusting | Tenant isolation, signed bundles/tokens/releases, full audit trail, source code never leaves customer CI |
 | G7 | One console, English first | English default, i18n-ready, WCAG 2.2 AA |
 
 ### Non-goals
 
-- A CDN or a network-layer DDoS scrubbing service. Anti Reverse complements Cloudflare, AWS WAF, Vercel Firewall and similar.
+- A CDN or a network-layer DDoS scrubbing service. Airverse complements Cloudflare, AWS WAF, Vercel Firewall and similar.
 - An antivirus, EDR or SIEM. It exports to SIEMs.
 - A source-code scanner (SAST). It integrates with existing ones. (Known-vulnerability matching of dependencies is in scope since 2026-11-11 — see §9.7 Exposure; D-059.)
 - DRM for audio/video streams.
@@ -158,7 +158,7 @@ Windows are planning assumptions, not commitments; team size is an open question
 
 12. As a Developer, I want to add one plugin to my bundler, so that every production build is hardened automatically.
 13. As a Developer, I want to choose a Protection Profile per path, so that hot code stays fast and sensitive code gets maximum protection.
-14. As a Developer, I want my source code and unprotected build to stay in my CI, so that using Anti Reverse does not create a new leak.
+14. As a Developer, I want my source code and unprotected build to stay in my CI, so that using Airverse does not create a new leak.
 15. As a Developer, I want the build to fail when a source map, secret or internal URL is about to ship, so that leaks are caught before release.
 16. As a Developer, I want each Build to differ structurally from the last, so that a deobfuscation script written for one build breaks on the next.
 17. As an AppSec engineer, I want Canaries planted in each Build, so that anyone using extracted strings identifies themselves.
@@ -180,7 +180,7 @@ Windows are planning assumptions, not commitments; team size is an open question
 **Shield**
 
 29. As a Developer, I want Shield as middleware in my framework, so that I do not re-route production traffic through a third party.
-30. As an SRE, I want Shield to decide locally with no network call per request, so that Anti Reverse cannot add latency or an outage to my API.
+30. As an SRE, I want Shield to decide locally with no network call per request, so that Airverse cannot add latency or an outage to my API.
 31. As an AppSec engineer, I want rules that combine client attestation with request behaviour, so that a clean IP with a tampered client is still stopped.
 32. As a Builder, I want sensible managed rules for login, signup and password reset, so that credential stuffing is handled on day one.
 33. As an AppSec engineer, I want rate limits keyed by IP, device, session, account or API key, so that limits match how abuse actually happens.
@@ -201,7 +201,7 @@ Windows are planning assumptions, not commitments; team size is an open question
 45. As an analyst, I want an AI-written summary of an Incident labeled as AI-generated, so that I can understand it quickly and still verify it.
 46. As an engineering leader, I want a weekly summary and an executive report, so that I can show the trend.
 47. As a compliance officer, I want reports mapped to recognised frameworks, so that questionnaires take minutes.
-48. As an AppSec engineer, I want events exported to my SIEM, so that Anti Reverse fits our existing operations.
+48. As an AppSec engineer, I want events exported to my SIEM, so that Airverse fits our existing operations.
 
 **Prove**
 
@@ -219,7 +219,7 @@ Windows are planning assumptions, not commitments; team size is an open question
 **Integration**
 
 59. As a platform engineer, I want a public REST API and signed webhooks, so that I can automate everything in the Console.
-60. As a developer using a coding agent, I want an Anti Reverse MCP server, so that my agent can read Findings and RRS evidence and propose fixes.
+60. As a developer using a coding agent, I want an Airverse MCP server, so that my agent can read Findings and RRS evidence and propose fixes.
 61. As an Org Owner, I want to export or delete my data, so that I stay in control of it.
 
 ## 9. Functional requirements
@@ -337,7 +337,7 @@ Priority: **M** = must for MVP, **S** = should for MVP, **P2 / P3** = later phas
 | ID | Requirement | Pri |
 |---|---|---|
 | FR-EXP-01 | Component inventory of the shipped bundle (from Harden in CI) and of the running server (from Shield at start): package names and versions only | M |
-| FR-EXP-02 | Match components against a locally synced vulnerability database (OSV: GHSA, npm, CVE aliases); the component list never leaves Anti Reverse | M |
+| FR-EXP-02 | Match components against a locally synced vulnerability database (OSV: GHSA, npm, CVE aliases); the component list never leaves Airverse | M |
 | FR-EXP-03 | Findings with advisory and CVE ids, severity, affected and fixed versions, where found, status and expiring ignores; auto-fixed when the version disappears | M |
 | FR-EXP-04 | New Critical or High findings open an Incident and alert; CI gate fails a build at or above a chosen severity | M |
 | FR-EXP-05 | Virtual patches: signed Shield rules for advisories with a known request-level exploit pattern, active only where the vulnerable version runs, monitor first | S |
@@ -370,7 +370,7 @@ Priority: **M** = must for MVP, **S** = should for MVP, **P2 / P3** = later phas
 | Efficacy | RRS uplift on the reference app, `balanced` vs unprotected | ≥ +40 points |
 | Efficacy | Detection recall / false-positive rate on the replay suite | ≥ 95 % / ≤ 0.1 % |
 | Efficacy | Canary time-to-detect | ≤ 60 s p95 |
-| Trust | Customer-impacting incidents caused by Anti Reverse | 0 |
+| Trust | Customer-impacting incidents caused by Airverse | 0 |
 | Trust | Rule rollbacks due to false positives per 100 enforced rules | ≤ 2 per month |
 | Reliability | SLO attainment | All SLOs met for 30 consecutive days before GA |
 
@@ -384,7 +384,7 @@ Detailed design lives in [SDD.md](SDD.md). The decisions that shape the product:
 
 - **Six deep modules** — Harden, Guard, Shield, Radar, Prove, Console — each with a small interface and one external seam for tests.
 - **Local-first hardening.** Transforms run in the customer's CI. Only a signed Build Manifest and, opt-in, the already-public protected artifact are uploaded.
-- **Shield decides locally.** Policies ship as signed Policy Bundles; the request path makes no call to Anti Reverse. Shield fails open unless a route is marked fail-closed.
+- **Shield decides locally.** Policies ship as signed Policy Bundles; the request path makes no call to Airverse. Shield fails open unless a route is marked fail-closed.
 - **Client signals are evidence, never proof.** Guard reports; only the server decides.
 - **Monitor before enforce.** New rules observe first; the Console shows what they would have done.
 - **Prove is gated by ownership.** Reverse Assessments accept only Builds whose manifest was signed by the tenant's CI identity; Pentest Campaigns run only against Verified Targets under signed Rules of Engagement.
@@ -479,7 +479,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | [obra/superpowers](https://github.com/obra/superpowers) | Development methodology: design before build, approval gate, bite-sized plans, red-green TDD, evidence before completion claims |
 | [mattpocock/skills](https://github.com/mattpocock/skills) | Spec structure of this PRD (problem, solution, long user-story list, implementation and testing decisions), tracer-bullet tickets with blocking edges, shared-language glossary, lightweight decision records, deep-module design |
 | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | Design-system reasoning for a cybersecurity product: pattern, style, palette, typography, charts, priority-ordered UX rules ([UIUX.md](UIUX.md)) |
-| [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) | Memory discipline for the agents that build Anti Reverse: recall before work, save decisions with reasons, lessons from corrections ([MEMORY.md](MEMORY.md)) |
+| [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) | Memory discipline for the agents that build Airverse: recall before work, save decisions with reasons, lessons from corrections ([MEMORY.md](MEMORY.md)) |
 | [vxcontrol/pentagi](https://github.com/vxcontrol/pentagi) | Autonomous pentest engine behind Prove's Pentest Campaigns and the QA pentest suite |
 | [morluto/rea](https://github.com/morluto/rea) | Reverse-engineering toolbelt for the Adversary Agent that produces RRS; also the reference adversary Harden and Guard are designed against |
 | [Obsidian](https://obsidian.md/) | The document set is a plain-Markdown vault: properties, links and a hub note, readable offline and in Git |

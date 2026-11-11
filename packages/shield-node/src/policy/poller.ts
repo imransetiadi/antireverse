@@ -157,7 +157,7 @@ export function createPoller(options: PollerOptions): Poller {
       lastError = `the Policy endpoint responded ${status}`;
       warn(
         "policy-rejected",
-        `the API answered the request for the Policy with HTTP ${status}. Check that "endpoint" is the base URL of the Anti Reverse API. ${kept()}.`,
+        `the API answered the request for the Policy with HTTP ${status}. Check that "endpoint" is the base URL of the Airverse API. ${kept()}.`,
       );
       return "failed";
     }

@@ -16,7 +16,7 @@ export function policyKeyLine(publicKey: string): string {
   return `${POLICY_KEY_LINE_START}${publicKey}${POLICY_KEY_LINE_END}`;
 }
 
-/** The middleware set-up for Express (UIUX.md §16). `endpoint` is the base URL of the Anti Reverse API. */
+/** The middleware set-up for Express (UIUX.md §16). `endpoint` is the base URL of the Airverse API. */
 export function shieldExpressSnippet(endpoint: string): string {
   return [
     'import { createShield } from "@antireverse/shield-node";',

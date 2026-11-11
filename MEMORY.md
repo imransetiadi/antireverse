@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Project Memory"
+title: "Airverse — Project Memory"
 aliases: [MEMORY, Hub]
 project: anti-reverse
 doc: MEMORY
@@ -21,7 +21,7 @@ related:
   - "[[UIUX]]"
 ---
 
-# Anti Reverse — Project Memory
+# Airverse — Project Memory
 
 The hub of the document set and the long-term memory of the project: the shared language, the decisions with their reasons, the lessons from corrections, and the rules for how people and coding agents remember. Read this file first in every session.
 
@@ -240,6 +240,7 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-062 | A request body in a character set Shield cannot decode (other than UTF-8, UTF-16, UTF-32) is refused under an enforced virtual patch whose other conditions match; a body never seen by `verifyBody` still never blocks and is recorded as allow | Owner's decision 2026-11-11; Jev 0.82 | accepted |
 | D-063 | Abuse rules: a Rule may carry a limit (requests or failed responses per window, per address or attested device) with action throttle (429 + Retry-After), in-memory per-instance counters behind a store interface; a Login protection preset and a High Credential stuffing Incident | Owner approved 2026-11-11; Jev 0.94, 0.92 | accepted |
 | D-064 | The Credential stuffing Incident counts only login-protection (failure-counting) limit Rules, from Events Shield stamps with that Rule; plain request limits show in the feed and open no Incident in this slice | Owner's decision 2026-11-11 after review F5; Jev 0.94 | accepted |
+| D-065 | The product is named Airverse (formerly Anti Reverse). Every human-visible name changes; npm package names (@antireverse/*), the `antireverse` command, `AR_*` settings and all wire names (`ar-*` headers, `ar-sig-v1`, token issuer and audience, id prefixes) stay, so deployed clients keep working. Renaming packages and the command is decided before the first npm release | Owner 2026-11-11; Jev 0.57 | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons

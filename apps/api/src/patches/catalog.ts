@@ -1,7 +1,7 @@
 import { matchPatch, patchRequestOf, type VirtualPatch, VirtualPatchSchema } from "@antireverse/protocol";
 
 // The Virtual patch catalog (slice 20, D-061): request-level exploit patterns for well-known npm advisories, curated
-// by Anti Reverse. Data only; the API reads it through the `PatchCatalog` dependency, so tests run on a fixture
+// by Airverse. Data only; the API reads it through the `PatchCatalog` dependency, so tests run on a fixture
 // catalog. Every advisory id here was checked against the public OSV API when it was written, and the package and
 // affected ranges are pinned in test/patch-catalog.test.ts. A patch id is stable across catalog versions: an admin's
 // mode is stored under it.
@@ -49,7 +49,7 @@ export function createPatchCatalog(version: string, entries: readonly unknown[])
   });
 }
 
-/** The catalog Anti Reverse ships. */
+/** The catalog Airverse ships. */
 export const PATCH_CATALOG: PatchCatalog = createPatchCatalog("2026-11-11.4", [
   {
     // qs before 6.10.3 (and the 6.2.4 … 6.9.7 backports) lets `__proto__` in a query key poison the parsed

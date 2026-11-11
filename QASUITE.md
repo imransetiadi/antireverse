@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — QA Suite"
+title: "Airverse — QA Suite"
 aliases: [QASUITE]
 project: anti-reverse
 doc: QASUITE
@@ -20,9 +20,9 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — QA Suite
+# Airverse — QA Suite
 
-How we know Anti Reverse works: that it protects, that it does not break the customer's product, and that it is itself secure. Requirements come from [PRD.md](PRD.md), budgets from [PERFORMANCE.md](PERFORMANCE.md), threats and controls from [SECURITY.md](SECURITY.md).
+How we know Airverse works: that it protects, that it does not break the customer's product, and that it is itself secure. Requirements come from [PRD.md](PRD.md), budgets from [PERFORMANCE.md](PERFORMANCE.md), threats and controls from [SECURITY.md](SECURITY.md).
 
 ---
 

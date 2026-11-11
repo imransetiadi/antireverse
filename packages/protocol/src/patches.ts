@@ -4,7 +4,7 @@ import { DECISION_MODES, ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
 import { AdvisoryIdSchema, ComponentSchema } from "./exposure.ts";
 import { deepFreeze, HttpMethodSchema, RULE_PATH_PATTERN, trimmedText } from "./shared.ts";
 
-// The Virtual patch contract (slice 20, D-061): a catalog entry that Anti Reverse maintains for an advisory with a
+// The Virtual patch contract (slice 20, D-061): a catalog entry that Airverse maintains for an advisory with a
 // request-level exploit, the form a patch takes in the signed bundle, and the reference matcher that says what a
 // patch matches. A patch is a list of declarative conditions on the request — never a regular expression — that
 // must all hold. Shield implements the same semantics by hand (it has no zod); a bound that changes here must

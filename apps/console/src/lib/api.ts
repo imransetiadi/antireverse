@@ -72,7 +72,7 @@ import {
 } from "@antireverse/protocol";
 import { z } from "zod";
 
-// The Console's only way to the Anti Reverse API. Server-only: the admin key never reaches the browser.
+// The Console's only way to the Airverse API. Server-only: the admin key never reaches the browser.
 // Every response is validated against the protocol schemas. Error messages are built from the method, the
 // path and the status — never from a header — and any text taken from the API is scrubbed of key-shaped,
 // secret-shaped and URL-shaped substrings first (an alert channel URL can itself be a secret).

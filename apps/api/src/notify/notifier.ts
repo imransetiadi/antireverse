@@ -86,7 +86,7 @@ export const MAX_ATTEMPTS = 3;
 export const RESPONSE_BYTES_MAX = 4_096;
 export const DEFAULT_CONSOLE_URL = "http://127.0.0.1:3000";
 
-const USER_AGENT = "AntiReverse-Alerts/1";
+const USER_AGENT = "Airverse-Alerts/1";
 
 /**
  * The default transport: `node:http(s)` with the host name in the URL (Host header, TLS server name and
@@ -203,7 +203,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     if (target.channel.kind === "slack") {
       const text =
         alert.type === "test"
-          ? "Test alert from Anti Reverse: this channel is connected."
+          ? "Test alert from Airverse: this channel is connected."
           : `${SEVERITY_WORDS[alert.incident.severity]} — ${slackEscape(alert.incident.title)} on ${slackEscape(alert.appName)} (${alert.incident.environment}): ${consoleUrlOf(alert.incident)}`;
       return JSON.stringify({ text });
     }

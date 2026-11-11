@@ -3,7 +3,7 @@
 import { Button } from "@/components/button.tsx";
 import { t } from "@/lib/t.ts";
 
-// Shown when a page could not be rendered — in practice, when the Anti Reverse API did not answer.
+// Shown when a page could not be rendered — in practice, when the Airverse API did not answer.
 // The error itself is neither shown nor logged here: Next.js logs it on the server with a digest.
 export default function ErrorScreen({ retry }: { error: unknown; retry: () => void }) {
   return (

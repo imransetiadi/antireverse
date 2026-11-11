@@ -46,7 +46,7 @@ export function acquireDataDirLock(dataDir: string): () => void {
       if (holder !== null && isAlive(holder)) {
         throw new Error(
           `The data directory ${dataDir} is in use by process ${holder}. ` +
-            `Only one process may open it; stop that process, or remove ${lockFile} if it is not an Anti Reverse API.`,
+            `Only one process may open it; stop that process, or remove ${lockFile} if it is not an Airverse API.`,
         );
       }
       rmSync(lockFile, { force: true });

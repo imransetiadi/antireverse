@@ -1,6 +1,6 @@
 // Entry point of the reference target: `npm run dev:range`.
 //   AR_SHIELD_KEY         the Shield key of the App (without it Shield is disabled and the server still runs)
-//   AR_API_URL            base URL of the Anti Reverse API   (default http://127.0.0.1:8787)
+//   AR_API_URL            base URL of the Airverse API   (default http://127.0.0.1:8787)
 //   AR_POLICY_PUBLIC_KEY  the policy public key of the API, as the Console shows it (without it Shield observes
 //                         only: it records Events and applies no Policy)
 //   AR_ACTOR_KEY          the customer-held key of the actor hash (the startup line says "actor hashing on/off"): at least 32 characters, no whitespace, never

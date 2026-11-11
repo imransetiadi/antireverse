@@ -21,7 +21,7 @@ related:
 
 # 10: Clone Beacon
 
-**What to build:** A developer tells Harden which origins their frontend is served from. Harden plants a small Clone Beacon in the protected bundle. When a copy of that bundle runs on any other origin — a phishing clone or a mirror — the beacon reports the origin, and Anti Reverse opens a High "Clone detected" Incident naming the origin and the Build, and alerts the Organization's channels. Real visitors on an allowed origin cause no request to Anti Reverse.
+**What to build:** A developer tells Harden which origins their frontend is served from. Harden plants a small Clone Beacon in the protected bundle. When a copy of that bundle runs on any other origin — a phishing clone or a mirror — the beacon reports the origin, and Airverse opens a High "Clone detected" Incident naming the origin and the Build, and alerts the Organization's channels. Real visitors on an allowed origin cause no request to Airverse.
 
 **Blocked by:** 05 (done) and 06 (done).
 

@@ -19,7 +19,7 @@ export async function downloadToFile(
   if (new URL(url).protocol !== "https:") throw new Error("Only https downloads are allowed.");
   const response = await fetch(url, {
     signal: AbortSignal.timeout(options.timeoutMs ?? 10 * 60_000),
-    headers: { "user-agent": "AntiReverse-VulnSync/1" },
+    headers: { "user-agent": "Airverse-VulnSync/1" },
   });
   if (new URL(response.url).protocol !== "https:") throw new Error("The download was redirected away from https.");
   if (!response.ok || response.body === null) throw new Error(`The download failed with status ${response.status}.`);

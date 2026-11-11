@@ -176,7 +176,7 @@ export function hashKey(key: string): string                                    
 ```ts
 export interface ShieldConfig {
   key: string
-  endpoint: string                      // base URL of the Anti Reverse API
+  endpoint: string                      // base URL of the Airverse API
   flushIntervalMs?: number              // 1000
   maxBatchSize?: number                 // 100
   maxBufferSize?: number                // 10000

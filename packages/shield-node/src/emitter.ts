@@ -201,7 +201,7 @@ export function createEmitter(options: EmitterOptions): Emitter {
           dropped += batch.count;
           warn(
             "rejected",
-            `ingest refused a batch (HTTP ${status}). Check that "endpoint" is the base URL of the Anti Reverse API. The Events of that batch are dropped; your application is not affected.`,
+            `ingest refused a batch (HTTP ${status}). Check that "endpoint" is the base URL of the Airverse API. The Events of that batch are dropped; your application is not affected.`,
           );
           return "rejected";
         }

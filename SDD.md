@@ -1,5 +1,5 @@
 ---
-title: "Anti Reverse — Software Design Document"
+title: "Airverse — Software Design Document"
 aliases: [SDD]
 project: anti-reverse
 doc: SDD
@@ -20,7 +20,7 @@ related:
   - "[[MEMORY]]"
 ---
 
-# Anti Reverse — Software Design Document (SDD)
+# Airverse — Software Design Document (SDD)
 
 How the product in [PRD.md](PRD.md) is built. Numbers live in [PERFORMANCE.md](PERFORMANCE.md), threats and controls in [SECURITY.md](SECURITY.md), vocabulary in [MEMORY.md § Language](MEMORY.md#3-language-glossary). Technology choices marked **(call)** are proposals made without your input and are listed in PRD §17.
 
@@ -31,7 +31,7 @@ How the product in [PRD.md](PRD.md) is built. Numbers live in [PERFORMANCE.md](P
 | # | Principle | Consequence |
 |---|---|---|
 | P1 | **The client is hostile territory.** | Guard produces evidence; only server-side code decides. |
-| P2 | **Anti Reverse is never on the hot path.** | Shield decides locally from a signed bundle; telemetry is asynchronous; failure means fail-open. |
+| P2 | **Airverse is never on the hot path.** | Shield decides locally from a signed bundle; telemetry is asynchronous; failure means fail-open. |
 | P3 | **Local-first for anything sensitive.** | Source and unprotected builds stay in the customer's CI. |
 | P4 | **Signed everything.** | Policy Bundles, Attestation Tokens, Build Manifests, SDK releases, remote config and webhooks carry verifiable signatures. |
 | P5 | **Monitor before enforce; every change reversible.** | New rules observe first; one action rolls back. |
@@ -52,7 +52,7 @@ flowchart LR
     APP["Protected client<br/>web / mobile / desktop<br/>+ Guard"]
     SRV["Customer backend<br/>+ Shield"]
   end
-  subgraph AR["Anti Reverse cloud"]
+  subgraph AR["Airverse cloud"]
     EDGE["Edge<br/>Attestation · Policy CDN · Ingest"]
     CP["Control plane<br/>Console · API · Policy · Identity"]
     RADAR["Radar<br/>detection · incidents · playbooks"]
@@ -84,9 +84,9 @@ flowchart LR
 |---|---|---|---|
 | Z0 | Internet, Adversary | None | |
 | Z1 | Protected client with Guard | **Untrusted** | Everything here can be read and modified |
-| Z2 | Customer CI with Harden | Trusted by the customer | Holds source; Anti Reverse cloud never sees it |
+| Z2 | Customer CI with Harden | Trusted by the customer | Holds source; Airverse cloud never sees it |
 | Z3 | Customer backend with Shield | Trusted by the customer | Holds the Shield key; verifies everything from Z1 |
-| Z4 | Anti Reverse edge: Attestation, Ingest, Policy CDN | Public-facing | Stateless, regional, rate-limited |
+| Z4 | Airverse edge: Attestation, Ingest, Policy CDN | Public-facing | Stateless, regional, rate-limited |
 | Z5 | Control plane: Console, API, Policy, Identity, Billing | Private | Reached only through the API gateway |
 | Z6 | Data stores | Private | No direct access from Z4 except through narrow service roles |
 | Z7 | Prove sandboxes | **Hostile by assumption** | Separate cloud account, no credentials, egress allowlist |
@@ -267,7 +267,7 @@ No request or response bodies, no query strings, no raw account identifiers. Rou
 
 **Attestation Token claims:** `iss`, `aud` (App), `sub` (pseudonymous device), `iat`, `exp`, `jti`, `bid` (Build), `cnf` (session public key), `verdict` (`trusted | suspect | hostile`), `risk` (0–100), `sig` (compact signal set), `pv` (protocol version).
 
-**Distribution.** Shield fetches the Policy Bundle from the CDN at start and holds a server-sent-events push channel for version changes and list deltas, with 30-second polling as fallback. A Shield that cannot reach Anti Reverse keeps enforcing its last valid bundle — past `not_after` it reports the bundle as stale instead of dropping protection. Shield never loads a bundle that is already expired, tampered with, or older than one it has applied. A Shield that has never loaded a bundle runs a built-in monitor-only policy.
+**Distribution.** Shield fetches the Policy Bundle from the CDN at start and holds a server-sent-events push channel for version changes and list deltas, with 30-second polling as fallback. A Shield that cannot reach Airverse keeps enforcing its last valid bundle — past `not_after` it reports the bundle as stale instead of dropping protection. Shield never loads a bundle that is already expired, tampered with, or older than one it has applied. A Shield that has never loaded a bundle runs a built-in monitor-only policy.
 
 **Versioning.** Every SDK message carries a protocol version. The cloud accepts the current and previous major versions; SDK support windows are in OPERATION.md §6.
 
@@ -511,7 +511,7 @@ All rows are **(call)** unless you decide otherwise.
 
 | Failure | Effect on the customer | Designed behaviour |
 |---|---|---|
-| Anti Reverse cloud unreachable from Shield | None on requests | Last valid bundle stays in force; events buffer in memory with a cap, then drop with a counter |
+| Airverse cloud unreachable from Shield | None on requests | Last valid bundle stays in force; events buffer in memory with a cap, then drop with a counter |
 | Shield has never loaded a bundle | No enforcement | Built-in monitor-only policy; health event |
 | Attestation service down | Guard cannot refresh tokens | Shield applies the grace period (default 15 min), then the route's fail stance |
 | Bad policy published | Possible false blocks | Percentage rollout, automatic halt on block-rate anomaly, one-action rollback |

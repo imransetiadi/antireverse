@@ -21,7 +21,7 @@ related:
 
 # 05: Harden path
 
-**What to build:** A developer runs the Anti Reverse CLI in their own CI over a web bundle they own. On the `balanced` profile it applies behaviour-preserving transforms (identifier mangling, string encryption with lazy decode, an integrity self-check), each build structurally different from the last through a per-build seed. It verifies behaviour by running the bundle's own tests against the protected output, writes a protection report (what changed, size and runtime cost), and registers a Build with its Manifest (artifact hashes, profile, costs) with the API. The Console shows the Build on the App, with its profile, its cost and a pass/fail equivalence result.
+**What to build:** A developer runs the Airverse CLI in their own CI over a web bundle they own. On the `balanced` profile it applies behaviour-preserving transforms (identifier mangling, string encryption with lazy decode, an integrity self-check), each build structurally different from the last through a per-build seed. It verifies behaviour by running the bundle's own tests against the protected output, writes a protection report (what changed, size and runtime cost), and registers a Build with its Manifest (artifact hashes, profile, costs) with the API. The Console shows the Build on the App, with its profile, its cost and a pass/fail equivalence result.
 
 **Blocked by:** 01 (done). Independent of 02.
 
