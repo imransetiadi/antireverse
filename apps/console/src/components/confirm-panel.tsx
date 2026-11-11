@@ -36,6 +36,11 @@ interface ConfirmPanelProps {
         name?: string | undefined;
       }
     | undefined;
+  /**
+   * What is known about the effect before it happens, e.g. the estimate of a Policy simulation. Shown between the
+   * question and the note, and read with them; nothing is shown without one.
+   */
+  estimate?: string | undefined;
   /** What follows from the change and how it is undone. Default: the Policy's "publishes a new version" note. */
   note?: string | undefined;
   /** What the confirm button reads while it is being sent. Default: "Publishing…". */
@@ -64,6 +69,7 @@ export function ConfirmPanel({
   busy = false,
   children,
   typed,
+  estimate,
   note,
   pendingLabel,
   testId = "policy-confirm",
@@ -72,6 +78,8 @@ export function ConfirmPanel({
   const questionId = useId();
   const noteId = useId();
   const warningId = useId();
+  const estimateId = useId();
+  const describedBy = [typed ? warningId : null, estimate ? estimateId : null, noteId].filter(Boolean).join(" ");
 
   useEffect(() => {
     ref.current?.focus();
@@ -84,7 +92,7 @@ export function ConfirmPanel({
       role="alertdialog"
       aria-modal="false"
       aria-labelledby={questionId}
-      aria-describedby={typed ? `${warningId} ${noteId}` : noteId}
+      aria-describedby={describedBy}
       data-testid={testId}
       className="flex flex-col gap-3 rounded-card border border-destructive bg-surface-raised p-3"
     >
@@ -98,6 +106,11 @@ export function ConfirmPanel({
           className="rounded-control border-2 border-destructive px-3 py-2 heading-6 text-fg"
         >
           {typed.warning}
+        </p>
+      ) : null}
+      {estimate ? (
+        <p id={estimateId} data-testid="confirm-estimate" className="body-4 text-fg">
+          {estimate}
         </p>
       ) : null}
       <p id={noteId} className="body-5 text-fg-muted">

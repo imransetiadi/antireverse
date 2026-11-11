@@ -32,6 +32,7 @@ import { inventoryRoutes } from "./routes/inventory.ts";
 import { organizationRoutes } from "./routes/organizations.ts";
 import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
+import { type SimulationOptions, simulateRoutes } from "./routes/simulate.ts";
 import type { Signer } from "./signer.ts";
 
 export interface AppDeps {
@@ -83,6 +84,8 @@ export interface AppDeps {
   exposureIncidents?: IncidentQueue;
   /** The Virtual patch catalog (slice 20). Default: `PATCH_CATALOG`; tests pass a fixture catalog. */
   patches?: PatchCatalog;
+  /** The bounds of a Policy simulation (slice 11). Default: `SIMULATION_LIMITS` and the process clock; tests pass smaller ones. */
+  simulation?: SimulationOptions;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -153,6 +156,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/", eventRoutes(deps));
   app.route("/", ingestRoutes(deps));
   app.route("/", policyRoutes(deps));
+  app.route("/", simulateRoutes(deps));
   app.route("/", bundleRoutes({ ...deps, attestation, patches }));
   app.route("/", patchRoutes({ db: deps.db, patches, now: deps.now }));
   app.route("/", incidentRoutes({ ...deps, patches }));

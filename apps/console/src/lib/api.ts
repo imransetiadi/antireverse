@@ -66,6 +66,9 @@ import {
   type SetPatchModeRequest,
   type SigningKeyResponse,
   SigningKeyResponseSchema,
+  type SimulatePolicyRequestInput,
+  type SimulatePolicyResponse,
+  SimulatePolicyResponseSchema,
   type TestAlertChannelResponse,
   TestAlertChannelResponseSchema,
   type UpdateIncidentRequest,
@@ -136,6 +139,28 @@ export class ValidationError extends ApiError {
   }
 }
 
+/**
+ * 429: too many requests of this kind. `retryAfter` is the whole seconds of the `Retry-After` header, or
+ * undefined when the API named none (or anything but a plain number of seconds). It is a number and nothing else:
+ * no text of a header travels in an error.
+ */
+export class RateLimitedError extends ApiError {
+  readonly retryAfter: number | undefined;
+  constructor(message: string, retryAfter: number | undefined) {
+    super(message, 429);
+    this.name = "RateLimitedError";
+    this.retryAfter = retryAfter;
+  }
+}
+
+/** Whole seconds, at most five digits: the only form of `Retry-After` that is read. */
+const RETRY_AFTER = /^[0-9]{1,5}$/;
+
+function retryAfterSeconds(response: Response): number | undefined {
+  const value = response.headers.get("retry-after")?.trim();
+  return value !== undefined && RETRY_AFTER.test(value) ? Number(value) : undefined;
+}
+
 /** Base URL of the API: `AR_API_URL`, or the local default. No trailing slash. */
 export function apiBaseUrl(): string {
   const configured = process.env.AR_API_URL?.trim();
@@ -177,6 +202,7 @@ async function failure(what: string, response: Response): Promise<ApiError> {
   if (response.status === 401) return new UnauthorizedError(message);
   if (response.status === 404) return new NotFoundError(message);
   if (response.status === 409) return new ConflictError(message, parsed.success ? parsed.data.reason : undefined);
+  if (response.status === 429) return new RateLimitedError(message, retryAfterSeconds(response));
   if (response.status === 400) {
     const errors = parsed.success ? (parsed.data.errors ?? []) : [];
     return new ValidationError(
@@ -345,6 +371,25 @@ export function rollbackPolicy(
     ...acknowledged(options),
   } satisfies RollbackPolicyRequest;
   return call(`${policyPath(appId, environment)}/rollback`, PolicyResponseSchema, { method: "POST", key, body });
+}
+
+/**
+ * `POST /v1/apps/:appId/policy/simulate` — what `rules`, in order, would have done to the requests recorded for
+ * `environment` in the last 24 hours (slice 11, D-066). Nothing is stored or published. Rejects with
+ * ValidationError for Rules a publish would refuse and with RateLimitedError after too many simulations.
+ */
+export function simulatePolicy(
+  key: string,
+  appId: string,
+  environment: Environment,
+  rules: readonly PolicyRuleInput[],
+): Promise<SimulatePolicyResponse> {
+  const body = { environment, rules: [...rules] } satisfies SimulatePolicyRequestInput;
+  return call(`/v1/apps/${encodeURIComponent(appId)}/policy/simulate`, SimulatePolicyResponseSchema, {
+    method: "POST",
+    key,
+    body,
+  });
 }
 
 /** `GET /v1/apps/:appId/events` — the raw upstream response for the list proxy, whatever its status. */

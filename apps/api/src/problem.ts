@@ -6,6 +6,7 @@ import {
   LIMITS,
   type Problem,
   type ProblemError,
+  SIMULATION_LIMITS,
 } from "@antireverse/protocol";
 import type { Context } from "hono";
 
@@ -77,6 +78,13 @@ const PROBLEMS = {
     type: "too-many-requests",
     title: "Too many requests",
     detail: "Too many inventories from this key. Try again after the time in Retry-After.",
+  },
+  // Slice 11: an Organization runs at most 6 Policy simulations a minute.
+  "too-many-simulations": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: `At most ${SIMULATION_LIMITS.perMinute} simulations a minute per Organization. Try again after the time in Retry-After.`,
   },
   "too-many-attestations": {
     status: 429,

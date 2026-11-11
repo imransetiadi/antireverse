@@ -13,6 +13,8 @@ import { SubmitButton } from "@/components/submit-button.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
 import { limitText } from "./limit.ts";
+import { estimateText, promotionEstimate } from "./simulation.ts";
+import { useSimulation } from "./simulation-context.tsx";
 import { CELL, DATA, HEAD, STICKY } from "./table.ts";
 
 const COLUMNS = [
@@ -45,6 +47,8 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
   const [modeState, modeAction, modePending] = useActionState(setRuleModeAction, null);
   const [removeState, removeAction, removePending] = useActionState(removeRuleAction, null);
   const baseId = useId();
+  // Slice 11: the latest simulation of this page view, where the screen keeps one.
+  const simulated = useSimulation()?.run ?? null;
   const busy = modePending || removePending;
   const modeErrors = modeState?.errors ?? NO_ERRORS;
   const removeErrors = removeState?.errors ?? NO_ERRORS;
@@ -83,6 +87,8 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                 const nameId = `${baseId}-${rule.id}`;
                 // Only a Rule in Monitor mode can be promoted, whatever the address says.
                 const confirming = rule.id === confirmRuleId && rule.mode === "monitor";
+                // What promoting this Rule would do, from the last simulation of exactly these Rules.
+                const estimate = confirming ? promotionEstimate(simulated, rules, rule) : null;
                 return [
                   <tr
                     key={rule.id}
@@ -200,6 +206,11 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                           cancelHref={ROUTES.policy(appId, environment)}
                           action={modeAction}
                           busy={busy}
+                          estimate={
+                            estimate && simulated
+                              ? estimateText(estimate, simulated.simulation.ran_at, simulated.simulation.truncated)
+                              : undefined
+                          }
                           // Enforcing a pattern that starts with a wildcard can take the App offline.
                           typed={
                             isBroadPattern(rule.path)

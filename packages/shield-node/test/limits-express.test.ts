@@ -2,6 +2,7 @@
 // limit changes nothing and records what would have happened; a failure limit counts 401 and 403 responses after the
 // handler; limits come after Containments and Rules and before Virtual patches; the never-block list, preflights and
 // HEAD; device keys; a custom counter store; fail open; and no counter key in an Event or a log line.
+import http from "node:http";
 import net from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import {
@@ -789,27 +790,52 @@ describe("A7 F1: parallel guesses under a failure limit", () => {
           }),
       },
     );
-    const answers: Promise<number>[] = [];
+    // A pool of 100 keep-alive connections, as tests/e2e/abuse-rules.http.test.ts uses: 1,000 connections at once
+    // overflow the listen backlog on macOS (kern.ipc.somaxconn 128) when other test files run beside this one, and
+    // are reset before they reach the server. 100 in flight at once is still 10 times the limit; the gate keeps the
+    // admitted guesses unanswered until every other guess was answered, so no failure is counted before all 1,000
+    // were decided.
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 100 });
     let refused = 0;
-    for (let i = 0; i < 1_000; i += 25) {
-      for (let k = 0; k < 25; k++) {
-        const answer = rawPost(port, "/slow-login", '{"password":"guess"}');
-        void answer.then((status) => {
-          if (status === 429) refused += 1;
-        });
-        answers.push(answer);
-      }
-      await sleep(10);
+    const guess = (): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const body = '{"password":"guess"}';
+        const request = http.request(
+          {
+            host: "127.0.0.1",
+            port,
+            method: "POST",
+            path: "/slow-login",
+            agent,
+            headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+          },
+          (response) => {
+            response.resume();
+            response.on("end", () => {
+              if (response.statusCode === 429) refused += 1;
+              resolve(response.statusCode ?? 0);
+            });
+          },
+        );
+        request.on("error", reject);
+        request.end(body);
+      });
+    try {
+      const answers = Array.from({ length: 1_000 }, () => guess());
+      // Every guess is either at the handler or already refused.
+      for (let i = 0; i < 2_000 && arrived + refused < 1_000; i++) await sleep(10);
+      expect(arrived + refused).toBe(1_000);
+      release();
+      const statuses = await Promise.all(answers);
+      expect(arrived).toBe(10);
+      expect(calls).toHaveLength(10);
+      expect(statuses.filter((status) => status === 401)).toHaveLength(10);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(990);
+      expect(await rawPost(port, "/slow-login", '{"password":"next"}')).toBe(429);
+    } finally {
+      release();
+      agent.destroy();
     }
-    // Every guess is either at the handler or already refused.
-    for (let i = 0; i < 2_000 && arrived + refused < 1_000; i++) await sleep(10);
-    release();
-    const statuses = await Promise.all(answers);
-    expect(arrived).toBe(10);
-    expect(calls).toHaveLength(10);
-    expect(statuses.filter((status) => status === 401)).toHaveLength(10);
-    expect(statuses.filter((status) => status === 429)).toHaveLength(990);
-    expect(await rawPost(port, "/slow-login", '{"password":"next"}')).toBe(429);
   }, 30_000);
 
   it("a slot is released when the client aborts: the limit is not used up by connections that went away", async () => {

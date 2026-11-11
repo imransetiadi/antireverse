@@ -35,7 +35,10 @@
 // "API rate" limit Rule. Every eighth streamed Event is a throttle decision of the App's limit Rule (429 on the
 // Rule's pattern when enforced; the response unchanged in monitor), and the first App also gets an open
 // "Credential stuffing" Incident whose evidence mixes failed logins (401) and throttled requests (429).
-// Channel URLs and signing secrets are never logged or returned after creation. Not used by any test.
+// Slice 11: `POST /v1/apps/:appId/policy/simulate` answers with made-up figures derived from each Rule's pattern
+// (stub-simulation.mjs, whose shape a test checks against the protocol); it refuses what a publish refuses (400)
+// and a seventh simulation of an Organization within a minute (429 with Retry-After). Nothing is stored.
+// Channel URLs and signing secrets are never logged or returned after creation. The server is not used by any test.
 //
 //   PORT=39201 node apps/console/scripts/stub-api.mjs
 //   AR_API_URL=http://127.0.0.1:39201 PORT=39200 npm run dev -w @antireverse/console
@@ -43,6 +46,7 @@
 // `POST /__stub/outage?ms=6000` simulates an API restart. It never logs a key.
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import http from "node:http";
+import { stubSimulation } from "./stub-simulation.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -71,6 +75,9 @@ const containments = new Map();
 const allowlists = new Map();
 /** @type {Map<string, object[]>} Organization id → Findings as stored, newest first */
 const findings = new Map();
+/** @type {Map<string, number[]>} Organization id → when its simulations of the last minute ran (ms) */
+const simulations = new Map();
+const SIMULATIONS_PER_MINUTE = 6;
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1209,8 +1216,8 @@ function json(res, status, body, contentType = "application/json") {
   res.end(JSON.stringify(body));
 }
 
-function problem(res, status, title, extra = {}) {
-  const headers = status === 401 ? { "www-authenticate": "Bearer" } : {};
+function problem(res, status, title, extra = {}, more = {}) {
+  const headers = status === 401 ? { "www-authenticate": "Bearer" } : more;
   res.writeHead(status, { "content-type": "application/problem+json", ...headers });
   res.end(JSON.stringify({ type: "about:blank", title, status, ...extra }));
 }
@@ -1296,6 +1303,28 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && path === "/v1/apps") return json(res, 200, { apps: ownApps.map(publicApp) });
+
+  // Slice 11: an estimate for draft Rules. Checked as a publish, limited per Organization, and nothing is stored.
+  const simulateMatch = /^\/v1\/apps\/([^/]+)\/policy\/simulate$/.exec(path);
+  if (simulateMatch) {
+    if (!ownApps.some((candidate) => candidate.id === simulateMatch[1])) return problem(res, 404, "Not Found");
+    if (req.method !== "POST") return problem(res, 405, "Method Not Allowed");
+    const now = Date.now();
+    const recent = (simulations.get(organization.id) ?? []).filter((at) => now - at < 60_000);
+    simulations.set(organization.id, recent);
+    if (recent.length >= SIMULATIONS_PER_MINUTE) {
+      const wait = Math.max(1, Math.ceil((recent[0] + 60_000 - now) / 1000));
+      return problem(res, 429, "Too Many Requests", {}, { "retry-after": String(wait) });
+    }
+    const body = await readBody(req);
+    if (!Object.hasOwn(TAGS, body?.environment ?? "")) {
+      return problem(res, 400, "Bad Request", { errors: [{ path: "environment", message: "Invalid option" }] });
+    }
+    const checked = checkRules(body);
+    if (checked.errors) return problem(res, 400, "Bad Request", { errors: checked.errors });
+    recent.push(now);
+    return json(res, 200, { simulation: stubSimulation(checked.rules, now) });
+  }
 
   const policyMatch = /^\/v1\/apps\/([^/]+)\/policies\/([^/]+)(\/versions(?:\/[^/]+)?|\/rollback)?$/.exec(path);
   if (policyMatch) {

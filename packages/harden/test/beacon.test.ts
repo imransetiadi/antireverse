@@ -2,7 +2,7 @@
 // The statement is executed in `vm` contexts with stubbed `location` / `navigator`: no traffic on allowed or
 // local origins, exactly one report elsewhere, never a throw, inert outside a browser. Its client-side local
 // check is pinned against the protocol's `isLocalOrigin` over a corpus of browser-produced origins.
-import { runInNewContext } from "node:vm";
+import { createContext, runInNewContext, Script } from "node:vm";
 import { gzipSync } from "node:zlib";
 import { BEACON_LIMITS, canonicalOrigin, EXAMPLE_CANARIES, isLocalOrigin } from "@antireverse/protocol";
 import { deriveBeaconToken, deriveCanaries } from "@antireverse/protocol/server";
@@ -376,13 +376,38 @@ describe("the client-side local check mirrors isLocalOrigin (corpus)", () => {
     // The corpus exercises both sides in quantity.
     expect(local).toBeGreaterThan(1000);
     expect(origins.length - local).toBeGreaterThan(1000);
+    // One context and one compiled script for the whole corpus: a fresh `vm` context per origin (as `runIn` makes)
+    // costs about half a millisecond, so 5,000+ of them took ~3 s alone and passed the 5 s timeout under the load
+    // of the full run. Each run still executes the whole statement, with its own `location` and its own record of
+    // `sendBeacon` calls. The statement is one IIFE whose variables are local to it, so a run leaves nothing behind
+    // for the next one — checked below: the context ends with exactly the globals it was given.
+    const script = new Script(stmt);
+    let calls: unknown[][] = [];
+    const location = { origin: "" as unknown };
+    const context = createContext({
+      location,
+      navigator: { sendBeacon: (url: unknown, body: unknown) => calls.push([url, body]) > 0 },
+    });
     const mismatches: string[] = [];
     for (const o of origins) {
       const expected = isLocalOrigin(o) || allowed.includes(o) ? 0 : 1;
-      const run = runIn(stmt, o);
-      if (run.threw !== undefined || run.calls.length !== expected) mismatches.push(`${o} → ${run.calls.length}`);
+      calls = [];
+      location.origin = o;
+      let threw: unknown;
+      try {
+        script.runInContext(context);
+      } catch (error) {
+        threw = error;
+      }
+      if (threw !== undefined || calls.length !== expected) mismatches.push(`${o} → ${calls.length}`);
     }
     expect(mismatches).toEqual([]);
+    expect(Object.keys(context).sort()).toEqual(["location", "navigator"]);
+    // The shared context changes nothing: a sample of the corpus gives the same answers in fresh contexts.
+    for (let i = 0; i < origins.length; i += 97) {
+      const o = origins[i] as string;
+      expect(runIn(stmt, o).calls.length, o).toBe(isLocalOrigin(o) || allowed.includes(o) ? 0 : 1);
+    }
   });
 });
 

@@ -1,6 +1,10 @@
 import { generateSigningSecret, newId } from "@antireverse/protocol/server";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type Db, openDb } from "../src/db/db.ts";
+
+// Opening the database runs every migration; under a busy machine that can pass the default 10 s hook
+// timeout, so this file uses the same limits as the other API tests (test/helpers.ts, test/db.test.ts).
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 // The tables of slice 06 at the SQL level: tenant isolation by row-level security, and what the request role
 // may change. Routes and stores have their own tests.

@@ -13,6 +13,8 @@ import { PolicyKeySnippet } from "@/features/policy/policy-key-snippet.tsx";
 import { confirmationFrom, environmentFrom } from "@/features/policy/query.ts";
 import { RuleList } from "@/features/policy/rule-list.tsx";
 import { policyPublicKey } from "@/features/policy/signing-key.ts";
+import { PolicySimulation } from "@/features/policy/simulation-context.tsx";
+import { SimulationPanel } from "@/features/policy/simulation-panel.tsx";
 import { VersionHistory } from "@/features/policy/version-history.tsx";
 import {
   getApp,
@@ -96,28 +98,38 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
         </p>
       </div>
 
-      <section aria-labelledby="policy-rules-title" className={SECTION}>
-        <h2 id="policy-rules-title" className={SECTION_TITLE}>
-          {t("policy.rules.title")}
-        </h2>
-        <RuleList
-          key={`${revision}:${confirmation.promote ?? ""}`}
-          appId={app.id}
-          appName={app.name}
-          environment={environment}
-          version={policy.version}
-          rules={policy.rules}
-          confirmRuleId={confirmation.promote}
-        />
-      </section>
+      {/* Slice 11: the latest simulation lives in this view only. A confirmation step that opens keeps it (the
+          address changes, the view stays); a new version or another Environment starts without one. */}
+      <PolicySimulation key={revision}>
+        <section aria-labelledby="policy-rules-title" className={SECTION}>
+          <h2 id="policy-rules-title" className={SECTION_TITLE}>
+            {t("policy.rules.title")}
+          </h2>
+          <RuleList
+            key={`${revision}:${confirmation.promote ?? ""}`}
+            appId={app.id}
+            appName={app.name}
+            environment={environment}
+            version={policy.version}
+            rules={policy.rules}
+            confirmRuleId={confirmation.promote}
+          />
+          <SimulationPanel
+            appId={app.id}
+            environment={environment}
+            version={policy.version}
+            ruleCount={policy.rules.length}
+          />
+        </section>
 
-      <section aria-labelledby="policy-add-title" className={SECTION}>
-        <h2 id="policy-add-title" className={SECTION_TITLE}>
-          {t("policy.rule.add.title")}
-        </h2>
-        <p className="text-fg-muted">{t("policy.rule.add.lead")}</p>
-        <AddRuleForm key={revision} appId={app.id} environment={environment} version={policy.version} />
-      </section>
+        <section aria-labelledby="policy-add-title" className={SECTION}>
+          <h2 id="policy-add-title" className={SECTION_TITLE}>
+            {t("policy.rule.add.title")}
+          </h2>
+          <p className="text-fg-muted">{t("policy.rule.add.lead")}</p>
+          <AddRuleForm key={revision} appId={app.id} environment={environment} version={policy.version} />
+        </section>
+      </PolicySimulation>
 
       <section aria-labelledby="policy-patches-title" data-testid="policy-patches" className={SECTION}>
         <h2 id="policy-patches-title" className={SECTION_TITLE}>

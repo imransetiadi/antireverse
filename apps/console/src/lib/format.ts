@@ -48,6 +48,11 @@ export function formatBytes(bytes: number): string {
     .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+/** A count of requests or clients with the thousands grouped by a comma, e.g. `18,452`. */
+export function formatCount(count: number): string {
+  return formatBytes(count);
+}
+
 export type StatusClass = "ok" | "client" | "server";
 
 /** `client` for 4xx, `server` for 5xx, `ok` for everything below. */

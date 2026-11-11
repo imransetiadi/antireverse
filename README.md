@@ -148,6 +148,12 @@ A Rule can throttle: a limit of requests (or of failed responses, 401 and 403) p
 
 - **Honest limits:** counters are per Shield instance (several instances multiply the limit until a shared store exists); people behind one address share a counter; an attacker spread over many addresses stays under per-address limits.
 
+## Policy simulation
+
+On the Policy page, **Simulate** replays the last 24 hours of recorded requests against your Rules (or **Simulate with this Rule** for one you are typing) and shows, per Rule, how many requests it would refuse and from how many clients. The promote confirmation shows what promoting that Rule alone would refuse. Nothing is stored or published.
+
+- **Honest limits:** an estimate from recorded traffic only. It never claims a refusal it cannot be sure of and reports the rest as "could not be judged". Virtual patches, blocks on individual clients, device limits and Shield's body checks are not simulated. Give Shield an actor key so clients can be told apart.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

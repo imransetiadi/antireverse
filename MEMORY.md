@@ -241,6 +241,7 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-063 | Abuse rules: a Rule may carry a limit (requests or failed responses per window, per address or attested device) with action throttle (429 + Retry-After), in-memory per-instance counters behind a store interface; a Login protection preset and a High Credential stuffing Incident | Owner approved 2026-11-11; Jev 0.94, 0.92 | accepted |
 | D-064 | The Credential stuffing Incident counts only login-protection (failure-counting) limit Rules, from Events Shield stamps with that Rule; plain request limits show in the feed and open no Incident in this slice | Owner's decision 2026-11-11 after review F5; Jev 0.94 | accepted |
 | D-065 | The product is named Airverse (formerly Anti Reverse). Every human-visible name changes; npm package names (@antireverse/*), the `antireverse` command, `AR_*` settings and all wire names (`ar-*` headers, `ar-sig-v1`, token issuer and audience, id prefixes) stay, so deployed clients keep working. Renaming packages and the command is decided before the first npm release | Owner 2026-11-11; Jev 0.57 | accepted |
+| D-066 | Policy simulation replays the last 24 hours of stored Events against draft Rules in the API (route templates, conservative: what cannot be judged is counted separately), with limits replayed in time order; results are estimates; virtual patches are not simulated | Owner approved 2026-11-11; Jev 0.81, 1.0 | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -368,6 +369,7 @@ Which practice to apply when. The practices come from the references in PRD §19
 - Owner answers to questions 1–7 in PRD §17 (the calls C1–C7 were approved with the specification).
 - Owner confirmation of D-018 to D-026, made during slice 01.
 - Owner: whether to offer email alerts (which provider).
+- Follow-ups from slice 11: Shield records whether a request's content type was in `bodyVerified` (exact signature judging); two-count limit replay to judge more passes.
 - The repository is on GitHub (private, imransetiadi/antireverse, branch main) since 2026-11-11; the working copy lives in the folder the app made for the session.
 - Legal review of licences and usage terms for the embedded engines before general availability.
 - Decision on applying for provider-verified access for security workloads (SDD §13).
@@ -486,6 +488,13 @@ Next step for whoever continues:
 - Review: 1 HIGH + 8 fixed test-first; plan amendments A1–A8; Jev verified 5 of 5.
 - Next: owner renamed the product to Airverse (2026-11-11) — rename scope to agree; then 11, 12 or 14.
 
+**2026-11-11 — slice 11, Policy simulation**
+
+- Done: `POST /v1/apps/:appId/policy/simulate` replays the last 24 h of stored Events against draft Rules (route templates, Shield's order and limit arithmetic), stores nothing, 6 per minute, 50,000 Events, 10 s; per-Rule figures, could not be judged, clients unknown, promotion estimate per monitor Rule; Console Simulate panel and the estimate in the promote confirmation. Evidence: 5,875 tests (three full runs), e2e HTTP 109 + browser 16; estimate equalled real enforcement on the e2e traffic.
+- Review: 11 findings fixed; the core rule is never to over-claim (tainted limit counters, property test against Shield's real code); decisions D-066; plan amendments A1–A7; Jev verified 4 of 4.
+- Flaky tests made robust under load (1,000-guess test over a 100-connection pool, beacon corpus in one VM context, leak-scan growth ratio, API database hook timeouts).
+- Next: 12 (needs an AI provider and spend decisions) or 14; follow-ups listed in §11.
+
 ## 13. Safety rules for memory
 
 1. No secrets, credentials, tokens or personal data in memory — here or in the memory server.
@@ -513,3 +522,5 @@ Next step for whoever continues:
 | 2026-11-11 | Slice 19 built; decision D-060; Exposure: CVE Findings |
 | 2026-11-11 | Slice 20 built; decisions D-061–D-062; virtual patches |
 | 2026-11-11 | Slice 08 built; decisions D-063–D-064; abuse rules |
+| 2026-11-11 | Product renamed Airverse (display name, D-065) |
+| 2026-11-11 | Slice 11 built; decision D-066; policy simulation |

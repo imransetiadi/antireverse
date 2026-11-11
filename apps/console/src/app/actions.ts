@@ -36,6 +36,7 @@ import {
   type PolicyRuleInput,
   parseCidr,
   type RuleLimit,
+  type SimulationResult,
 } from "@antireverse/protocol";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -44,6 +45,7 @@ import { untilFromDate } from "@/features/findings/format.ts";
 import { isBroadEnforce, newlyBroad } from "@/features/policy/broad.ts";
 import { LIMIT_FIELDS, type LimitDraft, wholeNumber } from "@/features/policy/limit.ts";
 import { RULE_METHODS } from "@/features/policy/methods.ts";
+import { ruleFingerprint } from "@/features/policy/simulation.ts";
 import {
   ApiError,
   ConflictError,
@@ -62,9 +64,11 @@ import {
   NotFoundError,
   type PatchModeRequest,
   publishPolicy,
+  RateLimitedError,
   reopenFinding,
   rollbackPolicy,
   setPatchMode,
+  simulatePolicy,
   testAlertChannel,
   UnauthorizedError,
   updateIncident,
@@ -72,7 +76,7 @@ import {
 } from "@/lib/api.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { clearSession, readSession, writeSession } from "@/lib/session.ts";
-import { t } from "@/lib/t.ts";
+import { type MessageKey, t } from "@/lib/t.ts";
 
 // Server Actions of the Console. Each one is a public POST endpoint: it validates its input and checks
 // the session itself. A result that contains a key goes back to the page through the action state and is
@@ -382,11 +386,17 @@ async function changePolicy(
   }
 }
 
-/** Adds one Rule to the end of the Policy — always in Monitor mode — and publishes. */
-export async function publishRuleAction(_previous: PublishRuleState, formData: FormData): Promise<PublishRuleState> {
-  const key = await readSession();
-  if (!key) redirect(ROUTES.home);
+/** What the add-Rule form holds, as it goes back to the form after a refusal or a simulation. */
+type RuleFormValues = NonNullable<PublishRuleState>["values"];
 
+/**
+ * The Rule the add-Rule form describes. `values` is what was typed; `rule` is the Rule to send — always in Monitor
+ * mode, whatever the form says — or `refused`: `"stale"` for a form this screen never sends, else the errors to show.
+ * The publish and the simulation read the form the same way, so what is simulated is what would be added.
+ */
+function ruleFromForm(
+  formData: FormData,
+): { values: RuleFormValues } & ({ rule: PolicyRuleInput; refused?: never } | { refused: "stale" | FieldError[] }) {
   const name = text(formData, "name");
   const path = text(formData, "path");
   const chosen = formData.getAll("methods").filter((value): value is string => typeof value === "string");
@@ -408,22 +418,21 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
     key: text(formData, LIMIT_FIELDS.key),
     count: text(formData, LIMIT_FIELDS.count),
   };
-  const values: NonNullable<PublishRuleState>["values"] = throttle
+  const values: RuleFormValues = throttle
     ? { name, path, methods, requires, action: "throttle", limit: draft }
     : { name, path, methods, requires };
 
-  const target = policyTarget(formData);
-  const shown = shownVersion(formData);
-  if (!target || shown === null) return { ...stale(), values };
-  if (requirement !== null && !requires) return { ...stale(), values };
+  if (requirement !== null && !requires) return { values, refused: "stale" };
   // What this screen never sends: another action, a limit without Throttle, Throttle without every limit
   // field or beside a requirement, and a key or a count it does not offer.
-  if (chosenAction !== null && chosenAction !== "block" && !throttle) return { ...stale(), values };
+  if (chosenAction !== null && chosenAction !== "block" && !throttle) return { values, refused: "stale" };
   if (throttle) {
-    if (requires || limitFields.some((field) => typeof formData.get(field) !== "string")) return { ...stale(), values };
-    if (!isLimitKey(draft.key) || !isLimitCount(draft.count)) return { ...stale(), values };
+    if (requires || limitFields.some((field) => typeof formData.get(field) !== "string")) {
+      return { values, refused: "stale" };
+    }
+    if (!isLimitKey(draft.key) || !isLimitCount(draft.count)) return { values, refused: "stale" };
   } else if (limitFields.some((field) => formData.has(field))) {
-    return { ...stale(), values };
+    return { values, refused: "stale" };
   }
 
   const invalid: FieldError[] = [];
@@ -443,7 +452,33 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
     if (window_s === null) invalid.push({ path: LIMIT_FIELDS.window, message: t("error.limit.window") });
     if (requests !== null && window_s !== null) limit = { requests, window_s, key: draft.key, count: draft.count };
   }
-  if (invalid.length > 0) return { ok: false, errors: invalid, values };
+  if (invalid.length > 0) return { values, refused: invalid };
+
+  // The mode is not read from the form: a new Rule observes first, whatever its pattern.
+  // A requirement keeps the action block: the Rule blocks only the requests that do not meet it.
+  // A limit makes the action throttle; the two never go together with a requirement (checked above).
+  const rule: PolicyRuleInput = limit
+    ? { name, path, methods, action: "throttle", mode: "monitor", limit }
+    : { name, path, methods, action: "block", mode: "monitor" };
+  if (requires) rule.requires = "signature";
+  return { values, rule };
+}
+
+/** The fields of the add-Rule form a refusal of the API can be shown below. */
+const RULE_FORM_FIELDS = ["name", "path", "methods", LIMIT_FIELDS.requests, LIMIT_FIELDS.window] as const;
+
+/** Adds one Rule to the end of the Policy — always in Monitor mode — and publishes. */
+export async function publishRuleAction(_previous: PublishRuleState, formData: FormData): Promise<PublishRuleState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const typed = ruleFromForm(formData);
+  const { values } = typed;
+  const target = policyTarget(formData);
+  const shown = shownVersion(formData);
+  if (!target || shown === null || typed.refused === "stale") return { ...stale(), values };
+  if (typed.refused) return { ok: false, errors: typed.refused, values };
+  const { rule } = typed;
 
   const errors = await changePolicy(
     key,
@@ -451,19 +486,101 @@ export async function publishRuleAction(_previous: PublishRuleState, formData: F
     shown,
     (rules) => {
       if (rules.length >= POLICY_LIMITS.rulesMax) return [{ path: "", message: t("error.rules.max") }];
-      // The mode is not read from the form: a new Rule observes first, whatever its pattern.
-      // A requirement keeps the action block: the Rule blocks only the requests that do not meet it.
-      // A limit makes the action throttle; the two never go together with a requirement (checked above).
-      const rule: PolicyRuleInput = limit
-        ? { name, path, methods, action: "throttle", mode: "monitor", limit }
-        : { name, path, methods, action: "block", mode: "monitor" };
-      if (requires) rule.requires = "signature";
       return { rules: [...rules, rule], index: rules.length };
     },
-    ["name", "path", "methods", LIMIT_FIELDS.requests, LIMIT_FIELDS.window],
+    RULE_FORM_FIELDS,
   );
   if (errors) return { ok: false, errors, values };
   published(target);
+}
+
+// Policy simulation (slice 11, D-066): an estimate of what Rules would have done to the requests recorded in the
+// last 24 hours. The action reads the Policy itself — the Rules are never taken from the form — and asks the API
+// for the estimate. It publishes nothing, revalidates nothing and goes nowhere: the answer lives in the state of
+// the page view that asked.
+
+export type SimulationState =
+  | null
+  | {
+      ok: true;
+      /** True when the Rule being typed in the add-Rule form was simulated after the current Rules. */
+      withDraft: boolean;
+      simulation: SimulationResult;
+      /** The mark (`ruleFingerprint`) of every Rule that was simulated, in order. */
+      rules: string[];
+      /** With a typed Rule: what was typed, so the form still holds it. */
+      values?: RuleFormValues;
+    }
+  | { ok: false; withDraft: boolean; errors: FieldError[]; values?: RuleFormValues };
+
+const simulationFailed = (key: MessageKey): FieldError[] => [{ path: "", message: t(key) }];
+
+/** What to tell the person when a simulation was refused or failed. `own` and `sent` as for `policyErrors`. */
+function simulationErrors(
+  error: unknown,
+  own: { index: number; fields: readonly string[] } | undefined,
+  sent: readonly PolicyRuleInput[],
+): FieldError[] {
+  if (error instanceof RateLimitedError) {
+    return [
+      {
+        path: "",
+        message:
+          error.retryAfter === undefined
+            ? t("policy.simulate.limited.soon")
+            : t("policy.simulate.limited", { seconds: Math.max(1, error.retryAfter) }),
+      },
+    ];
+  }
+  // The App or the Environment's Policy is not there (any more), or not the caller's.
+  if (error instanceof NotFoundError || error instanceof ConflictError)
+    return simulationFailed("policy.simulate.stale");
+  if (error instanceof ValidationError) {
+    // Only what is about a field of the typed Rule is shown below that field; the API's own words never are.
+    const fields = policyErrors(error, own, sent).filter((entry) => own?.fields.includes(entry.path));
+    return fields.length > 0 ? fields : simulationFailed("policy.simulate.failed");
+  }
+  if (error instanceof ApiError) {
+    return simulationFailed(error.status === 0 ? "policy.simulate.unreachable" : "policy.simulate.failed");
+  }
+  throw error;
+}
+
+/**
+ * Simulates the Rules of the Policy the page shows — with `simulate=draft`, followed by the Rule being typed in the
+ * add-Rule form. Nothing is published.
+ */
+export async function simulatePolicyAction(_previous: SimulationState, formData: FormData): Promise<SimulationState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const which = formData.get("simulate");
+  const withDraft = which === "draft";
+  const typed = withDraft ? ruleFromForm(formData) : undefined;
+  const answer = typed ? { withDraft, values: typed.values } : { withDraft };
+  const refuse = (errors: FieldError[]): SimulationState => ({ ok: false, ...answer, errors });
+
+  const target = policyTarget(formData);
+  const shown = shownVersion(formData);
+  if (!target || shown === null || (which !== null && !withDraft) || typed?.refused === "stale") {
+    return refuse(simulationFailed("policy.simulate.stale"));
+  }
+  if (typed?.refused) return refuse(typed.refused);
+
+  let sent: PolicyRuleInput[] = [];
+  try {
+    const { policy } = await getPolicy(key, target.appId, target.environment);
+    if (policy.version !== shown) return refuse(simulationFailed("policy.simulate.stale"));
+    if (typed && policy.rules.length >= POLICY_LIMITS.rulesMax) return refuse(simulationFailed("error.rules.max"));
+    sent = typed ? [...policy.rules, typed.rule] : policy.rules;
+    const { simulation } = await simulatePolicy(key, target.appId, target.environment, sent);
+    return { ok: true, ...answer, simulation, rules: sent.map(ruleFingerprint) };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    return refuse(
+      simulationErrors(error, typed ? { index: sent.length - 1, fields: RULE_FORM_FIELDS } : undefined, sent),
+    );
+  }
 }
 
 /**

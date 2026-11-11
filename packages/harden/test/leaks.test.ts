@@ -221,14 +221,33 @@ describe("review fixes M1/M2/L4", () => {
   });
 
   it("L4: 50,000 findings in one file are scanned quickly with correct lines", () => {
-    const lines = Array.from({ length: 50_000 }, (_, i) => `fetch("http://10.0.${(i >> 8) & 255}.${i & 255}/p${i}");`);
-    const started = performance.now();
-    const { findings } = scanOne(lines.join("\n"), "big.js");
-    expect(performance.now() - started).toBeLessThan(2000);
+    const text = (count: number): string =>
+      Array.from({ length: count }, (_, i) => `fetch("http://10.0.${(i >> 8) & 255}.${i & 255}/p${i}");`).join("\n");
+    /** The fastest of `runs` scans of `body`, in milliseconds, and the findings of the last one. */
+    const fastest = (body: string, runs: number) => {
+      let best = Number.POSITIVE_INFINITY;
+      let findings: ReturnType<typeof scanOne>["findings"] = [];
+      for (let r = 0; r < runs; r++) {
+        const started = performance.now();
+        findings = scanOne(body, "big.js").findings;
+        best = Math.min(best, performance.now() - started);
+      }
+      return { best, findings };
+    };
+    // "Quickly" is checked as growth, not as a wall-clock bound: alone the 50,000-line scan takes about 130 ms, but
+    // under the load of the full test run beside other suites it took 2.2 s and failed a 2 s bound. Ten times the
+    // findings must cost well under a hundred times as long — what the line lookup cost before L4 (it rescanned the
+    // text for every finding). A bound of 30 allows for noise; a quadratic scan lands near 100.
+    const small = fastest(text(5_000), 3);
+    const large = fastest(text(50_000), 2);
+    expect(large.best / Math.max(small.best, 1)).toBeLessThan(30);
+    expect(large.best).toBeLessThan(30_000); // a guard against a hang, not a speed claim
+    const { findings } = large;
+    expect(small.findings).toHaveLength(5_000);
     expect(findings).toHaveLength(50_000);
     expect(findings[49_999]?.line).toBe(50_000);
     expect(findings[12_345]?.line).toBe(12_346);
-  });
+  }, 60_000);
 });
 
 describe("allowlist", () => {

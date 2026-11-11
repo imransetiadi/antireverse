@@ -2,11 +2,11 @@
 import { z } from "zod";
 import { ATTESTATION_LIMITS, BundleAttestationKeySchema } from "./attestation.ts";
 import { CANARY_LIMITS, CanarySchema } from "./canaries.ts";
-import { DECISION_MODES, ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
+import { DECISION_MODES, ENVIRONMENTS, ID_PATTERNS, LIMITS } from "./constants.ts";
 import { ActorHashSchema, CidrSchema, CONTAINMENT_LIMITS } from "./containment.ts";
 import { IP_PREFIX_PATTERN } from "./events.ts";
 import { BundlePatchSchema, PATCH_LIMITS } from "./patches.ts";
-import { deepFreeze, HttpMethodSchema, RULE_PATH_MAX, RULE_PATH_PATTERN, trimmedText } from "./shared.ts";
+import { deepFreeze, HttpMethodSchema, RULE_PATH_MAX, RULE_PATH_PATTERN, text, trimmedText } from "./shared.ts";
 
 // The Policy contract: Rules as the Console sends and the API stores them (plain, with a requirement, or with a
 // limit), and the signed bundle Shield applies. Every object schema is a plain `z.object`, which strips unknown keys. Shield validates the
@@ -413,6 +413,291 @@ export const SigningKeyResponseSchema = z.object({
 });
 export type SigningKeyResponse = z.infer<typeof SigningKeyResponseSchema>;
 
+// Policy simulation (slice 11, D-066): the API replays the stored Events of the last 24 hours of one App and
+// Environment against draft Rules and reports what the Rules would have done. Nothing is stored or published. The
+// result is an estimate: it counts, and never carries a client hash, an address or a concrete path.
+
+export const SIMULATION_LIMITS = deepFreeze({
+  /** Hours of stored Events a simulation replays, counted back from the moment it runs. */
+  windowHours: 24,
+  /** Events replayed at most: the newest ones when the window holds more (then `truncated` is true). */
+  eventsMax: 50_000,
+  /** Sample routes per Rule in the result. */
+  sampleRoutesMax: 5,
+  /** Simulations per minute per Organization; one more is refused with 429 and `Retry-After`. */
+  perMinute: 6,
+  /** Milliseconds a simulation may run; a longer one is cut off with `truncated: true` rather than failing. */
+  timeLimitMs: 10_000,
+} as const);
+
+/**
+ * What a simulation leaves out, as `not_simulated` of a result names it. A later version may name more; a client
+ * shows what it knows and must not fail on a value it does not.
+ * - `patches`: Virtual patches (slice 20) are not simulated.
+ * - `containments`: active blocks of Actors and networks are not applied to the recorded requests.
+ * - `decoded_paths`: Shield also matches the decoded and dot-resolved readings of a path; the simulation judges the
+ *   recorded route template only.
+ * - `device_limits`: an Event stores no device, so a `device` limit is replayed on the address alone and an
+ *   attested request past the limit is not judged.
+ * - `body_verification`: whether Shield would accept a validly signed request with a body depends on whether its
+ *   content type is listed in `bodyVerified` and on the body hook, neither of which an Event records; such a request
+ *   is not judged by a signature Rule.
+ */
+export const SIMULATION_NOT_SIMULATED = deepFreeze([
+  "patches",
+  "containments",
+  "decoded_paths",
+  "device_limits",
+  "body_verification",
+] as const);
+
+/**
+ * Body of `POST /v1/apps/:appId/policy/simulate`: the Environment whose Events are replayed and the draft Rules, in
+ * Policy order. `rules` is the very schema of a publish (`PublishPolicyRequestSchema`), so a draft that could not
+ * be published is refused here as well. The members that only a publish has (`expected_version`, `allow_broad`)
+ * are stripped: a simulation publishes nothing.
+ */
+export const SimulatePolicyRequestSchema = z.object({
+  environment: EnvironmentSchema,
+  rules: PublishPolicyRequestSchema.shape.rules,
+});
+/** What a client may send: each Rule as for a publish (only `name` and `path` are required). */
+export type SimulatePolicyRequestInput = z.input<typeof SimulatePolicyRequestSchema>;
+/** What the API works with after parsing: every Rule complete except, possibly, its `id`. */
+export type SimulatePolicyRequest = z.infer<typeof SimulatePolicyRequestSchema>;
+
+/** A count of Events or clients: an integer of 0 or more. */
+const CountSchema = z.int().min(0);
+
+/** A route template that Events a Rule would refuse were recorded under, and how many of them. */
+const SimulationSampleRouteSchema = z.object({
+  /** The route template as the Event stored it (`request.route`). Never the concrete URL. */
+  route: text(LIMITS.routeMax).min(1),
+  method: HttpMethodSchema,
+  /** The Events of this route template and method that the Rule would refuse: at least 1, or the route is no sample. */
+  count: z.int().min(1),
+});
+export type SimulationSampleRoute = z.infer<typeof SimulationSampleRouteSchema>;
+
+/**
+ * Refused Events without a client hash are no more than the refused Events, and every client counted has at least
+ * one refused Event with a hash.
+ */
+function checkClients(ctx: z.RefinementCtx, path: string[], refused: number, clients: number, unknown: number): void {
+  if (unknown > refused) {
+    ctx.addIssue({
+      code: "custom",
+      path: [...path, "unknown_client_events"],
+      message: "Must not be more than the requests that would be refused.",
+    });
+  } else if (clients > refused - unknown) {
+    ctx.addIssue({
+      code: "custom",
+      path: [...path, "clients_affected"],
+      message: "Must not be more than the refused requests that carry a client hash.",
+    });
+  }
+}
+
+/** The members of a Rule's row that can never exceed `matched`. */
+const SIMULATION_OUTCOMES = ["would_block", "would_fail_signature", "would_throttle", "already_refused"] as const;
+
+/**
+ * What promoting one monitor Rule would do (`if_promoted` of a Rule's row): the outcome of a replay in which the
+ * enforced Rules are the draft's Rules in Enforce mode plus this Rule, and every other monitor Rule does nothing —
+ * it refuses nothing, and a monitor limit counts nothing that changes another Rule's outcome. Unlike the row's own
+ * figures (every Rule enforced, where an earlier Rule takes the requests it covers first), this is what the
+ * Console's promote confirmation shows.
+ */
+const SimulationIfPromotedSchema = z.object({
+  /** Events this Rule would refuse once promoted: those no enforced Rule refuses before it. */
+  would_refuse: CountSchema,
+  /** Distinct clients (actor hashes) among them; Events without a hash are in `unknown_client_events`. */
+  clients_affected: CountSchema,
+  /** Those of `would_refuse` that carry no client hash. */
+  unknown_client_events: CountSchema,
+  /** Events this Rule could not be judged for in that replay (route or outcome), as `undecidable` of the row. */
+  undecidable: CountSchema,
+});
+export type SimulationIfPromoted = z.infer<typeof SimulationIfPromotedSchema>;
+
+/**
+ * What one draft Rule would have done to the Events replayed. The Rule's mode is ignored: the figures show what
+ * Enforce would do. Across Rules the first terminal outcome wins, as in Shield, so an Event is counted as a
+ * `would_*` of at most one Rule.
+ */
+const SimulationRuleResultSchema = z
+  .object({
+    /** The position of the Rule in the request's `rules`, from 0. Every draft Rule has a row, so it is the row's position too. */
+    index: z
+      .int()
+      .min(0)
+      .max(POLICY_LIMITS.rulesMax - 1),
+    /** The Rule's id as the request sent it; absent for a draft Rule without one. */
+    id: z.string().regex(ID_PATTERNS.rul).optional(),
+    /** The Rule's name after trimming, as a publish would store it. */
+    name: text(POLICY_LIMITS.nameMax).min(1),
+    /**
+     * Events whose method and route template matched the Rule. An Event whose route could not be judged is not one;
+     * an Event that matched but whose outcome could not be judged is (and is counted in `undecidable` as well).
+     */
+    matched: CountSchema,
+    /** Matched Events a block Rule would refuse with 403. */
+    would_block: CountSchema,
+    /**
+     * Matched Events a `requires: "signature"` Rule would refuse: those whose signature is not valid (missing,
+     * invalid, stale, replayed). A valid signature with a body is `undecidable`, never counted here.
+     */
+    would_fail_signature: CountSchema,
+    /**
+     * Matched Events a limit Rule would refuse with 429: those over the limit when replayed in time order per
+     * client. A lower bound: a request past the limit is counted here only when the claim is certain, and is
+     * `undecidable` otherwise (see there).
+     */
+    would_throttle: CountSchema,
+    /**
+     * Matched Events that Shield had blocked or throttled when they happened. They never reached the application,
+     * so they are not counted again as an outcome of the draft.
+     */
+    already_refused: CountSchema,
+    /**
+     * Events the Rule could not be judged for, of two kinds. Never counted as a `would_*`, and not bounded by
+     * `matched`.
+     *
+     * Events whose route could not be judged for this Rule, which are never in `matched`: a route that is not a
+     * template of plain segments and parameters (`(unmatched)`, `(mount)/…`, a regular expression, a list of
+     * paths, a wildcard or an optional group), and a parameter where the Rule's pattern has a literal.
+     *
+     * Events that matched but whose outcome could not be judged, which are in `matched` too. For a signature Rule:
+     * no recorded signature (an older Shield), a valid signature of a request with a body (checked or not: whether
+     * Shield's `bodyVerified` listed its type is not recorded), an OPTIONS request.
+     * For a limit Rule: an Event without a client hash; of a network on the never-block list; another Rule may
+     * have refused; an OPTIONS request; past a limit above 1,000 (Shield counts those approximately); past the
+     * limit only by a request at the very edge of the window; attested and past a `device` limit on its address
+     * (an Event stores no device id); or replayed after the simulation held as many request times as it may (then
+     * `truncated` is true).
+     */
+    undecidable: CountSchema,
+    /**
+     * Distinct clients (actor hashes) among the Events this Rule would refuse. Events without a hash (a Shield
+     * without an actor key, or an unknown address) are not clients here: they are counted in
+     * `unknown_client_events`. A number only: the hashes never leave the API.
+     */
+    clients_affected: CountSchema,
+    /** The Events this Rule would refuse that carry no client hash: how many clients they are is unknown. */
+    unknown_client_events: CountSchema,
+    /**
+     * The route templates (with their method) of the most Events this Rule would refuse, most first, at most
+     * `SIMULATION_LIMITS.sampleRoutesMax`. Empty for a Rule that would refuse nothing.
+     */
+    sample_routes: z.array(SimulationSampleRouteSchema).max(SIMULATION_LIMITS.sampleRoutesMax),
+    /**
+     * Present for a Rule whose draft mode is monitor, when it was computed (a simulation that ran out of time
+     * leaves it out for the Rules it did not reach); absent for a Rule already in Enforce mode.
+     */
+    if_promoted: SimulationIfPromotedSchema.optional(),
+  })
+  .superRefine((rule, ctx) => {
+    for (const outcome of SIMULATION_OUTCOMES) {
+      if (rule[outcome] > rule.matched) {
+        ctx.addIssue({ code: "custom", path: [outcome], message: "Must not be more than matched." });
+      }
+    }
+    const refused = rule.would_block + rule.would_fail_signature + rule.would_throttle;
+    checkClients(ctx, [], refused, rule.clients_affected, rule.unknown_client_events);
+    if (rule.if_promoted !== undefined) {
+      const promoted = rule.if_promoted;
+      checkClients(
+        ctx,
+        ["if_promoted"],
+        promoted.would_refuse,
+        promoted.clients_affected,
+        promoted.unknown_client_events,
+      );
+    }
+  });
+export type SimulationRuleResult = z.infer<typeof SimulationRuleResultSchema>;
+
+/**
+ * The result of a simulation (`simulation` of `SimulatePolicyResponseSchema`): an estimate from the recorded requests of `period`. The schema
+ * checks only the consistency that is certain (no count above what it is a part of, `from` not after `to`, Rule
+ * one row per draft Rule in Policy order); it does not check that the rows add up to the totals.
+ */
+export const SimulationResultSchema = z
+  .object({
+    /**
+     * The time covered: `from` is 24 hours before the simulation ran, or the time of the oldest Event replayed
+     * when the Event cap cut the period short. `to` is when it ran (`ran_at`) — or the time of the newest Event
+     * replayed when that is later (a Shield's clock up to 5 minutes ahead), or when the time limit cut the replay.
+     */
+    period: z.object({ from: z.iso.datetime(), to: z.iso.datetime() }),
+    /** When the simulation ran: what a figure shown later is dated with. */
+    ran_at: z.iso.datetime(),
+    /** `request.decision` Events replayed, at most `SIMULATION_LIMITS.eventsMax`. */
+    events: CountSchema.max(SIMULATION_LIMITS.eventsMax),
+    /**
+     * True when the Event cap or the time limit cut the replay short (the figures then cover less than 24 hours),
+     * or when the replay stopped judging limits because it held as many request times as it may.
+     */
+    truncated: z.boolean(),
+    /** Events that at least one Rule could not be judged against and that no Rule of the draft would refuse. */
+    undecidable_events: CountSchema,
+    /**
+     * What the simulation leaves out: today `SIMULATION_NOT_SIMULATED`. Any non-empty strings parse, at most 8, so
+     * a value added later does not break an older client.
+     */
+    not_simulated: z.array(z.string().min(1).max(64)).max(8),
+    /** One row per draft Rule, in Policy order: the row at position n has `index` n. */
+    rules: z.array(SimulationRuleResultSchema).max(POLICY_LIMITS.rulesMax),
+    totals: z.object({
+      /** Events the draft would refuse: blocked, failed for a signature or throttled, each Event once. */
+      would_refuse: CountSchema,
+      /** Distinct clients among those Events, counted as in a Rule's row. */
+      clients_affected: CountSchema,
+      /** Those Events that carry no client hash, counted as in a Rule's row. */
+      unknown_client_events: CountSchema,
+    }),
+  })
+  .superRefine((result, ctx) => {
+    if (Date.parse(result.period.from) > Date.parse(result.period.to)) {
+      ctx.addIssue({ code: "custom", path: ["period", "from"], message: "Must not be after to." });
+    }
+    if (result.undecidable_events > result.events) {
+      ctx.addIssue({ code: "custom", path: ["undecidable_events"], message: "Must not be more than events." });
+    }
+    if (result.totals.would_refuse > result.events) {
+      ctx.addIssue({ code: "custom", path: ["totals", "would_refuse"], message: "Must not be more than events." });
+    }
+    checkClients(
+      ctx,
+      ["totals"],
+      result.totals.would_refuse,
+      result.totals.clients_affected,
+      result.totals.unknown_client_events,
+    );
+    result.rules.forEach((rule, position) => {
+      if (rule.if_promoted !== undefined && rule.if_promoted.would_refuse > result.events) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rules", position, "if_promoted", "would_refuse"],
+          message: "Must not be more than events.",
+        });
+      }
+      if (rule.index !== position) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rules", position, "index"],
+          message: "Must be the position of the row: every draft Rule has one row, in Policy order.",
+        });
+      }
+    });
+  });
+export type SimulationResult = z.infer<typeof SimulationResultSchema>;
+
+/** 200 of `POST /v1/apps/:appId/policy/simulate`. */
+export const SimulatePolicyResponseSchema = z.object({ simulation: SimulationResultSchema });
+export type SimulatePolicyResponse = z.infer<typeof SimulatePolicyResponseSchema>;
+
 // Documented examples, reused by the tests of every workspace. They are synthetic and deeply frozen:
 // build a variant by spreading, e.g. `{ ...EXAMPLE_POLICY_RULE, mode: "monitor" }`.
 
@@ -475,4 +760,70 @@ export const EXAMPLE_BUNDLE_PAYLOAD: BundlePayload = deepFreeze({
   not_after: "2026-11-17T08:00:01.000Z",
   // Both Rules of `EXAMPLE_POLICY` are plain block Rules: a Rule with a limit would go in `limit_rules`.
   rules: EXAMPLE_POLICY.rules.map(({ id, path, methods, mode }) => ({ id, path, methods, action: "block", mode })),
+});
+
+/**
+ * A valid simulation result (slice 11) over a full 24 hours, not truncated, for three draft Rules:
+ * `EXAMPLE_POLICY_RULE` (block), a signature Rule that was never published (no `id`) and `EXAMPLE_LIMIT_RULE`.
+ * 310 Events were recorded without a route template (`(unmatched)`), so no Rule could be judged against them; 15
+ * more matched the signature Rule but come from a Shield that recorded no signature, so their outcome could not be
+ * judged: they count in that Rule's `matched` and in its `undecidable`.
+ */
+export const EXAMPLE_SIMULATION_RESULT: SimulationResult = deepFreeze({
+  period: { from: "2026-11-10T09:00:00.000Z", to: "2026-11-11T09:00:00.000Z" },
+  ran_at: "2026-11-11T09:00:00.000Z",
+  events: 18_452,
+  truncated: false,
+  undecidable_events: 325,
+  not_simulated: [...SIMULATION_NOT_SIMULATED],
+  rules: [
+    {
+      index: 0,
+      id: EXAMPLE_POLICY_RULE.id,
+      name: EXAMPLE_POLICY_RULE.name,
+      matched: 42,
+      would_block: 40,
+      would_fail_signature: 0,
+      would_throttle: 0,
+      already_refused: 2,
+      undecidable: 310,
+      clients_affected: 3,
+      unknown_client_events: 0,
+      sample_routes: [
+        { route: "/api/admin/users/:id", method: "DELETE", count: 17 },
+        { route: "/api/admin/export", method: "GET", count: 13 },
+        { route: "/api/admin/users", method: "GET", count: 10 },
+      ],
+    },
+    {
+      index: 1,
+      name: "Signed checkout",
+      matched: 1_260,
+      would_block: 0,
+      would_fail_signature: 96,
+      would_throttle: 0,
+      already_refused: 0,
+      undecidable: 325,
+      clients_affected: 12,
+      unknown_client_events: 4,
+      sample_routes: [{ route: "/api/checkout", method: "POST", count: 96 }],
+      // The draft has it in Monitor mode; the two Rules around it are enforced, so promoting it refuses the same.
+      if_promoted: { would_refuse: 96, clients_affected: 12, unknown_client_events: 4, undecidable: 325 },
+    },
+    {
+      index: 2,
+      id: EXAMPLE_LIMIT_RULE.id,
+      name: EXAMPLE_LIMIT_RULE.name,
+      matched: 530,
+      would_block: 0,
+      would_fail_signature: 0,
+      would_throttle: 180,
+      already_refused: 25,
+      undecidable: 310,
+      clients_affected: 4,
+      unknown_client_events: 0,
+      sample_routes: [{ route: "/login", method: "POST", count: 180 }],
+    },
+  ],
+  totals: { would_refuse: 316, clients_affected: 17, unknown_client_events: 4 },
 });

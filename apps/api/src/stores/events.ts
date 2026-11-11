@@ -1,5 +1,6 @@
 import type { Environment, ShieldEvent, StoredEvent } from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
+import type { ReplayEvent } from "../simulate/replay.ts";
 
 /** Where a batch comes from and when it arrived. Every member is taken from the Shield key or the clock. */
 export interface EventOrigin {
@@ -54,5 +55,67 @@ export async function listEvents(
     app_id: row.app_id,
     environment: row.environment,
     received_at: row.received_at.toISOString(),
+  }));
+}
+
+interface ReplayRow {
+  ts: Date;
+  method: string;
+  route: string;
+  status: number;
+  action: string;
+  mode: string;
+  ip_hash: string | null;
+  ip_prefix: string | null;
+  signature_status: string | null;
+  signature_body: string | null;
+  attestation_status: string | null;
+}
+
+/**
+ * The read of `listReplayEvents`: Organization, App, Environment, from, to, limit. Served in order by the index
+ * `events_replay` (migration 0020), which a test checks.
+ */
+export const REPLAY_EVENTS_SQL = `SELECT ts,
+            payload->'request'->>'method' AS method,
+            payload->'request'->>'route' AS route,
+            (payload->'request'->>'status')::int AS status,
+            payload->'decision'->>'action' AS action,
+            payload->'decision'->>'mode' AS mode,
+            payload->'actor'->>'ip_hash' AS ip_hash,
+            payload->'actor'->>'ip_prefix' AS ip_prefix,
+            payload->'signature'->>'status' AS signature_status,
+            payload->'signature'->>'body' AS signature_body,
+            payload->'attestation'->>'status' AS attestation_status
+     FROM events
+     WHERE organization_id = $1 AND app_id = $2 AND environment = $3 AND type = 'request.decision'
+       AND ts >= $4 AND ts <= $5
+     ORDER BY ts DESC, event_id DESC
+     LIMIT $6`;
+
+/**
+ * What a Policy simulation replays (slice 11): the `request.decision` Events of one App and Environment of the
+ * transaction's Organization with `ts` from `from` to `to`, newest first by `ts` (then by identifier), at most
+ * `limit`. Only the members the replay reads leave the database. Read only.
+ */
+export async function listReplayEvents(
+  q: Queryable,
+  filter: { organizationId: string; appId: string; environment: Environment; from: Date; to: Date; limit: number },
+): Promise<ReplayEvent[]> {
+  const { rows } = await q.query<ReplayRow>(REPLAY_EVENTS_SQL, [
+    filter.organizationId,
+    filter.appId,
+    filter.environment,
+    filter.from.toISOString(),
+    filter.to.toISOString(),
+    filter.limit,
+  ]);
+  return rows.map((row) => ({
+    ts: row.ts.toISOString(),
+    request: { method: row.method, route: row.route, status: row.status },
+    decision: { action: row.action, mode: row.mode },
+    actor: { ip_hash: row.ip_hash, ip_prefix: row.ip_prefix },
+    signature: row.signature_status === null ? null : { status: row.signature_status, body: row.signature_body },
+    attestation: row.attestation_status === null ? null : { status: row.attestation_status },
   }));
 }

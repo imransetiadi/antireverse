@@ -43,7 +43,8 @@ export interface CoverageEntry {
 /** The limit Rules of one Policy version, ready to judge routes. */
 export type Coverage = readonly { id: string; methods: readonly string[]; source: string; pattern: RegExp }[];
 
-const asciiLower = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+/** `text` with its ASCII letters in lower case, as Rules compare. */
+export const asciiLower = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
 
 /** `asciiLower` of a column, in SQL: `lower()` would follow the database's locale. */
 export const ASCII_LOWER_SQL = (expression: string): string =>
@@ -90,7 +91,7 @@ export function namesRule(coverage: Coverage, ruleId: string | null): boolean {
 }
 
 /** `matchMethod` of Shield: an empty list is every method, and HEAD also matches a list with GET. */
-function methodApplies(methods: readonly string[], method: string): boolean {
+export function methodApplies(methods: readonly string[], method: string): boolean {
   return methods.length === 0 || methods.includes(method) || (method === "HEAD" && methods.includes("GET"));
 }
 

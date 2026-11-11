@@ -9,6 +9,7 @@ import { Input } from "@/components/input.tsx";
 import { t } from "@/lib/t.ts";
 import { EMPTY_LIMIT, LIMIT_FIELDS, type LimitDraft, LOGIN_PROTECTION, wholeNumber, windowText } from "./limit.ts";
 import { RULE_METHODS } from "./methods.ts";
+import { useSimulation } from "./simulation-context.tsx";
 
 const NAME_ID = "rule-name";
 const PATH_ID = "rule-path";
@@ -20,6 +21,7 @@ const LIMIT_REQUESTS_ID = "rule-limit-requests";
 const LIMIT_WINDOW_ID = "rule-limit-window";
 const LIMIT_KEY_ID = "rule-limit-key";
 const LIMIT_COUNT_ID = "rule-limit-count";
+const SIMULATE_ID = "rule-simulate";
 const NO_ERRORS: readonly SummaryError[] = [];
 
 type RuleActionChoice = (typeof RULE_ACTIONS)[number];
@@ -32,9 +34,17 @@ interface Draft {
   limit: LimitDraft;
 }
 
-/** What the controls show: nothing chosen at first, and after a refusal what was sent. */
-function draftOf(state: PublishRuleState): Draft {
-  const values = state?.values;
+/** What the form holds as an action sent it back. */
+type RuleValues = NonNullable<PublishRuleState>["values"];
+
+/** The latest answer the form follows: of adding the Rule, or of simulating with it. */
+interface Answer {
+  values: RuleValues | undefined;
+  errors: readonly SummaryError[];
+}
+
+/** What the controls show: nothing chosen at first, and after an answer what was sent. */
+function draftOf(values: RuleValues | undefined): Draft {
   return {
     methods: values?.methods ?? [],
     action: values?.action === "throttle" ? "throttle" : "block",
@@ -112,9 +122,13 @@ export function AddRuleForm({
   version: number;
 }) {
   const [state, formAction, pending] = useActionState(publishRuleAction, null);
-  const errors = state?.errors ?? NO_ERRORS;
+  // Slice 11: where the screen keeps a simulation, the Rule being typed can be simulated with the current Rules.
+  const simulation = useSimulation();
+  const simulated = simulation?.state?.withDraft ? simulation.state : null;
+  const [answer, setAnswer] = useState<Answer>({ values: undefined, errors: NO_ERRORS });
+  const { errors } = answer;
   const methodsError = fieldError(errors, "methods");
-  const [draft, setDraft] = useState(() => draftOf(state));
+  const [draft, setDraft] = useState(() => draftOf(undefined));
   // The controls below are mounted anew with every answer of the action. React resets a form after its action,
   // which puts a checkbox and a radio back to the state they were mounted with: mounted anew, that state is
   // the one the answer brought back.
@@ -123,9 +137,23 @@ export function AddRuleForm({
   const [answered, setAnswered] = useState(state);
   if (answered !== state) {
     setAnswered(state);
-    setDraft(draftOf(state));
+    setAnswer({ values: state?.values, errors: state?.errors ?? NO_ERRORS });
+    setDraft(draftOf(state?.values));
     setFilled(filled + 1);
   }
+  // A simulation with this Rule brings back what was typed as well, and a refusal of one of its fields. A failure
+  // of the simulation as a whole is not about the form: the result panel shows it.
+  const [simulatedAnswer, setSimulatedAnswer] = useState(simulated);
+  if (simulatedAnswer !== simulated) {
+    setSimulatedAnswer(simulated);
+    if (simulated) {
+      const refused = simulated.ok ? NO_ERRORS : simulated.errors.filter((error) => error.path !== "");
+      setAnswer({ values: simulated.values, errors: refused });
+      setDraft(draftOf(simulated.values));
+      setFilled(filled + 1);
+    }
+  }
+  const busy = pending || simulation?.pending === true;
   const throttle = draft.action === "throttle";
   const setLimit = (change: Partial<LimitDraft>) =>
     setDraft((current) => ({ ...current, limit: { ...current.limit, ...change } }));
@@ -172,7 +200,7 @@ export function AddRuleForm({
         id={NAME_ID}
         name="name"
         label={t("policy.rule.name")}
-        defaultValue={state?.values.name}
+        defaultValue={answer.values?.name}
         error={fieldError(errors, "name")}
         autoComplete="off"
         aria-required="true"
@@ -183,7 +211,7 @@ export function AddRuleForm({
         label={t("policy.rule.path")}
         help={t("policy.rule.path.help")}
         mono
-        defaultValue={state?.values.path}
+        defaultValue={answer.values?.path}
         error={fieldError(errors, "path")}
         autoComplete="off"
         autoCapitalize="none"
@@ -326,10 +354,30 @@ export function AddRuleForm({
           ) : null}
         </div>
       </div>
-      <div>
-        <Button type="submit" disabled={pending}>
-          {pending ? t("policy.rule.adding") : t("policy.rule.add")}
-        </Button>
+      <div className="flex flex-col items-start gap-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="submit" disabled={busy}>
+            {pending ? t("policy.rule.adding") : t("policy.rule.add")}
+          </Button>
+          {simulation ? (
+            // The same fields go to the simulation instead of the publish.
+            <Button
+              type="submit"
+              variant="secondary"
+              formAction={simulation.draftAction}
+              disabled={busy}
+              aria-describedby={`${SIMULATE_ID}-help`}
+              data-testid={SIMULATE_ID}
+            >
+              {simulation.pending ? t("policy.simulate.running") : t("policy.simulate.draft")}
+            </Button>
+          ) : null}
+        </div>
+        {simulation ? (
+          <p id={`${SIMULATE_ID}-help`} className="body-5 text-fg-muted">
+            {t("policy.simulate.draft.help")}
+          </p>
+        ) : null}
       </div>
     </form>
   );
