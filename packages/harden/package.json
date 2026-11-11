@@ -1,0 +1,25 @@
+{
+  "name": "@antireverse/harden",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "antireverse": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@babel/core": "8.1.0",
+    "@babel/generator": "8.1.0",
+    "@babel/parser": "8.1.0",
+    "@babel/traverse": "8.1.0",
+    "@babel/types": "8.1.0"
+  },
+  "devDependencies": {
+    "@antireverse/protocol": "*",
+    "@types/babel__core": "7.20.5",
+    "@types/babel__generator": "7.27.0",
+    "@types/babel__traverse": "7.28.0"
+  }
+}

@@ -1,0 +1,143 @@
+[
+  {
+    "id": "GHSA-fx01-0001-rang",
+    "aliases": ["CVE-2026-90001"],
+    "summary": "Two ranges, HIGH",
+    "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H" }],
+    "database_specific": { "severity": "HIGH" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-range" },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [{ "introduced": "0" }, { "fixed": "1.2.4" }, { "introduced": "2.0.0" }, { "fixed": "2.1.1" }]
+          }
+        ]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0002-last",
+    "aliases": ["CVE-2026-90002"],
+    "summary": "last_affected, MODERATE",
+    "severity": [],
+    "database_specific": { "severity": "MODERATE" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-last" },
+        "ranges": [{ "type": "ECOSYSTEM", "events": [{ "introduced": "1.0.0" }, { "last_affected": "1.5.0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0003-expl",
+    "summary": "Explicit versions, LOW",
+    "database_specific": { "severity": "LOW" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-explicit" },
+        "ranges": [],
+        "versions": ["3.0.0", "3.0.1-beta.1"]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0004-wdrn",
+    "summary": "Withdrawn, CRITICAL",
+    "database_specific": { "severity": "CRITICAL" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-withdrawn" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z",
+    "withdrawn": "2026-10-03T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0005-scop",
+    "aliases": ["CVE-2026-90005"],
+    "summary": "Scoped package, CRITICAL",
+    "database_specific": { "severity": "CRITICAL" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "@fixture/vuln-scoped" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "5.0.0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0006-caps",
+    "summary": "Capital letters, CVSS 9.8 without a GHSA rating",
+    "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }],
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "VulnCaps" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "1.0.0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0007-unkn",
+    "summary": "No rating at all, unbounded",
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-unknown" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0008-prer",
+    "summary": "Pre-release below the fix, HIGH",
+    "database_specific": { "severity": "HIGH" },
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-pre" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "0" }, { "fixed": "2.0.0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "GHSA-fx01-0009-medi",
+    "summary": "A second advisory on vuln-range, CVSS 5.3",
+    "severity": [{ "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N" }],
+    "affected": [
+      {
+        "package": { "ecosystem": "npm", "name": "vuln-range" },
+        "ranges": [{ "type": "SEMVER", "events": [{ "introduced": "1.0.0" }, { "fixed": "1.2.0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  },
+  {
+    "id": "PYSEC-2026-1",
+    "summary": "Another ecosystem with an npm-like name",
+    "database_specific": { "severity": "CRITICAL" },
+    "affected": [
+      {
+        "package": { "ecosystem": "PyPI", "name": "vuln-pypi" },
+        "ranges": [{ "type": "ECOSYSTEM", "events": [{ "introduced": "0" }] }]
+      }
+    ],
+    "published": "2026-10-01T00:00:00Z",
+    "modified": "2026-10-02T00:00:00Z"
+  }
+]

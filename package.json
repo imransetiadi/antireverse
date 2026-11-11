@@ -1,0 +1,40 @@
+{
+  "name": "antireverse",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tests/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -b && npm run typecheck -w @antireverse/console",
+    "check": "biome check .",
+    "fix": "biome check --write .",
+    "verify": "npm run check && npm run typecheck && npm run test",
+    "bench": "npm run bench -w @antireverse/shield-node",
+    "e2e": "npm run e2e -w @antireverse/e2e",
+    "dev": "concurrently --kill-others-on-fail --names api,console \"npm:dev:api\" \"npm:dev:console\"",
+    "dev:api": "npm run dev -w @antireverse/api",
+    "dev:console": "npm run dev -w @antireverse/console",
+    "dev:range": "npm run dev -w @antireverse/range"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@playwright/test": "1.65.0",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "22.20.5",
+    "@vitejs/plugin-react": "6.3.0",
+    "concurrently": "10.0.7",
+    "happy-dom": "21.0.4",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@antireverse/range",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "tsx src/main.ts"
+  },
+  "dependencies": {
+    "@antireverse/shield-node": "*",
+    "express": "5.3.0"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6"
+  }
+}

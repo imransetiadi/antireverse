@@ -1,0 +1,904 @@
+#!/usr/bin/env node
+// The `antireverse` CLI. `antireverse harden <dir>` applies behaviour-preserving protection to a bundle the
+// developer OWNS, prints a report, and — with `--register` — registers the Build Manifest with the API.
+//
+// Safety properties enforced here:
+//   - The admin key is read ONLY from the named environment variable (`--key-env`), never from an argument,
+//     and is never printed.
+//   - Local-first: nothing but the Manifest leaves the machine, and only when `--register` is passed.
+//   - The run exits non-zero on any failure: a parse error, an equivalence failure, a budget that even
+//     mangle-only cannot satisfy, Canaries (with the Clone Beacon, when on) that fit no file's budget, or a
+//     register error.
+//   - Clone Beacon (slice 10): `--origin` needs `--register`; origins are validated with the other --register
+//     arguments, before any work (exit 2); the token is derived locally from the seed, App and version.
+//   - Leak scan (slice 07): every input file is scanned before any transform. An unsuppressed finding exits
+//     with code 3, writes nothing and registers nothing. A finding's value is never printed: only its rule,
+//     path:line, mask and fingerprint. There is no flag to skip the scan.
+//   - Component inventory (slice 19): the lockfile (`--lockfile`, default ./package-lock.json in the cwd) is read
+//     before any work; a given-but-missing or unparseable lockfile, or one over 5,000 components, exits 2. Only
+//     names, versions and the dev flag are sent, beside the Manifest, and only with --register; package names
+//     are never printed (counts only), except the findings summary's items. `--fail-on <level>` needs
+//     --register and exits 4 when the registered Build has open findings at or above the level.
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  BEACON_LIMITS,
+  type Canary,
+  type Component,
+  canonicalOrigin,
+  ENVIRONMENTS,
+  type Environment,
+  type FindingsSummary,
+  ID_PATTERNS,
+  isLocalOrigin,
+  type ManifestBeacon,
+  PROFILES,
+  type Profile,
+} from "@antireverse/protocol";
+import { componentsDigest, deriveBeaconToken, newId, seedId } from "@antireverse/protocol/server";
+import { beaconEndpointUrl } from "./beacon.ts";
+import { readComponents } from "./components.ts";
+import { type BundleLeakScan, hardenBundle } from "./engine.ts";
+import { checkEquivalence } from "./equivalence.ts";
+import { DEFAULT_ALLOWLIST_PATH, type LeakFinding, loadAllowlist } from "./leaks/scan.ts";
+import { buildManifest } from "./manifest.ts";
+import { applyIntegrity } from "./passes/integrity.ts";
+import { registerBuild } from "./register.ts";
+
+/** The I/O surface, injected so the CLI is testable without spawning a process. */
+export interface CliIo {
+  env: Record<string, string | undefined>;
+  stdout: (s: string) => void;
+  stderr: (s: string) => void;
+  /** The working directory the default allowlist and `--leak-allow` resolve against. Default: process.cwd(). */
+  cwd?: string;
+}
+
+/** Exit code of a run stopped by the leak scan (distinct from other failures). */
+export const EXIT_LEAKS = 3;
+
+/** Exit code of a registered Build whose open findings reach the `--fail-on` level (slice 19). */
+export const EXIT_FINDINGS = 4;
+
+/** The `--fail-on` levels, lowest first. `unknown` severity is not a level and never counts towards one. */
+const FAIL_ON_LEVELS = ["low", "medium", "high", "critical"] as const;
+type FailOnLevel = (typeof FAIL_ON_LEVELS)[number];
+
+/** The default lockfile, relative to the working directory. */
+const DEFAULT_LOCKFILE = "package-lock.json";
+
+const SOURCE_EXTENSIONS = [".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"];
+const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".next", "coverage", "build"]);
+/** Directories the leak scan does not read: dependencies and version control are not part of the bundle. */
+const SCAN_SKIP_DIRS = new Set(["node_modules", ".git"]);
+
+const HELP = `antireverse harden <dir> — defensive build-time protection for a bundle you own.
+
+Responsible use: Harden protects software you own and never changes its behaviour (the equivalence gate proves it); it is not for evading detection or protecting software you do not own.
+
+Usage:
+  antireverse harden <dir> --profile <light|balanced|maximum> [options]
+
+Options:
+  --profile <p>        Protection profile (default: balanced). light = mangle; balanced/maximum = mangle + string encryption.
+  --seed <n>           Integer seed for reproducible output (default: derived from the Build id).
+  --map <file.json>    JSON map of "relative/path": "skip" to emit a file unchanged.
+  --integrity          Wrap already-bundled (non-ESM) output in a tamper self-check. Refused on ESM input.
+  --out <dir>          Write the protected files to <dir> (default: report only, nothing written).
+  --test <command>     Run this command against the protected copy as the equivalence gate; a failure fails the run.
+  --json               Print a machine-readable JSON report instead of the human one.
+  --leak-allow <file>  Leak allowlist (default: ${DEFAULT_ALLOWLIST_PATH} in the working directory).
+
+Leak scan: every file of <dir> is scanned for secrets, source maps and internal URLs before any transform.
+A finding fails the run with exit code 3 (nothing written, nothing registered); accept a reviewed finding by
+adding its fingerprint to the allowlist: { "version": 1, "allow": [{ "fingerprint": "<32 hex>", "reason": "…" }] }.
+
+Canaries: each Build gets one decoy key and two decoy routes, planted in one protected file. They are watched
+only when the Build is registered.
+
+Clone Beacon (needs --register):
+  --origin <origin>    An origin the bundle is served from, canonical scheme://host[:port] (http or https), not
+                       local; repeat for up to ${BEACON_LIMITS.originsMax}. A copy of the bundle running on any other public origin
+                       reports it once (navigator.sendBeacon to <endpoint>/v1/beacon). Planted with the Canaries.
+
+Register the Build (sends ONLY the Manifest — no source, no bundle, no seed — and the lockfile's components):
+  --register --endpoint <url> --key-env <VAR> --app <appId> --environment <env> --build-version <v>
+  The admin key is read only from the environment variable named by --key-env; it is never printed.
+
+Component inventory (known-vulnerability findings):
+  --lockfile <path>    npm lockfile to read (default: ./${DEFAULT_LOCKFILE}; when absent, inventory is skipped).
+                       Only package names, versions and the dev flag are sent, and only with --register.
+  --fail-on <level>    With --register: exit 4 when the Build has open findings at or above
+                       <${FAIL_ON_LEVELS.join("|")}>, or when the API returns no findings summary;
+                       each one is listed with its fix version. Unknown severity is reported, never counted.
+
+Exit codes: 0 ok · 1 failure · 2 usage or input error · 3 leak scan · 4 findings at or above --fail-on.
+`;
+
+interface Flags {
+  profile: string;
+  seed?: string | undefined;
+  map?: string | undefined;
+  integrity: boolean;
+  out?: string | undefined;
+  test?: string | undefined;
+  json: boolean;
+  leakAllow?: string | undefined;
+  register: boolean;
+  endpoint?: string | undefined;
+  keyEnv?: string | undefined;
+  app?: string | undefined;
+  environment?: string | undefined;
+  buildVersion?: string | undefined;
+  /** `--origin` values in the order given; `undefined` marks an `--origin` with no value. */
+  origins: Array<string | undefined>;
+  /** `--lockfile`: absent = the default; `null` = the flag was given without a value. */
+  lockfile?: string | null | undefined;
+  /** `--fail-on`: absent = no gate; `null` = the flag was given without a value. */
+  failOn?: string | null | undefined;
+}
+
+function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
+  const flags: Flags = { profile: "balanced", integrity: false, json: false, register: false, origins: [] };
+  let dir: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    switch (arg) {
+      case "--profile":
+        flags.profile = args[++i] ?? "";
+        break;
+      case "--seed":
+        flags.seed = args[++i];
+        break;
+      case "--map":
+        flags.map = args[++i];
+        break;
+      case "--integrity":
+        flags.integrity = true;
+        break;
+      case "--out":
+        flags.out = args[++i];
+        break;
+      case "--test":
+        flags.test = args[++i];
+        break;
+      case "--json":
+        flags.json = true;
+        break;
+      case "--leak-allow":
+        flags.leakAllow = args[++i];
+        break;
+      case "--register":
+        flags.register = true;
+        break;
+      case "--endpoint":
+        flags.endpoint = args[++i];
+        break;
+      case "--key-env":
+        flags.keyEnv = args[++i];
+        break;
+      case "--app":
+        flags.app = args[++i];
+        break;
+      case "--environment":
+        flags.environment = args[++i];
+        break;
+      case "--build-version":
+        flags.buildVersion = args[++i];
+        break;
+      case "--origin":
+        flags.origins.push(args[++i]);
+        break;
+      case "--lockfile":
+        flags.lockfile = args[++i] ?? null;
+        break;
+      case "--fail-on":
+        flags.failOn = args[++i] ?? null;
+        break;
+      default:
+        if (arg && !arg.startsWith("--") && dir === undefined) dir = arg;
+        break;
+    }
+  }
+  return { dir, flags };
+}
+
+/** Reads every source file under `dir`, keyed by its path relative to `dir` (posix separators, sorted). */
+function readSources(dir: string): Record<string, string> {
+  const entries = readdirSync(dir, { recursive: true, withFileTypes: true });
+  const files: Array<[string, string]> = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) continue;
+    const full = join(entry.parentPath, entry.name);
+    const rel = relative(dir, full).split(sep).join("/");
+    // The skip list applies to directories INSIDE the bundle, so it is checked on the relative path: a bundle
+    // that itself lives under e.g. /ci/build/app must still be read.
+    if (
+      rel
+        .split("/")
+        .slice(0, -1)
+        .some((part) => SKIP_DIRS.has(part))
+    )
+      continue;
+    files.push([rel, readFileSync(full, "utf8")]);
+  }
+  files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return Object.fromEntries(files);
+}
+
+interface BundleFiles {
+  /** Every file name under `dir` (relative, posix, sorted), binary ones included. */
+  fileNames: string[];
+  /** The non-source files that are valid UTF-8 text: scanned, never transformed. */
+  extraFiles: Array<{ path: string; text: string }>;
+  /** What the scan could not read as UTF-8 (reported, by path). */
+  coverage: ScanCoverage;
+}
+
+interface ScanCoverage {
+  /** Files with a NUL byte that are not valid UTF-8 (binary): not scanned. */
+  notScanned: string[];
+  /** Files that are not valid UTF-8 but have no NUL byte: scanned decoded as latin1 (every rule is ASCII). */
+  latin1: string[];
+}
+
+/** Reads every non-source file under `dir` for the leak scan (skipping only node_modules and .git). */
+function readBundleFiles(dir: string, sources: Record<string, string>): BundleFiles {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const fileNames: string[] = [];
+  const extraFiles: Array<{ path: string; text: string }> = [];
+  const notScanned: string[] = [];
+  const latin1: string[] = [];
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const full = join(entry.parentPath, entry.name);
+    const rel = relative(dir, full).split(sep).join("/");
+    if (rel.split("/").some((part) => SCAN_SKIP_DIRS.has(part))) continue;
+    fileNames.push(rel);
+    if (rel in sources) continue;
+    const bytes = readFileSync(full);
+    try {
+      extraFiles.push({ path: rel, text: decoder.decode(bytes) });
+    } catch {
+      // Not UTF-8. A file with a NUL byte is treated as binary and skipped (but listed); anything else is
+      // scanned decoded as latin1, which maps every byte to one character, so ASCII secrets are still found.
+      if (bytes.includes(0)) {
+        notScanned.push(rel);
+      } else {
+        extraFiles.push({ path: rel, text: bytes.toString("latin1") });
+        latin1.push(rel);
+      }
+    }
+  }
+  const byPath = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  fileNames.sort(byPath);
+  extraFiles.sort((a, b) => byPath(a.path, b.path));
+  notScanned.sort(byPath);
+  latin1.sort(byPath);
+  return { fileNames, extraFiles, coverage: { notScanned, latin1 } };
+}
+
+/** A deterministic numeric seed derived from a Build id (used when `--seed` is not given). */
+function seedFromBuildId(buildId: string): number {
+  return createHash("sha256").update(buildId).digest().readUInt32BE(0);
+}
+
+export async function main(argv: string[], io: CliIo): Promise<number> {
+  if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
+    io.stdout(HELP);
+    return 0;
+  }
+  if (argv[0] !== "harden") {
+    io.stderr(`unknown command: ${argv[0]}\n`);
+    return 2;
+  }
+
+  const { dir, flags } = parseFlags(argv.slice(1));
+  if (!dir) {
+    io.stderr("harden: a <dir> is required\n");
+    return 2;
+  }
+  if (!(PROFILES as readonly string[]).includes(flags.profile)) {
+    io.stderr(`harden: unknown profile "${flags.profile}" (expected ${PROFILES.join(", ")})\n`);
+    return 2;
+  }
+  const profile = flags.profile as Profile;
+
+  const buildId = newId("bld");
+  const rawSeed = flags.seed !== undefined ? Number.parseInt(flags.seed, 10) : seedFromBuildId(buildId);
+  if (!Number.isFinite(rawSeed)) {
+    io.stderr(`harden: --seed must be an integer\n`);
+    return 2;
+  }
+  // Normalised once (plan amendment A1): the PRNG and the Canaries use the same 32-bit seed.
+  const seed = rawSeed >>> 0;
+
+  // The --register arguments are validated before any scan or transform work, so a usage error (a missing
+  // flag, an unset key variable, an unknown environment) is reported whatever the bundle holds.
+  let registerKey: string | undefined;
+  if (flags.register) {
+    const missing = (["endpoint", "keyEnv", "app", "environment", "buildVersion"] as const).filter(
+      (k) => flags[k] === undefined,
+    );
+    if (missing.length > 0) {
+      io.stderr(`harden: --register needs --endpoint, --key-env, --app, --environment, --build-version\n`);
+      return 2;
+    }
+    const keyEnv = flags.keyEnv as string;
+    registerKey = io.env[keyEnv];
+    if (!registerKey) {
+      io.stderr(`harden: environment variable ${keyEnv} is not set (the admin key is read only from it)\n`);
+      return 2;
+    }
+    if (!(ENVIRONMENTS as readonly string[]).includes(flags.environment as string)) {
+      io.stderr(`harden: unknown --environment "${flags.environment}" (expected ${ENVIRONMENTS.join(", ")})\n`);
+      return 2;
+    }
+    if (!ID_PATTERNS.app.test(flags.app as string)) {
+      io.stderr(`harden: --app must be an App id (app_<24 hex>)\n`);
+      return 2;
+    }
+    if (/[\r\n]/.test(flags.buildVersion as string) || (flags.buildVersion as string).length === 0) {
+      io.stderr(`harden: --build-version must be a non-empty single line\n`);
+      return 2;
+    }
+  }
+
+  // The findings gate (slice 19), validated with the --register arguments, before any work.
+  let failOn: FailOnLevel | undefined;
+  if (flags.failOn !== undefined) {
+    if (!flags.register) {
+      io.stderr("harden: --fail-on needs --register (findings come from the registered Build)\n");
+      return 2;
+    }
+    if (flags.failOn === null || !(FAIL_ON_LEVELS as readonly string[]).includes(flags.failOn)) {
+      io.stderr(`harden: --fail-on must be one of ${FAIL_ON_LEVELS.join(", ")}\n`);
+      return 2;
+    }
+    failOn = flags.failOn as FailOnLevel;
+  }
+
+  // The Clone Beacon's origins (slice 10), validated with the --register arguments, before any work.
+  let beaconOrigins: string[] | undefined;
+  if (flags.origins.length > 0) {
+    const problem = originsProblem(flags);
+    if (problem !== null) {
+      io.stderr(`harden: ${problem}\n`);
+      return 2;
+    }
+    beaconOrigins = flags.origins as string[];
+  }
+
+  // The allowlist is read next: a malformed or missing-but-given file fails before any scan or transform.
+  const allowLoad = loadAllowlist({ cwd: io.cwd ?? process.cwd(), file: flags.leakAllow });
+  if ("error" in allowLoad) {
+    io.stderr(`harden: ${allowLoad.error}\n`);
+    return 2;
+  }
+
+  // The component inventory (slice 19), read before any work: a given-but-missing or unparseable lockfile, or
+  // one over the limit, is an input error (exit 2). A missing default lockfile only turns the inventory off.
+  const cwd = io.cwd ?? process.cwd();
+  let inventory: { components: Component[]; skipped: number } | null = null;
+  /** Dependencies the lockfile listed when every one was skipped: then no list is sent at all (see below). */
+  let allSkipped: number | null = null;
+  if (flags.lockfile === null || flags.lockfile === "") {
+    io.stderr("harden: --lockfile needs a path\n");
+    return 2;
+  }
+  const lockfilePath = resolve(cwd, flags.lockfile ?? DEFAULT_LOCKFILE);
+  if (flags.lockfile !== undefined || existsSync(lockfilePath)) {
+    const read = readComponents(lockfilePath);
+    if ("error" in read) {
+      io.stderr(`harden: lockfile ${flags.lockfile ?? `./${DEFAULT_LOCKFILE}`} ${read.error}\n`);
+      return 2;
+    }
+    // A lockfile that lists dependencies none of which could be read says nothing about what the Build ships. An
+    // empty list would tell the API it ships nothing (and fix every older Finding), so the inventory is off for this
+    // Build instead. Only a lockfile that truly lists no dependencies sends [].
+    if (read.components.length === 0 && read.skipped > 0) allSkipped = read.skipped;
+    else inventory = read;
+  }
+
+  let sources: Record<string, string>;
+  try {
+    sources = readSources(dir);
+  } catch (error) {
+    io.stderr(`harden: cannot read ${dir} (${error instanceof Error ? error.message : String(error)})\n`);
+    return 2;
+  }
+  if (Object.keys(sources).length === 0) {
+    io.stderr(`harden: no source files found under ${dir}\n`);
+    return 2;
+  }
+
+  let protectionMap: Record<string, "skip"> | undefined;
+  if (flags.map) {
+    try {
+      const raw = JSON.parse(readFileSync(flags.map, "utf8")) as Record<string, string>;
+      protectionMap = {};
+      for (const [path, value] of Object.entries(raw)) {
+        if (value !== "skip") {
+          io.stderr(`harden: --map value for "${path}" must be "skip"\n`);
+          return 2;
+        }
+        protectionMap[path] = "skip";
+      }
+    } catch (error) {
+      io.stderr(`harden: cannot read --map file (${error instanceof Error ? error.message : String(error)})\n`);
+      return 2;
+    }
+  }
+
+  let bundleFiles: BundleFiles;
+  try {
+    bundleFiles = readBundleFiles(dir, sources);
+  } catch (error) {
+    io.stderr(`harden: cannot read ${dir} (${error instanceof Error ? error.message : String(error)})\n`);
+    return 2;
+  }
+
+  const result = hardenBundle(
+    { sources, extraFiles: bundleFiles.extraFiles, fileNames: bundleFiles.fileNames },
+    {
+      profile,
+      seed,
+      allow: allowLoad.allow,
+      ...(protectionMap ? { protectionMap } : {}),
+      // A registered Build's Canaries are scoped to its App and version (the API keys Canaries per Organization).
+      ...(flags.register ? { canaryScope: { appId: flags.app as string, version: flags.buildVersion as string } } : {}),
+      // The Clone Beacon token is derived from the normalised seed, App and version (only with --origin).
+      ...(beaconOrigins
+        ? {
+            beacon: {
+              appId: flags.app as string,
+              token: deriveBeaconToken(seed, { appId: flags.app as string, version: flags.buildVersion as string }),
+              origins: beaconOrigins,
+              endpoint: flags.endpoint as string,
+            },
+          }
+        : {}),
+    },
+  );
+
+  // Leaks fail the run with exit code 3: nothing is written and nothing is registered.
+  if (result.leakScan.status === "failed") {
+    emitLeakFailure(io, {
+      profile,
+      seed,
+      leakScan: result.leakScan,
+      coverage: bundleFiles.coverage,
+      json: flags.json,
+    });
+    io.stderr(
+      `harden: leak scan found ${countFindings(result.leakScan.findings.length)}; nothing written or registered.\n`,
+    );
+    return EXIT_LEAKS;
+  }
+
+  // Parse errors fail the run: nothing is written and nothing is registered.
+  const broken = result.files.filter((f) => f.error !== undefined);
+  if (broken.length > 0) {
+    for (const f of broken) io.stderr(`harden: ${f.path}: ${f.error}\n`);
+    return 1;
+  }
+
+  // Canaries are never dropped silently: if no protected file can hold them within budget, the run fails.
+  if (result.plantError !== undefined || result.plantedIn === null) {
+    io.stderr(`${result.plantError ?? "harden: Canaries were not planted"}; nothing written or registered.\n`);
+    return 1;
+  }
+
+  // Protected code per path (post-integrity if requested). The Canaries are already planted, so the integrity
+  // wrapper hashes the planted code and its self-check passes.
+  const codeByPath = new Map<string, string>(result.files.map((f) => [f.path, f.code]));
+  let integrity = false;
+  if (flags.integrity) {
+    integrity = true;
+    for (const f of result.files) {
+      if (f.skipped) continue;
+      try {
+        codeByPath.set(f.path, applyIntegrity(f.code));
+      } catch (error) {
+        io.stderr(`harden: ${f.path}: ${error instanceof Error ? error.message : String(error)}\n`);
+        return 1;
+      }
+    }
+  }
+
+  const protectedFiles = Object.fromEntries(codeByPath);
+
+  // Equivalence gate (only when a test command is given in this slice).
+  let equivalence: "passed" | "skipped" = "skipped";
+  if (flags.test) {
+    const check = await checkEquivalence({ dir, testCommand: flags.test, protectedFiles });
+    if (!check.passed) {
+      io.stderr(`harden: equivalence gate failed; nothing written or registered.\n${check.output}\n`);
+      return 1;
+    }
+    equivalence = "passed";
+  }
+
+  const transform = { ...result.transform, integrity };
+
+  // Register (sends only the Manifest and, beside it, the components).
+  let registered: { build_id: string } | { error: string } | undefined;
+  let findings: FindingsSummary | null = null;
+  if (flags.register) {
+    const key = registerKey as string;
+    const manifest = buildManifest({
+      buildId,
+      appId: flags.app as string,
+      environment: flags.environment as Environment,
+      version: flags.buildVersion as string,
+      profile,
+      seed,
+      artifacts: Object.entries(protectedFiles).map(([path, code]) => ({ path, code })),
+      originals: sources,
+      transform,
+      equivalence,
+      leakScan: {
+        status: result.leakScan.status === "suppressed" ? "suppressed" : "clean",
+        suppressed: result.leakScan.suppressed,
+      },
+      canaries: result.canaries,
+      ...(result.beacon ? { beacon: result.beacon } : {}),
+      ...(inventory
+        ? { components: { count: inventory.components.length, digest: componentsDigest(inventory.components) } }
+        : {}),
+    });
+    const reg = await registerBuild({
+      endpoint: flags.endpoint as string,
+      key,
+      appId: flags.app as string,
+      manifest,
+      ...(inventory ? { components: inventory.components } : {}),
+    });
+    if ("error" in reg) {
+      io.stderr(`harden: register failed: ${reg.error}\n`);
+      return 1;
+    }
+    registered = { build_id: reg.build.build_id };
+    findings = reg.findings ?? null;
+  }
+
+  // The findings gate is decided after a successful register; the files are still written (the Build is
+  // registered, so it is watched) and the run then exits 4.
+  const gate = failOn ? evaluateGate(failOn, findings) : null;
+
+  // Write the protected files only when an output directory is given, and only after a successful register
+  // (review F5): a Build that failed to register leaves nothing behind that could be deployed unwatched.
+  if (flags.out) {
+    for (const [rel, code] of Object.entries(protectedFiles)) {
+      const dest = join(flags.out, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, code, "utf8");
+    }
+  }
+
+  const fileReports = result.files.map((f) => ({
+    path: f.path,
+    bytes: Buffer.byteLength(protectedFiles[f.path] ?? f.code, "utf8"),
+    renamed: f.renamed,
+    strings_encrypted: f.stringsEncrypted,
+    skipped: f.skipped,
+    ...(f.mangleOnly ? { mangle_only: f.mangleOnly } : {}),
+  }));
+
+  emitReport(io, {
+    profile,
+    seed,
+    equivalence,
+    integrity,
+    transform,
+    files: fileReports,
+    registered,
+    flags,
+    leakScan: result.leakScan,
+    coverage: bundleFiles.coverage,
+    canaries: result.canaries,
+    plantedIn: result.plantedIn,
+    beacon: result.beacon,
+    inventory,
+    allSkipped,
+    findings,
+    gate,
+  });
+  // Fail closed (Jev: fail_closed_unknown_excluded, 0.94): a gate that could not be evaluated fails too.
+  if (gate?.noSummary) {
+    io.stderr(`harden: findings gate could not be evaluated: ${NO_SUMMARY}\n`);
+    return EXIT_FINDINGS;
+  }
+  if (gate && gate.count > 0) {
+    io.stderr(`harden: findings gate failed: ${gateCount(gate)} at or above ${gate.level}\n`);
+    return EXIT_FINDINGS;
+  }
+  return 0;
+}
+
+interface GateResult {
+  level: FailOnLevel;
+  /** Open findings at or above the level, from the summary's counts (the items may be truncated). */
+  count: number;
+  /** The summary's items at or above the level. */
+  failed: FindingsSummary["items"];
+  /** Open findings of unknown severity: never counted towards a level, but reported. */
+  unknown: number;
+  /** The API returned no findings summary, so nothing could be checked: the gate fails closed. */
+  noSummary: boolean;
+}
+
+const NO_SUMMARY = "the API returned no findings summary";
+
+/** The gate as `--json` reports it, or null without --fail-on. */
+function gateReport(gate: GateResult | null) {
+  if (gate === null) return null;
+  return {
+    level: gate.level,
+    evaluated: !gate.noSummary,
+    passed: !gate.noSummary && gate.count === 0,
+    count: gate.count,
+    unknown_not_counted: gate.unknown,
+  };
+}
+
+function gateCount(gate: GateResult): string {
+  return `${gate.count} open finding${gate.count === 1 ? "" : "s"}`;
+}
+
+/** The `--fail-on` outcome: counts and items at or above `level` (`unknown` never counts). */
+function evaluateGate(level: FailOnLevel, summary: FindingsSummary | null): GateResult {
+  if (summary === null) return { level, count: 0, failed: [], unknown: 0, noSummary: true };
+  const levels = FAIL_ON_LEVELS.slice(FAIL_ON_LEVELS.indexOf(level)) as readonly string[];
+  const count = FAIL_ON_LEVELS.slice(FAIL_ON_LEVELS.indexOf(level)).reduce((n, l) => n + summary.open[l], 0);
+  const items = summary.items.filter((item) => levels.includes(item.severity));
+  return { level, count, failed: items, unknown: summary.open.unknown, noSummary: false };
+}
+
+/**
+ * Why the `--origin` flags are unusable, or null. Each origin must be exactly canonical (the message shows the
+ * canonical form when there is one), not local, listed once; 1..20 of them; and they need --register with an
+ * http(s) --endpoint (the report URL is planted in the bundle). The other --register arguments are checked first.
+ */
+function originsProblem(flags: Flags): string | null {
+  if (!flags.register) {
+    return "--origin needs --register (a Clone Beacon nobody watches is pointless)";
+  }
+  if (flags.origins.length > BEACON_LIMITS.originsMax) {
+    return `--origin may be given at most ${BEACON_LIMITS.originsMax} times (got ${flags.origins.length})`;
+  }
+  const seen = new Set<string>();
+  for (const origin of flags.origins) {
+    if (origin === undefined || origin === "") return "--origin needs a value (scheme://host[:port])";
+    const canonical = canonicalOrigin(origin);
+    if (canonical === null) {
+      return `--origin ${JSON.stringify(origin)} is not an http(s) origin (scheme://host[:port], no path, query or credentials)`;
+    }
+    if (canonical !== origin) {
+      return `--origin ${JSON.stringify(origin)} is not canonical; use ${JSON.stringify(canonical)}`;
+    }
+    if (isLocalOrigin(origin)) {
+      return `--origin ${JSON.stringify(origin)} is a local origin (a local origin never reports); list only public origins`;
+    }
+    if (seen.has(origin)) return `--origin ${JSON.stringify(origin)} is given twice`;
+    seen.add(origin);
+  }
+  try {
+    beaconEndpointUrl(flags.endpoint as string);
+  } catch (error) {
+    return `--endpoint: ${error instanceof Error ? error.message.replace(/^harden: /, "") : String(error)}`;
+  }
+  return null;
+}
+
+function countFindings(n: number): string {
+  return `${n} finding${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The report's `leak_scan`: findings are masked (never a value); `not_scanned` lists binary files (NUL byte,
+ * not UTF-8) that were skipped; `decoded_as_latin1` lists non-UTF-8 files that were scanned as latin1.
+ */
+function leakScanReport(leakScan: BundleLeakScan, coverage: ScanCoverage) {
+  return {
+    status: leakScan.status,
+    findings: leakScan.findings.map((f: LeakFinding) => ({
+      rule: f.rule,
+      path: f.path,
+      line: f.line,
+      masked: f.masked,
+      fingerprint: f.fingerprint,
+    })),
+    suppressed: leakScan.suppressed,
+    not_scanned: coverage.notScanned,
+    decoded_as_latin1: coverage.latin1,
+  };
+}
+
+function leakScanLines(leakScan: BundleLeakScan, coverage: ScanCoverage): string[] {
+  const lines: string[] = [];
+  if (leakScan.status === "failed") {
+    lines.push(`✗ leak scan: ${countFindings(leakScan.findings.length)}`);
+    for (const f of leakScan.findings) lines.push(`  ${f.rule}  ${f.path}:${f.line}  ${f.masked}  ${f.fingerprint}`);
+    lines.push(
+      `  accept a reviewed finding by adding its fingerprint to ${DEFAULT_ALLOWLIST_PATH} (or --leak-allow <file>)`,
+    );
+  } else {
+    lines.push(leakScan.suppressed > 0 ? `✓ leak scan clean (${leakScan.suppressed} suppressed)` : "✓ leak scan clean");
+  }
+  if (coverage.latin1.length > 0) {
+    lines.push(`  decoded as latin1 (not UTF-8): ${coverage.latin1.join(", ")}`);
+  }
+  if (coverage.notScanned.length > 0) {
+    lines.push(`  not scanned (binary, not UTF-8): ${coverage.notScanned.join(", ")}`);
+  }
+  return lines;
+}
+
+function emitLeakFailure(
+  io: CliIo,
+  input: { profile: Profile; seed: number; leakScan: BundleLeakScan; coverage: ScanCoverage; json: boolean },
+): void {
+  if (input.json) {
+    const report = {
+      profile: input.profile,
+      seed_id: seedId(String(input.seed)),
+      leak_scan: leakScanReport(input.leakScan, input.coverage),
+    };
+    io.stdout(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+  io.stdout(`${[`harden: profile ${input.profile}`, ...leakScanLines(input.leakScan, input.coverage)].join("\n")}\n`);
+}
+
+interface FileReport {
+  path: string;
+  bytes: number;
+  renamed: number;
+  strings_encrypted: number;
+  skipped: boolean;
+  mangle_only?: string;
+}
+
+interface ReportInput {
+  profile: Profile;
+  seed: number;
+  equivalence: "passed" | "skipped";
+  integrity: boolean;
+  transform: { mangled: number; strings_encrypted: number; files_mangle_only: number; integrity: boolean };
+  files: FileReport[];
+  registered?: { build_id: string } | { error: string } | undefined;
+  flags: Flags;
+  leakScan: BundleLeakScan;
+  coverage: ScanCoverage;
+  canaries: Canary[];
+  plantedIn: string | null;
+  beacon: ManifestBeacon | null;
+  inventory: { components: Component[]; skipped: number } | null;
+  /** The dependencies a lockfile listed when every one was skipped (inventory off); null otherwise. */
+  allSkipped: number | null;
+  findings: FindingsSummary | null;
+  gate: GateResult | null;
+}
+
+function emitReport(io: CliIo, input: ReportInput): void {
+  if (input.flags.json) {
+    const report = {
+      profile: input.profile,
+      seed_id: seedId(String(input.seed)),
+      integrity: input.integrity,
+      equivalence: input.equivalence,
+      transform: input.transform,
+      files: input.files,
+      leak_scan: leakScanReport(input.leakScan, input.coverage),
+      // Decoy values are not secrets: the developer may want to test with them.
+      canaries: input.canaries,
+      canaries_planted_in: input.plantedIn,
+      // The token is in the public bundle anyway; it is reported so a deployment can be checked against it.
+      ...(input.beacon ? { beacon: { ...input.beacon, planted_in: input.plantedIn } } : {}),
+      ...(input.registered ? { registered: input.registered } : {}),
+      // Counts only: the component list itself is never printed.
+      components: input.inventory
+        ? { count: input.inventory.components.length, skipped: input.inventory.skipped }
+        : input.allSkipped !== null
+          ? { count: 0, skipped: input.allSkipped, sent: false }
+          : null,
+      findings: input.findings,
+      gate: gateReport(input.gate),
+    };
+    io.stdout(`${JSON.stringify(report, null, 2)}\n`);
+    return;
+  }
+
+  const lines: string[] = [];
+  lines.push(`harden: profile ${input.profile}, ${input.files.length} file(s)`);
+  lines.push(`  mangled bindings: ${input.transform.mangled}`);
+  lines.push(`  strings encrypted: ${input.transform.strings_encrypted}`);
+  lines.push(`  files mangle-only (over size budget): ${input.transform.files_mangle_only}`);
+  lines.push(`  integrity self-check: ${input.integrity ? "on" : "off"}`);
+  lines.push(`  equivalence: ${input.equivalence}`);
+  for (const f of input.files) {
+    if (f.mangle_only) lines.push(`  - ${f.path}: ${f.mangle_only}`);
+  }
+  lines.push(...leakScanLines(input.leakScan, input.coverage));
+  const watched = input.flags.register ? "" : " (not watched: pass --register)";
+  lines.push(`✓ ${input.canaries.length} Canaries planted in ${input.plantedIn}${watched}`);
+  for (const c of input.canaries) lines.push(`  - ${c.kind} ${c.id}`);
+  if (input.beacon) {
+    const n = input.beacon.origins.length;
+    lines.push(`✓ Clone Beacon: on (${n} origin${n === 1 ? "" : "s"}) in ${input.plantedIn}`);
+  }
+  lines.push(...inventoryLines(input));
+  if (input.registered) {
+    lines.push("build_id" in input.registered ? `  registered: ${input.registered.build_id}` : `  register error`);
+  }
+  lines.push(...findingsLines(input));
+  io.stdout(`${lines.join("\n")}\n`);
+}
+
+/** Counts only — never a package name. */
+function inventoryLines(input: ReportInput): string[] {
+  if (input.inventory === null && input.allSkipped !== null) {
+    const n = input.allSkipped;
+    return [
+      `  lockfile lists ${n} dependenc${n === 1 ? "y" : "ies"} but none could be read (all skipped): component inventory off for this Build`,
+    ];
+  }
+  if (input.inventory === null) return ["  no lockfile: component inventory skipped"];
+  const n = input.inventory.components.length;
+  const lines = [`✓ ${n} component${n === 1 ? "" : "s"} in inventory (${input.inventory.skipped} skipped)`];
+  if (!input.flags.register) lines.push(`  ${n} component${n === 1 ? "" : "s"} read (not sent: pass --register)`);
+  return lines;
+}
+
+/** The findings summary's counts and, with --fail-on, the gate and the items at or above its level. */
+function findingsLines(input: ReportInput): string[] {
+  const lines: string[] = [];
+  const open = input.findings?.open;
+  if (open) {
+    lines.push(
+      `  open findings: critical ${open.critical}, high ${open.high}, medium ${open.medium}, low ${open.low}, unknown ${open.unknown}`,
+    );
+  }
+  const gate = input.gate;
+  if (gate === null) return lines;
+  if (gate.noSummary) {
+    lines.push(`✗ findings gate could not be evaluated: ${NO_SUMMARY}`);
+    return lines;
+  }
+  if (gate.count === 0) {
+    lines.push(`✓ no open findings at or above ${gate.level}`);
+  } else {
+    lines.push(`✗ ${gateCount(gate)} at or above ${gate.level}`);
+    for (const item of gate.failed) {
+      const fixed = item.fixed.length > 0 ? `fixed in ${item.fixed.join(", ")}` : "no fixed version";
+      lines.push(`  ${item.advisory}  ${item.package}@${item.version}  ${item.severity}  ${fixed}`);
+    }
+    if (gate.failed.length < gate.count) lines.push(`  (${gate.count - gate.failed.length} more not listed)`);
+  }
+  if (gate.unknown > 0) {
+    lines.push(`  + ${gate.unknown} open finding${gate.unknown === 1 ? "" : "s"} with unknown severity, not counted`);
+  }
+  return lines;
+}
+
+// Entry point when run as a binary (handles paths with spaces, and tsx running the .ts directly).
+const isMain = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isMain) {
+  main(process.argv.slice(2), {
+    env: process.env,
+    stdout: (s) => process.stdout.write(s),
+    stderr: (s) => process.stderr.write(s),
+  }).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error) => {
+      process.stderr.write(`harden: unexpected error: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    },
+  );
+}

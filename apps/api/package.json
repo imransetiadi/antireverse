@@ -1,0 +1,22 @@
+{
+  "name": "@antireverse/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "tsx src/main.ts",
+    "vulns:sync": "tsx src/vulns/cli.ts"
+  },
+  "dependencies": {
+    "@antireverse/protocol": "*",
+    "@electric-sql/pglite": "0.5.16",
+    "@hono/node-server": "2.1.6",
+    "@hono/zod-validator": "0.9.1",
+    "hono": "4.13.17",
+    "zod": "4.6.7"
+  }
+}

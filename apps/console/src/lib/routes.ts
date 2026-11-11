@@ -1,0 +1,121 @@
+import type { Environment, IncidentStatus } from "@antireverse/protocol";
+import type { BlockRequest } from "@/features/containment/query.ts";
+import type { FindingQuery } from "@/features/findings/query.ts";
+
+/**
+ * The confirmation step of the Policy screen: the Rule to promote or the version to roll back to — one
+ * at a time, or none.
+ */
+export type PolicyConfirmation =
+  | { promote?: never; rollback?: never }
+  | { promote: string; rollback?: never }
+  | { promote?: never; rollback: number };
+
+function policy(appId: string, environment?: Environment, confirmation: PolicyConfirmation = {}): string {
+  const query = new URLSearchParams();
+  if (environment !== undefined) query.set("environment", environment);
+  if (confirmation.promote !== undefined) query.set("promote", confirmation.promote);
+  if (confirmation.rollback !== undefined) query.set("rollback", String(confirmation.rollback));
+  const search = query.toString();
+  return `/apps/${appId}/policy${search ? `?${search}` : ""}`;
+}
+
+/** The Incident list, optionally filtered by status. */
+function incidents(status?: IncidentStatus): string {
+  return status === undefined ? "/incidents" : `/incidents?status=${status}`;
+}
+
+/**
+ * One Incident. Each option opens one confirmation step: `confirm: "resolve"` before resolving, `block` before
+ * blocking an Actor or the network (the same address the containment bar's form sends), `lift` before lifting
+ * that block.
+ */
+function incident(
+  incidentId: string,
+  options: { confirm?: "resolve"; block?: BlockRequest; lift?: string } = {},
+): string {
+  const query = new URLSearchParams();
+  if (options.confirm === "resolve") query.set("confirm", "resolve");
+  if (options.block !== undefined) {
+    query.set("contain", options.block.kind);
+    if (options.block.kind === "actor") query.set("actor", options.block.ipHash);
+    query.set("ttl", String(options.block.ttl));
+  }
+  if (options.lift !== undefined) query.set("lift", options.lift);
+  const search = query.toString();
+  return `/incidents/${incidentId}${search ? `?${search}` : ""}`;
+}
+
+/** The active blocks of an App. With `lift` it opens the step that asks before that block is lifted. */
+function containment(appId: string, options: { lift?: string } = {}): string {
+  return `/apps/${appId}/containment${options.lift === undefined ? "" : `?lift=${options.lift}`}`;
+}
+
+/** The never block list. With `remove` it opens the step that asks before that range is removed. */
+function allowlist(options: { remove?: string } = {}): string {
+  return options.remove === undefined ? "/settings/allowlist" : `/settings/allowlist?remove=${options.remove}`;
+}
+
+/** The alert-channel settings. With `remove` it opens the step that asks before that channel is removed. */
+function alerts(options: { remove?: string } = {}): string {
+  return options.remove === undefined ? "/settings/alerts" : `/settings/alerts?remove=${options.remove}`;
+}
+
+/** The filters of a Finding list as a query string, in a fixed order; empty without filters. */
+function findingSearch(query: FindingQuery): string {
+  const search = new URLSearchParams();
+  if (query.severity !== undefined) search.set("severity", query.severity);
+  if (query.status !== undefined) search.set("status", query.status);
+  if (query.source !== undefined) search.set("source", query.source);
+  if (query.advisory !== undefined) search.set("advisory", query.advisory);
+  if (query.build !== undefined) search.set("build", query.build);
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+/** The Organization's Findings, optionally filtered. */
+function findings(query: FindingQuery = {}): string {
+  return `/findings${findingSearch(query)}`;
+}
+
+/** The Findings of one App, optionally filtered. */
+function appFindings(appId: string, query: FindingQuery = {}): string {
+  return `/apps/${appId}/findings${findingSearch(query)}`;
+}
+
+/** One Finding. With `confirm: "ignore"` it opens the step that asks for a reason and a date before ignoring. */
+function finding(findingId: string, options: { confirm?: "ignore" } = {}): string {
+  return `/findings/${findingId}${options.confirm === "ignore" ? "?confirm=ignore" : ""}`;
+}
+
+// The Console's addresses. None of them ever carries a key, a signing secret or a channel URL.
+export const ROUTES = {
+  home: "/",
+  signIn: "/sign-in",
+  /** Sign-in after the API stopped accepting the saved key. */
+  signInExpired: "/sign-in?reason=expired",
+  apps: "/apps",
+  newApp: "/apps/new",
+  live: (appId: string): string => `/apps/${appId}/live`,
+  /** The Builds of an App, newest first. */
+  builds: (appId: string): string => `/apps/${appId}/builds`,
+  /** One Build of an App. */
+  build: (appId: string, buildId: string): string => `/apps/${appId}/builds/${buildId}`,
+  /**
+   * The Policy of an App. Without an Environment the screen shows development. With a confirmation it
+   * opens the step that asks before a Rule is promoted or a version is rolled back.
+   */
+  policy,
+  incidents,
+  incident,
+  containment,
+  alerts,
+  allowlist,
+  findings,
+  appFindings,
+  finding,
+  /** The list proxy the live feed reads whenever its stream opens. */
+  events: (appId: string): string => `/api/apps/${appId}/events`,
+  /** The stream proxy the browser's EventSource connects to. */
+  stream: (appId: string): string => `/api/apps/${appId}/events/stream`,
+} as const;

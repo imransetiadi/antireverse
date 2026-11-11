@@ -1,0 +1,16 @@
+{
+  "name": "@antireverse/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@antireverse/api": "*",
+    "@antireverse/protocol": "*",
+    "@antireverse/shield-node": "*",
+    "@types/express": "5.0.6",
+    "express": "5.3.0"
+  }
+}

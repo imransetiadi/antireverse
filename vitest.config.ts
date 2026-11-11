@@ -1,0 +1,72 @@
+import { fileURLToPath } from "node:url";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vitest/config";
+
+// Vitest 5 has no workspace file: every workspace is an inline project here.
+// Run one project with `npx vitest run --project <name>` (names: protocol, shield-node, guard, api, range, console, e2e).
+// Vitest 5 no longer excludes build output by default, so every project has an explicit include.
+const include = ["test/**/*.test.{ts,tsx}"];
+const abs = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
+
+export default defineConfig({
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: { name: "protocol", root: "./packages/protocol", environment: "node", include },
+      },
+      {
+        extends: true,
+        test: { name: "shield-node", root: "./packages/shield-node", environment: "node", include },
+      },
+      {
+        extends: true,
+        // Guard is browser code: happy-dom gives it browser globals; every browser API it uses is also injectable.
+        test: { name: "guard", root: "./packages/guard", environment: "happy-dom", include },
+      },
+      {
+        extends: true,
+        test: { name: "harden", root: "./packages/harden", environment: "node", include },
+      },
+      {
+        extends: true,
+        test: { name: "api", root: "./apps/api", environment: "node", include },
+      },
+      {
+        extends: true,
+        test: { name: "range", root: "./apps/range", environment: "node", include },
+      },
+      {
+        extends: true,
+        plugins: [react()],
+        resolve: {
+          alias: [
+            // The Console's import alias (tsconfig "paths").
+            { find: /^@\//, replacement: `${abs("./apps/console/src")}/` },
+            // Next resolves "server-only" itself; outside Next it must resolve to an empty module.
+            { find: /^server-only$/, replacement: abs("./node_modules/next/dist/compiled/server-only/empty.js") },
+          ],
+        },
+        test: {
+          name: "console",
+          root: "./apps/console",
+          environment: "happy-dom",
+          include,
+          setupFiles: ["./test/setup.ts"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "e2e",
+          root: "./tests/e2e",
+          environment: "node",
+          // The HTTP journey lives at the workspace root (journey.http.test.ts); Playwright files are *.e2e.ts.
+          include: ["*.test.ts", ...include],
+          testTimeout: 20_000,
+          hookTimeout: 30_000,
+        },
+      },
+    ],
+  },
+});
