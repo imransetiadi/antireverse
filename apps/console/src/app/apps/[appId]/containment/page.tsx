@@ -5,6 +5,7 @@ import { AppShell } from "@/components/app-shell.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
 import { AppContainment } from "@/features/containment/app-containment.tsx";
 import { liftFrom } from "@/features/containment/query.ts";
+import { loadSetupDone } from "@/features/setup/load.ts";
 import { getApp, listContainments, NotFoundError, UnauthorizedError } from "@/lib/api.ts";
 import { requireSession } from "@/lib/guard.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -31,13 +32,14 @@ export default async function ContainmentPage({ params, searchParams }: PageProp
   const { key, organization } = await requireSession();
   const { appId } = await params;
   if (!ID_PATTERNS.app.test(appId)) notFound();
-  const { app, containments } = await load(key, appId);
+  // The set-up progress is asked for beside the screen's own data (slice 16).
+  const [{ app, containments }, setupDone] = await Promise.all([load(key, appId), loadSetupDone(key, appId)]);
   const confirmLiftId = liftFrom((await searchParams).lift, containments);
 
   return (
     <AppShell organization={organization}>
       <PageHeader eyebrow={app.name} title={t("appContainment.title")} />
-      <AppNav appId={app.id} current="containment" />
+      <AppNav appId={app.id} current="containment" setupDone={setupDone} />
       <p className="text-fg-muted">{t("appContainment.lead", { app: app.name })}</p>
       <AppContainment
         // A confirmation step that opens or closes starts the Lift forms afresh.

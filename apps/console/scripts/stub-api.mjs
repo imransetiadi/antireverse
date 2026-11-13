@@ -50,6 +50,10 @@
 // protocol): the newest an inconclusive stand-in run and a failed one, the next two scored runs, the oldest a running
 // one. `POST …/builds/:buildId/assessments` takes the tier (and optionally the files) and queues a stand-in run.
 // Slice 12b: the newest Build designates two protected functions (`logic_count` 2), and its latest run is scored.
+// Slice 16: `GET /v1/apps/:appId/setup?environment=` dates each set-up step (stub-setup.mjs, checked by a test against
+// the protocol): Shield at the first streamed Event, Guard at the first one with a valid attestation, Harden at the
+// earliest seeded Build — so Harden is done at once, and Shield and Guard as soon as the App's stream is open.
+// Without `environment` it answers for the App's Environment.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -62,6 +66,7 @@ import http from "node:http";
 import { createAlertStore } from "./stub-alerts.mjs";
 import { createAssessmentStore } from "./stub-assessments.mjs";
 import { createProveStore } from "./stub-prove.mjs";
+import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
@@ -99,6 +104,8 @@ const SIMULATIONS_PER_MINUTE = 6;
 const proveStores = new Map();
 /** Reverse Assessments of every Organization (slice 12a): stub-assessments.mjs. */
 const assessments = createAssessmentStore();
+/** When each set-up step of each App Environment was first done (slice 16): stub-setup.mjs. */
+const setups = createSetupStore();
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1674,6 +1681,19 @@ const server = http.createServer(async (req, res) => {
     return problem(res, 405, "Method Not Allowed");
   }
 
+  // Slice 16: when each set-up step of an App Environment was first done.
+  const setupMatch = /^\/v1\/apps\/([^/]+)\/setup$/.exec(path);
+  if (setupMatch) {
+    const app = ownApps.find((candidate) => candidate.id === setupMatch[1]);
+    if (!app) return problem(res, 404, "Not Found");
+    if (req.method !== "GET") return problem(res, 405, "Method Not Allowed");
+    const environment = url.searchParams.get("environment") ?? app.environment;
+    if (!Object.hasOwn(TAGS, environment)) {
+      return problem(res, 400, "Bad Request", { errors: [{ path: "environment", message: "Invalid option" }] });
+    }
+    return json(res, 200, { setup: setups.setup(app.id, environment, builds.get(app.id) ?? []) });
+  }
+
   const match = /^\/v1\/apps\/([^/]+)(\/events(\/stream)?)?$/.exec(path);
   if (req.method === "GET" && match) {
     const app = ownApps.find((candidate) => candidate.id === match[1]);
@@ -1696,6 +1716,7 @@ const server = http.createServer(async (req, res) => {
       const stored = events.get(app.id) ?? [];
       stored.unshift(event);
       stored.length = Math.min(stored.length, 500);
+      setups.recordEvent(event);
       res.write(`id: ${event.event_id}\nevent: security-event\ndata: ${JSON.stringify(event)}\n\n`);
     }, 1_000);
     console.log(`${new Date().toISOString()} stream OPEN ${app.id}`);

@@ -4,19 +4,25 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01 (walking skeleton), 02 (Policy path) and 05 (Harden path). Shield can observe and block, and a web bundle can be hardened in CI; everything else in the specification is not built yet.
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement,, known-vulnerability Findings with virtual patches, and the onboarding Set up page with the docs in `docs/`. Not built yet: Pentest Campaigns (15), usage metering and billing (17), and GA hardening (18).
 
 ## What works today
 
 1. Create an Organization and an App in the Console.
-2. Add Shield to an Express server with the key the Console shows.
+2. Add Shield to an Express or plain Node `http` server with the key the Console shows.
 3. Every request to that server appears in the Console's live feed within seconds.
+
+After you create an App, the Console shows its three set-up steps (**Add Shield**, **Add Guard**, **Harden your build**) with the App's real values, and a link, **Open the Set up page**, to the App's **Set up** page. That page shows the same steps and marks each one **Done** live, as Airverse sees it work ("First protected request received" for Shield); the Apps list shows **Set up: n of 3** until all three are done. [docs/getting-started.md](docs/getting-started.md) walks through it.
 
 Then, to block: open the App's **Policy** page, add a Rule (for example `/api/admin/**`), promote it to Enforce and confirm. Shields with the policy public key apply it within 15 seconds; matching requests get `403 {"error":"request_blocked"}` and appear as *Blocked* in the feed. Roll back from the history in one action.
 
 ## Quickstart
 
 Requirements: Node.js 22.12 or newer and npm. No Docker, no database to install.
+
+**Packages are not published to npm.** `@antireverse/shield-node`, `@antireverse/guard` and `@antireverse/harden` exist only as workspace packages of this repository. `npm install` at the root links them, so code inside the repository (such as `apps/range`) imports them by name. To use Shield in a server outside the repository, depend on the folder: `npm install /path/to/this/repo/packages/shield-node` (it has no runtime dependencies). Its entry point is TypeScript, so the server must run on a Node that strips types (tested on 22.23.4) or through tsx; plain Node 22.12 cannot load it. For Guard, serve the files of `packages/guard/src` (see [docs/guard.md](docs/guard.md)).
+
+**Running Harden.** Its entry point, `packages/harden/src/cli.ts`, is a TypeScript file, run by the `antireverse` bin. On Node 22.23 or newer (tested on 22.23.4), `npx antireverse harden …` works. On Node 22.12 the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`; there, run `npx tsx packages/harden/src/cli.ts harden …` (the form every command in this README uses) or `node --experimental-strip-types node_modules/.bin/antireverse harden …` (Node prints an ExperimentalWarning).
 
 ```bash
 npm install
@@ -57,7 +63,17 @@ const shield = createShield({
 app.use(shield.express());
 ```
 
-`@antireverse/shield-node` is not published to npm yet; inside this repository it is a workspace package.
+`@antireverse/shield-node` is not published to npm yet; inside this repository it is a workspace package (see Requirements above for using it elsewhere).
+
+## Docs
+
+Step-by-step guides for developers, in [docs/](docs/):
+
+- [Getting started](docs/getting-started.md): from creating an Organization to the first protected request, then Guard and Harden.
+- [Shield](docs/shield.md): Express set-up, environment variables, monitor and enforce, the policy key.
+- [Guard](docs/guard.md): the script tag and its options, signed requests.
+- [Harden](docs/harden.md): the commands, `--register`, `--routes`, `--logic`, `--assess` and the CI gate.
+- [Reverse Assessment](docs/reverse-assessment.md): what the score means, its Objectives and its honest limits.
 
 ## Layout
 
@@ -164,7 +180,15 @@ Before Airverse may test a host, prove you own it under **Prove → Targets**: a
 
 ## Reverse Assessment
 
-Run `antireverse harden --register --routes routes.json --assess T1` to register a Build with its route inventory and queue an Assessment of the protected output; the Build page then shows **Reverse resistance**: the score or why there is none, each Objective (Map, Secrets, Replay) with its evidence and a fix suggestion, and **Assess again** once a run has finished. The artifact is kept for 30 days after the last run.
+Register a Build with its route inventory and protected functions, and queue an Assessment of the protected output:
+
+```bash
+npx tsx packages/harden/src/cli.ts harden <bundle-dir> --out <out-dir> --integrity \
+  --register --endpoint <api-url> --key-env AR_ADMIN_KEY --app <appId> --environment production --build-version <v> \
+  --routes routes.json --logic logic.json --assess T1
+```
+
+The Build page then shows **Reverse resistance**: the score or why there is none, each of the five Objectives — **W1 Map** (15 %), **W2 Secrets** (20 %), **W3 Logic** (25 %), **W4 Tamper** (20 %), **W5 Replay** (20 %) — with its evidence and a fix suggestion, and **Assess again** once a run has finished. The artifact is kept for 30 days after the last run. See [docs/reverse-assessment.md](docs/reverse-assessment.md) for what each Objective tests and how the score is computed.
 
 Add `--logic logic.json` to designate up to 5 protected functions with hidden test vectors (Objective Logic); without it Logic is not assessed and the run is inconclusive. Tamper is judged on the bundle's JavaScript files: a Build without `--integrity` has no tamper check, so it counts as tampered.
 
@@ -266,11 +290,11 @@ This is a local walking skeleton, not a deployable service.
 
 - **No user accounts.** The Console signs in with the Organization's admin key, kept in an httpOnly cookie. Anyone who can reach the API can create an Organization. Keep it on localhost.
 - **Development storage.** The API uses PostgreSQL embedded in its process (PGlite) with real row-level security. Exactly one process may open the data directory, and it is not durable against power loss. Production will use a PostgreSQL server with the same SQL.
-- **Policies are basic.** Rules match a path pattern and methods and can only block. No conditions, rollout, push channel, simulation or audit log yet. Shield polls for the signed Policy every 5 seconds.
+- **Policies are simple.** Rules match a path pattern and methods, and block, throttle, or require a signed request. No conditions, rollout, push channel or audit log yet; simulation is an estimate from recorded traffic (see Policy simulation). Shield polls for the signed Policy every 5 seconds.
 - **Signing key.** The API signs Policies with an Ed25519 key in `signing-key.json` beside the data directory. Back it up with the database: losing it means re-configuring every Shield's `AR_POLICY_PUBLIC_KEY`.
 - **Broad Rules.** Enforcing a Rule whose pattern starts with a wildcard needs a stronger confirmation; `/**` cannot be enforced.
 - **Matching is deliberately wide.** Shield also matches decoded and dot-resolved forms of the path, so a request whose path *resolves* into a blocked area is blocked too. A known limit: HEAD against a Rule limited to GET is not blocked.
-- **No rate limiting, key rotation, sampling, CI or deployment.**
+- **No rotation of Shield or admin keys, no event sampling, no deployment.** Rate limits exist, but their counters are per Shield instance (see Rate limits). The CI gates are Harden's exit codes (`--fail-on`, `--min-rrs`, `antireverse gate`); there is no hosted CI integration.
 - **Route templates have limits.** Shield records the route template, never the concrete URL. Install it on the application rather than on a mounted router where you can: the path above Shield is recorded as `(mount)`. A regular-expression mount is recorded as `(unmatched)`; one without capture groups that matches non-numeric text is not detectable and is unsupported.
 
 The order in which these arrive is in [PRD.md](PRD.md) §18. The vocabulary used everywhere is in [MEMORY.md](MEMORY.md) §3.

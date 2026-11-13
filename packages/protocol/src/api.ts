@@ -65,6 +65,27 @@ export type CreateAppResponse = z.infer<typeof CreateAppResponseSchema>;
 export const AppResponseSchema = z.object({ app: AppSchema });
 export type AppResponse = z.infer<typeof AppResponseSchema>;
 
+/** One step of an App's set-up: when it was first done, null while it is not. */
+const AppSetupStepSchema = z.object({ done_at: z.iso.datetime().nullable() });
+export type AppSetupStep = z.infer<typeof AppSetupStepSchema>;
+
+/**
+ * The set-up of one App Environment (slice 16), each step dated by when it was first done. Shield: the first Event
+ * received. Guard: the first Event received whose Attestation Token Shield verified. Harden: the first Build
+ * registered.
+ */
+const AppSetupSchema = z.object({
+  environment: EnvironmentSchema,
+  shield: AppSetupStepSchema,
+  guard: AppSetupStepSchema,
+  harden: AppSetupStepSchema,
+});
+export type AppSetup = z.infer<typeof AppSetupSchema>;
+
+/** 200 of `GET /v1/apps/:appId/setup`. */
+export const AppSetupResponseSchema = z.object({ setup: AppSetupSchema });
+export type AppSetupResponse = z.infer<typeof AppSetupResponseSchema>;
+
 /** 200 of `GET /v1/apps`, newest first. */
 export const ListAppsResponseSchema = z.object({ apps: z.array(AppSchema) });
 export type ListAppsResponse = z.infer<typeof ListAppsResponseSchema>;

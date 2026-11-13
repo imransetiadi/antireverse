@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/page-header.tsx";
 import { FindingFilters } from "@/features/findings/finding-filters.tsx";
 import { FindingList } from "@/features/findings/finding-list.tsx";
 import { type FindingQuery, findingFilterFrom, findingQueryFrom } from "@/features/findings/query.ts";
+import { loadSetupDone } from "@/features/setup/load.ts";
 import { getApp, listFindings, NotFoundError, UnauthorizedError } from "@/lib/api.ts";
 import { requireSession } from "@/lib/guard.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -32,12 +33,13 @@ export default async function AppFindingsPage({ params, searchParams }: PageProp
   const { appId } = await params;
   if (!ID_PATTERNS.app.test(appId)) notFound();
   const query = findingQueryFrom(await searchParams);
-  const { app, findings } = await load(key, appId, query);
+  // The set-up progress is asked for beside the screen's own data (slice 16).
+  const [{ app, findings }, setupDone] = await Promise.all([load(key, appId, query), loadSetupDone(key, appId)]);
 
   return (
     <AppShell organization={organization}>
       <PageHeader eyebrow={app.name} title={t("findings.title")} />
-      <AppNav appId={app.id} current="findings" />
+      <AppNav appId={app.id} current="findings" setupDone={setupDone} />
       <FindingFilters query={query} href={(next) => ROUTES.appFindings(app.id, next)} />
       <FindingList
         findings={findings}

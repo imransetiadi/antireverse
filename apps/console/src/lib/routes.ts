@@ -106,6 +106,9 @@ export const ROUTES = {
   apps: "/apps",
   newApp: "/apps/new",
   live: (appId: string): string => `/apps/${appId}/live`,
+  /** The Set up page of an App (slice 16, SCR-01). Without an Environment it shows the App's own. */
+  setup: (appId: string, environment?: Environment): string =>
+    `/apps/${appId}/setup${environment === undefined ? "" : `?environment=${environment}`}`,
   /** The Builds of an App, newest first. */
   builds: (appId: string): string => `/apps/${appId}/builds`,
   /** One Build of an App. */
@@ -136,6 +139,8 @@ export const ROUTES = {
   newRulesOfEngagement: "/prove/rules-of-engagement/new",
   /** The list proxy the live feed reads whenever its stream opens. */
   events: (appId: string): string => `/api/apps/${appId}/events`,
+  /** The set-up proxy the Set up page polls every 5 s. */
+  setupApi: (appId: string, environment: Environment): string => `/api/apps/${appId}/setup?environment=${environment}`,
   /** The stream proxy the browser's EventSource connects to. */
   stream: (appId: string): string => `/api/apps/${appId}/events/stream`,
 } as const;

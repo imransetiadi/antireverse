@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { AppNav } from "@/components/app-nav.tsx";
 import { AppShell } from "@/components/app-shell.tsx";
 import { BuildDetail } from "@/features/builds/build-detail.tsx";
+import { loadSetupDone } from "@/features/setup/load.ts";
 import {
   ApiError,
   getApp,
@@ -43,11 +44,15 @@ export default async function BuildPage({ params }: PageProps<"/apps/[appId]/bui
   const { key, organization } = await requireSession();
   const { appId, buildId } = await params;
   if (!ID_PATTERNS.app.test(appId) || !ID_PATTERNS.bld.test(buildId)) notFound();
-  const { app, build, findings, assessments } = await load(key, appId, buildId);
+  // The set-up progress is asked for beside the screen's own data (slice 16).
+  const [{ app, build, findings, assessments }, setupDone] = await Promise.all([
+    load(key, appId, buildId),
+    loadSetupDone(key, appId),
+  ]);
 
   return (
     <AppShell organization={organization}>
-      <AppNav appId={app.id} current="builds" />
+      <AppNav appId={app.id} current="builds" setupDone={setupDone} />
       <BuildDetail build={build} appName={app.name} findings={findings} assessments={assessments} />
     </AppShell>
   );

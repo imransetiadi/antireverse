@@ -2,9 +2,10 @@ import Link from "next/link";
 import { ROUTES } from "@/lib/routes.ts";
 import { type MessageKey, t } from "@/lib/t.ts";
 
-export type AppSection = "live" | "policy" | "builds" | "findings" | "containment";
+export type AppSection = "setup" | "live" | "policy" | "builds" | "findings" | "containment";
 
 const SECTIONS: ReadonlyArray<{ section: AppSection; label: MessageKey; href: (appId: string) => string }> = [
+  { section: "setup", label: "nav.setup", href: (appId) => ROUTES.setup(appId) },
   { section: "live", label: "nav.live", href: (appId) => ROUTES.live(appId) },
   { section: "policy", label: "nav.policy", href: (appId) => ROUTES.policy(appId) },
   { section: "builds", label: "nav.builds", href: (appId) => ROUTES.builds(appId) },
@@ -19,8 +20,21 @@ const TAB =
 const CURRENT = "border-primary heading-6 text-fg";
 const OTHER = "border-transparent title-4 text-fg-muted";
 
-/** The screens of one App, as links that look like tabs: Live, Policy, Builds, Findings and Containment. */
-export function AppNav({ appId, current }: { appId: string; current: AppSection }) {
+/**
+ * The screens of one App, as links that look like tabs: Set up, Live, Policy, Builds, Findings and Containment.
+ * `setupDone` is how many of the three set-up steps are done (slice 16): below three the Set up tab reads
+ * "Set up: n of 3"; left out (unknown), three, or on the Set up page itself (which shows the progress live), it
+ * reads "Set up".
+ */
+export function AppNav({
+  appId,
+  current,
+  setupDone,
+}: {
+  appId: string;
+  current: AppSection;
+  setupDone?: number | null;
+}) {
   return (
     <nav aria-label={t("nav.app")} data-testid="app-nav" className="flex flex-wrap gap-1 border-border border-b">
       {SECTIONS.map(({ section, label, href }) => (
@@ -31,7 +45,9 @@ export function AppNav({ appId, current }: { appId: string; current: AppSection 
           data-testid={`app-nav-${section}`}
           className={`${TAB} ${section === current ? CURRENT : OTHER}`}
         >
-          {t(label)}
+          {section === "setup" && current !== "setup" && typeof setupDone === "number" && setupDone < 3
+            ? t("setup.progress", { done: setupDone })
+            : t(label)}
         </Link>
       ))}
     </nav>

@@ -4,6 +4,7 @@ import { AppNav } from "@/components/app-nav.tsx";
 import { AppShell } from "@/components/app-shell.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
 import { BuildList } from "@/features/builds/build-list.tsx";
+import { loadSetupDone } from "@/features/setup/load.ts";
 import { getApp, listBuilds, NotFoundError, UnauthorizedError } from "@/lib/api.ts";
 import { requireSession } from "@/lib/guard.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -26,12 +27,13 @@ export default async function BuildsPage({ params }: PageProps<"/apps/[appId]/bu
   const { key, organization } = await requireSession();
   const { appId } = await params;
   if (!ID_PATTERNS.app.test(appId)) notFound();
-  const { app, builds } = await load(key, appId);
+  // The set-up progress is asked for beside the screen's own data (slice 16).
+  const [{ app, builds }, setupDone] = await Promise.all([load(key, appId), loadSetupDone(key, appId)]);
 
   return (
     <AppShell organization={organization}>
       <PageHeader eyebrow={app.name} title={t("builds.title")} />
-      <AppNav appId={app.id} current="builds" />
+      <AppNav appId={app.id} current="builds" setupDone={setupDone} />
       <BuildList appId={app.id} appName={app.name} builds={builds} />
     </AppShell>
   );

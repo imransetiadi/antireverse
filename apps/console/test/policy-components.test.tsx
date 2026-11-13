@@ -1044,6 +1044,25 @@ describe("App-created screen", () => {
     );
   });
 
+  it("leads into the App's set-up with the key filled in, and links to its Set up page (slice 16)", async () => {
+    await create(PUBLIC_KEY);
+    // The key is still revealed once, above the steps.
+    expect(screen.getByTestId("shield-key").textContent).toBe(shieldKey);
+    const steps = screen.getByRole("list", { name: "Set up steps" });
+    expect(
+      within(steps)
+        .getByRole("button", { name: /Add Shield/ })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.getByTestId("setup-status").textContent).toBe("Waiting for the first event from shop-web…");
+    expect(screen.getByRole("link", { name: "Open the Set up page" }).getAttribute("href")).toBe(
+      `/apps/${app.id}/setup?environment=production`,
+    );
+    // The ways on that end-to-end journeys follow are still there.
+    expect(screen.getByTestId("live-link").getAttribute("href")).toBe(`/apps/${app.id}/live`);
+    expect(screen.getByTestId("policy-link")).toBeTruthy();
+  });
+
   it("says so when the policy public key could not be loaded, and still shows the Shield key", async () => {
     await create(null);
     expect(screen.getByTestId("shield-key").textContent).toBe(shieldKey);

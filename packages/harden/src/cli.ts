@@ -37,7 +37,7 @@
 //     also fails, 4 wins and both gates are reported. `antireverse gate --assessment <asm_id>` does the same for an
 //     Assessment queued by an earlier step. Only Objective names and results are printed — never evidence, never the key.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -271,9 +271,11 @@ interface Flags {
   onNoScore?: string | null | undefined;
 }
 
-function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
+function parseFlags(args: string[]): { dir: string | undefined; flags: Flags; unknown: string | undefined } {
   const flags: Flags = { profile: "balanced", integrity: false, json: false, register: false, origins: [] };
   let dir: string | undefined;
+  /** The first unknown `--flag`: refused, so its value is never taken as the bundle folder. */
+  let unknown: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     switch (arg) {
@@ -347,11 +349,12 @@ function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
         flags.onNoScore = args[++i] ?? null;
         break;
       default:
-        if (arg && !arg.startsWith("--") && dir === undefined) dir = arg;
+        if (arg?.startsWith("--")) unknown ??= arg;
+        else if (arg && dir === undefined) dir = arg;
         break;
     }
   }
-  return { dir, flags };
+  return { dir, flags, unknown };
 }
 
 /** Reads every source file under `dir`, keyed by its path relative to `dir` (posix separators, sorted). */
@@ -446,7 +449,11 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     return 2;
   }
 
-  const { dir, flags } = parseFlags(argv.slice(1));
+  const { dir, flags, unknown } = parseFlags(argv.slice(1));
+  if (unknown !== undefined) {
+    io.stderr(`harden: unknown option ${unknown}\n`);
+    return 2;
+  }
   if (!dir) {
     io.stderr("harden: a <dir> is required\n");
     return 2;
@@ -1399,8 +1406,25 @@ function findingsLines(input: ReportInput): string[] {
   return lines;
 }
 
-// Entry point when run as a binary (handles paths with spaces, and tsx running the .ts directly).
-const isMain = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+/**
+ * Whether this module is the program Node was started with. Both paths are resolved through symlinks: started through
+ * the npm bin (`npx antireverse …`), process.argv[1] is the link in node_modules/.bin, and comparing it unresolved
+ * would never run main — a silent exit 0 that passes every CI gate. Handles paths with spaces, and tsx running the
+ * .ts directly. A path that cannot be resolved is compared as given.
+ */
+function isEntryPoint(argv1: string | undefined): boolean {
+  if (argv1 === undefined) return false;
+  const real = (path: string) => {
+    try {
+      return realpathSync(path);
+    } catch {
+      return resolve(path);
+    }
+  };
+  return real(fileURLToPath(import.meta.url)) === real(argv1);
+}
+
+const isMain = isEntryPoint(process.argv[1]);
 if (isMain) {
   main(process.argv.slice(2), {
     env: process.env,

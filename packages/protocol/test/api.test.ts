@@ -3,6 +3,9 @@ import {
   type App,
   AppResponseSchema,
   AppSchema,
+  type AppSetup,
+  type AppSetupResponse,
+  AppSetupResponseSchema,
   type CreateAppRequest,
   type CreateAppRequestInput,
   CreateAppRequestSchema,
@@ -133,5 +136,33 @@ describe("response schemas", () => {
     expect(IngestResponseSchema.safeParse({ accepted: -1, duplicates: 0 }).success).toBe(false);
     expect(IngestResponseSchema.safeParse({ accepted: 1.5, duplicates: 0 }).success).toBe(false);
     expect(IngestResponseSchema.safeParse({ accepted: 1 }).success).toBe(false);
+  });
+});
+
+describe("AppSetupResponseSchema", () => {
+  const setup: AppSetup = {
+    environment: "development",
+    shield: { done_at: createdAt },
+    guard: { done_at: null },
+    harden: { done_at: null },
+  };
+
+  it("parses each step's time, null while it is not done, and strips unknown keys", () => {
+    const body: AppSetupResponse = { setup };
+    expect(AppSetupResponseSchema.parse(body)).toEqual(body);
+    expect(
+      AppSetupResponseSchema.parse({ setup: { ...setup, internal: true, guard: { done_at: null, n: 1 } } }),
+    ).toEqual(body);
+    for (const environment of ENVIRONMENTS) {
+      expect(AppSetupResponseSchema.parse({ setup: { ...setup, environment } }).setup.environment).toBe(environment);
+    }
+  });
+
+  it("rejects an unknown Environment, a missing step, a missing time and a time that is not ISO", () => {
+    expect(AppSetupResponseSchema.safeParse({ setup: { ...setup, environment: "qa" } }).success).toBe(false);
+    const { harden: _harden, ...withoutHarden } = setup;
+    expect(AppSetupResponseSchema.safeParse({ setup: withoutHarden }).success).toBe(false);
+    expect(AppSetupResponseSchema.safeParse({ setup: { ...setup, guard: {} } }).success).toBe(false);
+    expect(AppSetupResponseSchema.safeParse({ setup: { ...setup, shield: { done_at: "today" } } }).success).toBe(false);
   });
 });

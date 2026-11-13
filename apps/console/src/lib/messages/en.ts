@@ -1055,4 +1055,89 @@ export const en = {
   "authorize.outside_window": "This time is outside the window of the current Rules of Engagement.",
   "error.check.path": "Enter a path starting with /, such as /products.",
   "error.check.at": "Enter a date and time in UTC.",
+
+  // Slice 16 — Set up page (SCR-01)
+  "nav.setup": "Set up",
+  "setup.title": "Set up {app}",
+  "setup.lead":
+    "Three steps take {app} from nothing to a protected request. Each one turns done by itself when Airverse sees it work.",
+  "setup.steps": "Set up steps",
+  "setup.position": "Step {step} of 3",
+  "setup.complete": "Set up complete",
+  "setup.progress": "Set up: {done} of 3",
+  "setup.progress.for": "Set up of {app}: {done} of 3",
+  "setup.link.for": "Set up of {app}",
+  "setup.done": "Done",
+  "setup.notDone": "Not done yet",
+  "setup.created.open": "Open the Set up page",
+  "setup.created.later": "The Set up page of {app} shows these steps again, without the Shield key.",
+  "setup.step.shield": "Add Shield",
+  "setup.step.guard": "Add Guard",
+  "setup.step.harden": "Harden your build",
+  "setup.waiting.shield": "Waiting for the first event from {app}…",
+  "setup.waiting.guard": "Waiting for the first request from {app} with a Guard token…",
+  "setup.waiting.harden": "Waiting for the first registered Build of {app}…",
+  "setup.received.shield": "First protected request received",
+  "setup.received.guard": "First request with a Guard token received",
+  "setup.received.harden": "First Build registered",
+  "setup.allDone": "All three steps are done.",
+  "setup.framework": "Framework",
+  "setup.framework.express": "Express",
+  "setup.framework.node": "Node http",
+  "setup.framework.unsupported": "Next.js, Fastify, Koa and other frameworks are not supported yet.",
+  "setup.unpublished":
+    "The Shield package is not published to npm yet. Install it from your copy of the Airverse repository: replace /path/to/airverse with where that copy is. It ships TypeScript source, so on Node 22.12 start your server with --experimental-strip-types.",
+  "setup.node.title": "Add Shield to your Node http server",
+  "setup.node.code": "Run Shield first in your request handler",
+  "setup.node.route":
+    "Without a router Shield cannot name routes: the live feed shows (unmatched) as the route of every request. Rules still match the request path.",
+  "setup.key.gone":
+    "The Shield key was shown once, when this App was created, and cannot be shown again. Give it to your server as AR_SHIELD_KEY. For a new key, create a new App.",
+  "setup.guard.title": "Add Guard to your web pages",
+  "setup.guard.lead":
+    "Guard gets a short lived token in the browser and sends it with your calls; Shield checks it on every request that carries one.",
+  "setup.guard.script": "Load Guard in a module script",
+  "setup.guard.serve":
+    "Guard is plain ES modules without a build step and is not published to npm yet. Serve the files of packages/guard/src from your copy of the Airverse repository at the path in the script, or import @antireverse/guard through your bundler.",
+  "setup.guard.options": "Options",
+  "setup.guard.option.appId": "This App's ID. Required.",
+  "setup.guard.option.endpoint": "The Airverse API the browser asks for a token. Required.",
+  "setup.guard.option.storage":
+    "Where the device ID is kept: localStorage when left out; null keeps it in memory only.",
+  "setup.harden.title": "Harden your build and register it",
+  "setup.harden.lead":
+    "Run this in your build pipeline over the bundle you ship. Your source never leaves the machine; only the Build Manifest is sent.",
+  "setup.harden.command": "Harden and register the bundle",
+  "setup.harden.where":
+    "Run it from your copy of the Airverse repository: the command line tool is not published to npm yet. Replace /path/to/app/dist with your bundle folder and /path/to/app/protected with the folder for the protected output. The Build version is the current commit of the repository at /path/to/app.",
+  "setup.harden.key":
+    "Set AR_ADMIN_KEY to an admin key in the shell or pipeline step first. The command reads the key only from the variable named by --key-env, never from an argument.",
+  "setup.trouble": "Having trouble?",
+  "setup.trouble.shield.key":
+    "Wrong key: AR_SHIELD_KEY must hold this App's Shield key, created for {environment}. Events sent with another key belong to another App or Environment.",
+  "setup.trouble.shield.first":
+    "Shield not mounted first: the middleware must run before your routes and before anything else that answers, such as a static file handler.",
+  "setup.trouble.shield.reach":
+    "API out of reach: from the server, {apiUrl}/healthz must answer. Shield logs a warning when it cannot send.",
+  "setup.trouble.shield.policy":
+    "Policy public key missing: without AR_POLICY_PUBLIC_KEY Shield still sends Events, but it applies no Policy and cannot check Guard tokens.",
+  "setup.trouble.shield.batch":
+    "Still waiting after a request: Shield sends Events in batches about once a second; send one more request and wait a few seconds.",
+  "setup.trouble.guard.shield": "Shield first: Guard is counted from Shield's Events, so step 1 must be done.",
+  "setup.trouble.guard.policy":
+    "Policy public key missing: Shield checks Guard tokens with keys from the signed Policy, so it needs AR_POLICY_PUBLIC_KEY.",
+  "setup.trouble.guard.headers":
+    "Token not sent: add guard.headers() to each call to your server, or send it with guard.fetch.",
+  "setup.trouble.guard.origin":
+    "Guard origin not allowed: your content security policy must allow connections to {apiUrl}. The browser console names a refused request.",
+  "setup.trouble.guard.app": "Wrong App: appId must be {appId}.",
+  "setup.trouble.harden.register":
+    "Build not registered: without --register Harden writes the protected output but tells Airverse nothing.",
+  "setup.trouble.harden.key": "Admin key not found: AR_ADMIN_KEY must be set where the command runs.",
+  "setup.trouble.harden.app":
+    "Wrong App or Environment: --app must be {appId} and --environment must be {environment}.",
+  "setup.trouble.harden.leak":
+    "Leak found: Harden exits with code 3 and registers nothing when the bundle would leak a secret or a source map. Read the report it prints.",
+  "setup.trouble.harden.reach": "API out of reach: {apiUrl} must be reachable from where the command runs.",
+  "apps.col.setup": "Set up",
 } as const;

@@ -16,6 +16,7 @@ import { policyPublicKey } from "@/features/policy/signing-key.ts";
 import { PolicySimulation } from "@/features/policy/simulation-context.tsx";
 import { SimulationPanel } from "@/features/policy/simulation-panel.tsx";
 import { VersionHistory } from "@/features/policy/version-history.tsx";
+import { loadSetupDone } from "@/features/setup/load.ts";
 import {
   getApp,
   getPolicy,
@@ -74,7 +75,11 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
   if (!ID_PATTERNS.app.test(appId)) notFound();
   const query = await searchParams;
   const environment = environmentFrom(query.environment);
-  const { app, policy, versions, publicKey, patches } = await load(key, appId, environment);
+  // The set-up progress is asked for beside the screen's own data (slice 16).
+  const [{ app, policy, versions, publicKey, patches }, setupDone] = await Promise.all([
+    load(key, appId, environment),
+    loadSetupDone(key, appId),
+  ]);
   const confirmation = confirmationFrom(query, policy, versions);
   const confirmBroad =
     confirmation.rollback === undefined
@@ -87,7 +92,7 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
   return (
     <AppShell organization={organization}>
       <PageHeader eyebrow={app.name} title={t("policy.title")} tags={<EnvironmentTag environment={environment} />} />
-      <AppNav appId={app.id} current="policy" />
+      <AppNav appId={app.id} current="policy" setupDone={setupDone} />
       <div className="flex flex-col gap-2">
         <EnvironmentSwitch appId={app.id} current={environment} />
         <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">

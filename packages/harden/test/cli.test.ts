@@ -88,6 +88,36 @@ async function run(
   return { code, out, err };
 }
 
+describe("unknown options (harden)", () => {
+  it("refuses an unknown --flag with exit 2 before any work", async () => {
+    const d = bundle();
+    const out = join(d, "out");
+    const r = await run(["harden", d, "--seed", "1", "--x", "--out", out]);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe("harden: unknown option --x\n");
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("never takes an unknown flag's value as the bundle folder", async () => {
+    const d = bundle();
+    const r = await run(["harden", "--prfile", d, "--seed", "1"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe("harden: unknown option --prfile\n");
+  });
+
+  it("accepts every flag the usage text documents for harden", async () => {
+    const help = await run(["--help"]);
+    // `--assessment` belongs to antireverse gate only.
+    const documented = [...new Set(help.out.match(/--[a-z][a-z-]*/g) ?? [])].filter((f) => f !== "--assessment");
+    expect(documented.length).toBeGreaterThan(20);
+    for (const flag of documented) {
+      const d = bundle();
+      const r = await run(["harden", d, "--seed", "1", flag]);
+      expect(r.err, flag).not.toContain("unknown option");
+    }
+  });
+});
+
 describe("antireverse CLI", () => {
   it("prints a JSON report with --json and exits zero", async () => {
     const d = bundle();

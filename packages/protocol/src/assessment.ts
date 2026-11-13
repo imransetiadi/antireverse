@@ -87,7 +87,7 @@ export const OBJECTIVES = deepFreeze([
     key: "replay",
     name: "Replay",
     weight: 0.2,
-    fix: "Require signed requests on protected routes in the Policy and enforce Attestation, so a request made without the genuine Guard is refused.",
+    fix: "Require signed requests on protected routes in the Policy, so a request made without the genuine Guard is refused.",
   },
 ] as const);
 export type Objective = (typeof OBJECTIVES)[number];

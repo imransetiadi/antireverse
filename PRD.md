@@ -466,7 +466,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 13 | CI gate: pipeline fails when RRS is under threshold — **done 2026-11-13** | 12 |
 | 14 | Verified Target and Rules of Engagement flow — **done 2026-11-13** | 01 |
 | 15 | Pentest Campaign (beta) against `ar-range` staging → Findings with retest | 14 |
-| 16 | Onboarding wizard and docs reaching G1 | 02, 03, 05 |
+| 16 | Onboarding wizard and docs reaching G1 — **done 2026-11-13** | 02, 03, 05 |
 | 17 | Usage metering, plan limits, billing | 01 |
 | 18 | GA hardening: audit log, data controls, SLO dashboards, all release gates green | all |
 | 19 | Exposure step 1: component inventory (build and runtime) → CVE Findings with fix versions → Incident, alert and CI gate — **done 2026-11-11** | 05, 06 |

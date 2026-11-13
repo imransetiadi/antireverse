@@ -98,6 +98,16 @@ describe("Assessment ids, Objectives and tiers", () => {
     );
   });
 
+  it("suggests for Replay only what Shield enforces today (signed requests), written without hyphenated words", () => {
+    const fix = OBJECTIVES.find((objective) => objective.id === "W5")?.fix;
+    expect(fix).toBe(
+      "Require signed requests on protected routes in the Policy, so a request made without the genuine Guard is refused.",
+    );
+    // Attestation is observe only in Shield: nothing is blocked on it yet.
+    expect(fix).not.toMatch(/attestation/i);
+    expect(fix).not.toMatch(/\w-\w/);
+  });
+
   it("has weights that sum to 1 exactly", () => {
     expect(OBJECTIVES.reduce((sum, objective) => sum + objective.weight, 0)).toBe(1);
   });

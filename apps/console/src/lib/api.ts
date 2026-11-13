@@ -4,6 +4,8 @@ import {
   AllowlistEntryResponseSchema,
   type AppResponse,
   AppResponseSchema,
+  type AppSetupResponse,
+  AppSetupResponseSchema,
   type AssessmentResponse,
   AssessmentResponseSchema,
   type AssessmentTier,
@@ -293,6 +295,29 @@ export function listApps(key: string): Promise<ListAppsResponse> {
 /** `GET /v1/apps/:appId` */
 export function getApp(key: string, appId: string): Promise<AppResponse> {
   return call(`/v1/apps/${encodeURIComponent(appId)}`, AppResponseSchema, { key });
+}
+
+function setupPath(appId: string, environment?: Environment): string {
+  const query = environment === undefined ? "" : `?environment=${encodeURIComponent(environment)}`;
+  return `/v1/apps/${encodeURIComponent(appId)}/setup${query}`;
+}
+
+/**
+ * `GET /v1/apps/:appId/setup?environment=` (slice 16) — when each set-up step of the App Environment was first done;
+ * without an Environment the API answers for the App's own.
+ */
+export function getAppSetup(key: string, appId: string, environment?: Environment): Promise<AppSetupResponse> {
+  return call(setupPath(appId, environment), AppSetupResponseSchema, { key });
+}
+
+/** The raw upstream response of `GET /v1/apps/:appId/setup`, for the proxy the Set up page polls. */
+export function fetchAppSetup(
+  key: string,
+  appId: string,
+  environment: Environment | undefined,
+  signal: AbortSignal,
+): Promise<Response> {
+  return send(setupPath(appId, environment), { key, accept: "application/json", signal });
 }
 
 /** `GET /v1/apps/:appId/events?limit=` — newest first. */

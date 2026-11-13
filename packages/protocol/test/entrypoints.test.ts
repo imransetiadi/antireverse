@@ -52,6 +52,7 @@ describe("entry points", () => {
       "AllowlistEntrySchema",
       "AppResponseSchema",
       "AppSchema",
+      "AppSetupResponseSchema",
       "ArtifactDigestSchema",
       "AssessmentCallSchema",
       "AssessmentCallTotalsSchema",

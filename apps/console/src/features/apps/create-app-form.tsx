@@ -6,14 +6,11 @@ import { createAppAction } from "@/app/actions.ts";
 import { Button, ButtonLink } from "@/components/button.tsx";
 import { EnvironmentTag } from "@/components/environment-tag.tsx";
 import { ErrorSummary, fieldError } from "@/components/error-summary.tsx";
-import { Icon } from "@/components/icons.tsx";
 import { Input, Select } from "@/components/input.tsx";
 import { KeyReveal } from "@/components/key-reveal.tsx";
-import { Snippet } from "@/components/snippet.tsx";
-import { PolicyKeySnippet } from "@/features/policy/policy-key-snippet.tsx";
+import { SetupGuide } from "@/features/setup/setup-guide.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 import { type MessageKey, t } from "@/lib/t.ts";
-import { SHIELD_INSTALL, shieldEnvironmentLine, shieldExpressSnippet } from "./shield-snippet.ts";
 
 const NAME_ID = "app-name";
 const ENVIRONMENT_ID = "app-environment";
@@ -26,8 +23,8 @@ const ENVIRONMENT_LABEL: Record<Environment, MessageKey> = {
 
 /**
  * Creates an App. On success the form gives way to the Shield key (shown once, held only in this
- * component's action state), the Express set-up with the policy public key (`null` when the API could not
- * give it), the monitor-mode sentence and the ways to the live feed and the Policy.
+ * component's action state), then the App's set-up steps with that key filled in (slice 16; the policy public key
+ * is `null` when the API could not give it), and the ways to the Set up page, the live feed and the Policy.
  */
 export function CreateAppForm({ apiUrl, policyPublicKey }: { apiUrl: string; policyPublicKey: string | null }) {
   const [state, formAction, pending] = useActionState(createAppAction, null);
@@ -47,29 +44,26 @@ export function CreateAppForm({ apiUrl, policyPublicKey }: { apiUrl: string; pol
           value={state.shieldKey}
           testId="shield-key"
         />
-        <section aria-labelledby="shield-setup-title" className="flex flex-col gap-4">
-          <h2 id="shield-setup-title" className="heading-4">
-            {t("shield.setup.title")}
-          </h2>
-          <Snippet label={t("shield.setup.install")} code={SHIELD_INSTALL} />
-          <Snippet label={t("shield.setup.env")} code={shieldEnvironmentLine(state.shieldKey)} />
-          <div className="flex flex-col gap-1">
-            {policyPublicKey ? (
-              <PolicyKeySnippet publicKey={policyPublicKey} />
-            ) : (
-              <p data-testid="policy-key-unavailable">{t("policy.key.unavailable")}</p>
-            )}
-            <p className="body-5 text-fg-muted">{t("policy.key.help")}</p>
-          </div>
-          <Snippet label={t("shield.setup.code")} code={shieldExpressSnippet(apiUrl)} />
-          <p data-testid="monitor-note">{t("shield.monitor")}</p>
-        </section>
+        {/* The set-up of the new App, with the key filled in: the same steps as its Set up page, which cannot show
+            the key again (slice 16). A redirect there would lose the key, which lives only in this action state. */}
+        <SetupGuide
+          app={state.app}
+          initialSetup={{
+            environment: state.environment,
+            shield: { done_at: null },
+            guard: { done_at: null },
+            harden: { done_at: null },
+          }}
+          apiUrl={apiUrl}
+          policyPublicKey={policyPublicKey}
+          shieldKey={state.shieldKey}
+        />
+        <p className="body-5 text-fg-muted">{t("setup.created.later", { app: state.app.name })}</p>
         <div className="flex flex-wrap items-center gap-3">
-          <p className="flex items-center gap-2 text-fg-muted">
-            <Icon name="circle-dashed" className="size-4 text-fg-subtle" />
-            <span className="break-words">{t("live.waiting", { app: state.app.name })}</span>
-          </p>
-          <ButtonLink href={ROUTES.live(state.app.id)} data-testid="live-link">
+          <ButtonLink href={ROUTES.setup(state.app.id, state.environment)} data-testid="setup-link">
+            {t("setup.created.open")}
+          </ButtonLink>
+          <ButtonLink variant="secondary" href={ROUTES.live(state.app.id)} data-testid="live-link">
             {t("shield.live")}
           </ButtonLink>
           <ButtonLink
