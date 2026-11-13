@@ -79,6 +79,9 @@ export function createAuditStore({ now = () => Date.now() } = {}) {
   };
 
   return {
+    /** The Organization's chain head, signed (slice 18b: the head the Organization export is cut at). */
+    signedHead,
+
     /** `GET /v1/audit/public-key`: the public half of the stub's audit key. */
     publicKey: () => ({ key_id: keyId, algorithm: "Ed25519", public_key: publicRaw.toString("base64url") }),
 

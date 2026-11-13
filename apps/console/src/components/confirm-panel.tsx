@@ -3,7 +3,7 @@
 import { AUDIT_LIMITS } from "@antireverse/protocol";
 import { type ReactNode, useEffect, useId, useRef } from "react";
 import { t } from "@/lib/t.ts";
-import { ButtonLink } from "./button.tsx";
+import { Button, ButtonLink } from "./button.tsx";
 import { Input } from "./input.tsx";
 import { SubmitButton } from "./submit-button.tsx";
 
@@ -14,6 +14,13 @@ interface ConfirmPanelProps {
   confirmLabel: string;
   /** Where "Cancel" goes: the same screen without the confirmation step. */
   cancelHref: string;
+  /** The words of that link. Default: "Cancel" (slice 18b: "Keep it scheduled" where the change is a cancellation). */
+  cancelLabel?: string | undefined;
+  /**
+   * Slice 18b: a step opened in the page rather than by an address closes with this instead of following
+   * `cancelHref` — "Cancel" is then a button, and nothing of the step enters an address.
+   */
+  onCancel?: (() => void) | undefined;
   /** The Server Action the confirmation is sent to. */
   action: (formData: FormData) => void;
   /** True while another form of the screen is being submitted. */
@@ -78,6 +85,8 @@ export function ConfirmPanel({
   question,
   confirmLabel,
   cancelHref,
+  cancelLabel,
+  onCancel,
   action,
   busy = false,
   children,
@@ -172,9 +181,21 @@ export function ConfirmPanel({
             />
           </div>
         ) : null}
-        <ButtonLink variant="secondary" href={cancelHref} scroll={false} prefetch={false} data-testid="confirm-cancel">
-          {t("cancel")}
-        </ButtonLink>
+        {onCancel ? (
+          <Button variant="secondary" onClick={onCancel} data-testid="confirm-cancel">
+            {cancelLabel ?? t("cancel")}
+          </Button>
+        ) : (
+          <ButtonLink
+            variant="secondary"
+            href={cancelHref}
+            scroll={false}
+            prefetch={false}
+            data-testid="confirm-cancel"
+          >
+            {cancelLabel ?? t("cancel")}
+          </ButtonLink>
+        )}
         <SubmitButton
           variant="destructive"
           disabled={busy}

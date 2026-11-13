@@ -1,8 +1,9 @@
 import { ID_PATTERNS, LIMITS, type ListEventsResponse } from "@antireverse/protocol";
+import { hashKey } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { type AppEnv, requireKey } from "../auth/authenticate.ts";
+import { type AppEnv, keyStillValid, presentedKey, requireKey } from "../auth/authenticate.ts";
 import type { EventBus } from "../bus.ts";
 import type { Db } from "../db/db.ts";
 import { problem } from "../problem.ts";
@@ -70,6 +71,7 @@ export function eventRoutes(deps: {
     // Nothing is awaited between this check and the subscription below, so the limit cannot be overrun.
     if (bus.count(organizationId) >= LIMITS.streamsPerOrganization) return problem(c, "too-many-streams");
 
+    const keyHash = hashKey(presentedKey(c) ?? "");
     // Tells a buffering reverse proxy (nginx) to pass each message on as it is written.
     c.header("X-Accel-Buffering", "no");
     return streamSSE(c, async (stream) => {
@@ -100,7 +102,21 @@ export function eventRoutes(deps: {
         const data = JSON.stringify(event);
         send(data.length, () => stream.writeSSE({ id: event.event_id, event: "security-event", data }));
       });
-      const heartbeat = setInterval(() => send(16, () => stream.write(": heartbeat\n\n")), heartbeatMs);
+      // Slice 18b: the key is checked again at every heartbeat. Once it is revoked or gone, or its Organization's
+      // deletion is pending, the stream ends and leaves the bus.
+      let checking = false;
+      const heartbeat = setInterval(() => {
+        if (checking) return;
+        checking = true;
+        keyStillValid(db, keyHash)
+          .then((valid) => {
+            if (valid) send(16, () => stream.write(": heartbeat\n\n"));
+            else end();
+          }, end)
+          .finally(() => {
+            checking = false;
+          });
+      }, heartbeatMs);
       stream.onAbort(end);
       shutdown?.addEventListener("abort", end, { once: true });
       if (shutdown?.aborted) end();

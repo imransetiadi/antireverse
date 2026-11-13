@@ -74,6 +74,25 @@ function audit(query: AuditQuery = {}): string {
   return `/settings/audit${text ? `?${text}` : ""}`;
 }
 
+/** The confirmation step Data controls opens through its address (slice 18b): delete, or cancel the deletion. */
+export type DataStep = "delete" | "cancel";
+
+/** What Data controls says after a deletion was requested or cancelled. */
+export type DataDone = "requested" | "cancelled";
+
+/**
+ * Settings → Data controls (slice 18b): `?step=&done=&blocked=1`, in a fixed order. `blocked` says another page was
+ * refused for a pending deletion. Never an actor hash: an end user's request stays in the page's forms.
+ */
+function dataControls(options: { step?: DataStep; done?: DataDone; blocked?: boolean } = {}): string {
+  const search = new URLSearchParams();
+  if (options.step !== undefined) search.set("step", options.step);
+  if (options.done !== undefined) search.set("done", options.done);
+  if (options.blocked === true) search.set("blocked", "1");
+  const text = search.toString();
+  return `/settings/data${text ? `?${text}` : ""}`;
+}
+
 /** The filters of a Finding list as a query string, in a fixed order; empty without filters. */
 function findingSearch(query: FindingQuery): string {
   const search = new URLSearchParams();
@@ -138,6 +157,11 @@ export const ROUTES = {
   audit,
   /** The NDJSON export of the audit log, through the Console's route handler that checks the session. */
   auditExport: "/api/audit/export",
+  dataControls,
+  /** The NDJSON export of the whole Organization (slice 18b), through a route handler that checks the session. */
+  dataExport: "/api/data/export",
+  /** The NDJSON export of one actor hash (slice 18b): a form POST to a route handler that checks the session. */
+  subjectExport: "/api/data/subject-export",
   /**
    * Where a confirmation link ends up after "Confirm email" (slice 06b): the outcome only, never the token. Public.
    */

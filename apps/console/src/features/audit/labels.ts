@@ -28,6 +28,11 @@ export const ACTION_LABEL: Readonly<Record<AuditAction, MessageKey>> = {
   "target.delete": "audit.action.target.delete",
   "target.verify": "audit.action.target.verify",
   "rules_of_engagement.sign": "audit.action.rules_of_engagement.sign",
+  "organization.export": "audit.action.organization.export",
+  "organization.deletion.request": "audit.action.organization.deletion.request",
+  "organization.deletion.cancel": "audit.action.organization.deletion.cancel",
+  "subject.export": "audit.action.subject.export",
+  "subject.erase": "audit.action.subject.erase",
 };
 
 /** What an entry's target is, in readable words. */
@@ -46,4 +51,6 @@ export const TARGET_LABEL: Readonly<Record<AuditTargetKind, MessageKey>> = {
   alert_recipient: "audit.target.alert_recipient",
   target: "audit.target.target",
   rules_of_engagement: "audit.target.rules_of_engagement",
+  organization_deletion: "audit.target.organization_deletion",
+  subject: "audit.target.subject",
 };

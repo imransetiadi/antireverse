@@ -1,6 +1,7 @@
 import { TARGET_LIMITS } from "@antireverse/protocol";
 import type { Db } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
+import { pendingDeletion } from "../stores/deletions.ts";
 import { type CheckGuard, findTarget, listDueTargets, recordCheck, recordRecheckMiss } from "../stores/targets.ts";
 import { type ProveNetwork, runCheck } from "./deps.ts";
 
@@ -93,7 +94,10 @@ export function createRecheckJob(options: RecheckOptions): RecheckJob {
 
   async function checkOne(organizationId: string, targetId: string, cutoff: Date, counts: RecheckCounts) {
     try {
-      const found = await db.tx({ organizationId }, (q) => findTarget(q, targetId));
+      // Slice 18b: no probe for an Organization whose deletion is pending (the due list leaves it out too).
+      const found = await db.tx({ organizationId }, async (q) =>
+        (await pendingDeletion(q)) !== null ? null : findTarget(q, targetId),
+      );
       const status = found?.target.status;
       // Due: verified with the last success at or before the cutoff, or lapsed with the last check at or before it.
       const since = status === "verified" ? found?.target.verified_at : found?.target.last_checked_at;

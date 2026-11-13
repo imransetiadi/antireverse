@@ -138,6 +138,14 @@ const PROBLEMS = {
     title: "Too many requests",
     detail: "Too many audit verifications and exports for this Organization. Try again after the time in Retry-After.",
   },
+  // Slice 18b: every key of an Organization whose deletion is pending, except on the deletion status, its
+  // cancellation and the export.
+  "organization-deletion-pending": {
+    status: 403,
+    title: "Organization deletion pending",
+    detail:
+      "This Organization is scheduled for deletion. Until the deletion is cancelled, only its status (GET /v1/organization/deletion), its cancellation (DELETE /v1/organization/deletion) and the export (GET /v1/organization/export) are available.",
+  },
   "too-many-attestations": {
     status: 429,
     title: "Too many requests",

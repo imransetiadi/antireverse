@@ -28,6 +28,10 @@ export function ChainCheck() {
         <div className="w-full">
           <ChainStatus result={state.result} />
         </div>
+      ) : state.message !== undefined ? (
+        <p role="alert" data-testid="audit-chain-refused" className="body-5 text-sev-critical-text">
+          {state.message}
+        </p>
       ) : (
         <div className="w-full">
           <ChainStatus result={null} limited={state.limited} />

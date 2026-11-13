@@ -4,7 +4,7 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement,, known-vulnerability Findings with virtual patches, and the onboarding Set up page with the docs in `docs/`. Not built yet: Pentest Campaigns (15), usage metering and billing (17), and GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a) and data controls (18b: export and deletion). Not built yet: Pentest Campaigns (15), usage metering and billing (17), configurable retention (18c), and the rest of GA hardening (18).
 
 ## What works today
 
@@ -201,6 +201,16 @@ Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the
 ## Audit log
 
 Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
+
+## Data controls
+
+**Settings → Data controls** (and the API under `/v1/organization/export`, `/v1/organization/deletion`, `/v1/subjects/*`):
+
+- **Export** streams everything the Organization has as NDJSON: a manifest, one line per row, and an end line with per-table counts and a SHA-256 over the file, signed with the audit key. The audit chain comes first, up to the signed head named in the manifest; other tables are read page by page (`consistency: "per-page"`). Credentials leave as hashes.
+- **Delete Organization** needs the typed name and a reason. Every key stops working at once (403 `organization-deletion-pending`, except deletion status, cancel and export); the data is erased at the first daily purge after seven days unless the deletion is cancelled. The purge removes every row in every table, the audit chain included, and leaves a tombstone with a signed report readable at `GET /v1/deletions/<deletion id>/report`. The Clone Beacon and attestation have no key and stay open meanwhile; what they record is purged too.
+- **End-user requests** take the actor hash (`iph_…`, computed with the Shield key by `actorHash`; Airverse never receives the address): export that actor's Events and blocks, or erase them (reason required). Active blocks stay until they end and are listed in the report. Audit entries name the actor by a derived `subj_` reference, never the hash.
+
+Backups are outside this: their 35-day expiry bounds how long erased data can survive in them.
 
 ## Clone Beacon
 

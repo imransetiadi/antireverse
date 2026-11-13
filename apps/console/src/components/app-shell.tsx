@@ -1,14 +1,24 @@
-import type { Organization } from "@antireverse/protocol";
+import type { Organization, OrganizationDeletion } from "@antireverse/protocol";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { signOutAction } from "@/app/actions.ts";
+import { DeletionBanner } from "@/features/data-controls/deletion-banner.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
 import { BrandMark } from "./brand-mark.tsx";
 import { Button } from "./button.tsx";
 
 /** The top-level screen a page belongs to; its navigation entry is marked as current. */
-export type ShellSection = "apps" | "incidents" | "findings" | "targets" | "rules" | "alerts" | "allowlist" | "audit";
+export type ShellSection =
+  | "apps"
+  | "incidents"
+  | "findings"
+  | "targets"
+  | "rules"
+  | "alerts"
+  | "allowlist"
+  | "audit"
+  | "data";
 
 // The current entry is carried by `aria-current`, its weight and a solid underline — not by colour alone.
 const NAV_LINK = "inline-flex h-8 items-center px-1 pointer-coarse:h-12";
@@ -39,8 +49,16 @@ function NavLink({
 }
 
 interface AppShellProps {
-  /** The Organization of the session; without it the bar shows the brand only. */
-  organization?: Organization | undefined;
+  /**
+   * The Organization of the session; without it (and without a pending deletion) the bar shows the brand only. Null
+   * while its deletion is pending: the API no longer names it.
+   */
+  organization?: Organization | null | undefined;
+  /**
+   * The pending deletion of the session's Organization (slice 18b): a banner above the bar says when the data is
+   * erased and links to Data controls. The navigation and sign-out stay.
+   */
+  deletion?: OrganizationDeletion | null | undefined;
   /** `narrow` for a single form, `wide` for lists and tables. */
   width?: "narrow" | "wide";
   /** The navigation entry to mark as current. */
@@ -49,19 +67,25 @@ interface AppShellProps {
 }
 
 /** The top bar (48 px: brand, Organization, navigation, settings, sign-out) and the main region. */
-export function AppShell({ organization, width = "wide", current, children }: AppShellProps) {
+export function AppShell({ organization, deletion, width = "wide", current, children }: AppShellProps) {
+  const signedIn = Boolean(organization) || Boolean(deletion);
   return (
     <>
+      <DeletionBanner deletion={deletion} />
       <header className="flex min-h-12 flex-wrap items-center gap-x-4 gap-y-1 border-border border-b bg-bg px-4 py-2">
         <span data-testid="brand" className="inline-flex items-center gap-2 heading-6 text-fg">
           <BrandMark />
           {t("brand")}
         </span>
-        {organization ? (
+        {signedIn ? (
           <>
             <span className="min-w-0 flex-1 basis-24 break-words text-fg-muted">
-              <span className="sr-only">{t("session.organization")} </span>
-              <span data-testid="organization-name">{organization.name}</span>
+              {organization ? (
+                <>
+                  <span className="sr-only">{t("session.organization")} </span>
+                  <span data-testid="organization-name">{organization.name}</span>
+                </>
+              ) : null}
             </span>
             <nav aria-label={t("nav.main")} className="flex flex-wrap items-center gap-3">
               <NavLink section="apps" current={current} href={ROUTES.apps} label={t("nav.apps")} />
@@ -76,6 +100,7 @@ export function AppShell({ organization, width = "wide", current, children }: Ap
               <NavLink section="alerts" current={current} href={ROUTES.alerts()} label={t("nav.alerts")} />
               <NavLink section="allowlist" current={current} href={ROUTES.allowlist()} label={t("nav.allowlist")} />
               <NavLink section="audit" current={current} href={ROUTES.audit()} label={t("nav.audit")} />
+              <NavLink section="data" current={current} href={ROUTES.dataControls()} label={t("nav.data")} />
             </nav>
             <form action={signOutAction}>
               <Button type="submit" variant="quiet">

@@ -13,7 +13,7 @@ import {
 } from "@antireverse/protocol";
 import { auditHash } from "@antireverse/protocol/server";
 import { Hono } from "hono";
-import { createWindowLimiter } from "../attestation/limiter.ts";
+import { createWindowLimiter, type WindowLimiter } from "../attestation/limiter.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import type { Db } from "../db/db.ts";
 import { problem } from "../problem.ts";
@@ -46,6 +46,13 @@ function hashHolds(entry: AuditEntry): boolean {
   }
 }
 
+/**
+ * The per-Organization budget of audit verifications and exports, which the Organization export shares (slice 18b).
+ */
+export function createAuditReadLimiter(perMinute: number = AUDIT_READS_PER_MINUTE): WindowLimiter {
+  return createWindowLimiter({ limit: perMinute, windowMs: 60_000, maxKeys: AUDIT_READ_KEYS_MAX });
+}
+
 /** Lets other requests run between two pages. */
 const yieldToOthers = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -56,16 +63,14 @@ export function auditRoutes(deps: {
   now?: (() => Date) | undefined;
   /** Default `AUDIT_READS_PER_MINUTE`. */
   readsPerMinute?: number | undefined;
+  /** The budget to take from, shared with the Organization export. Default: one of `readsPerMinute`. */
+  reads?: WindowLimiter | undefined;
 }): Hono<AppEnv> {
   const { db, signer } = deps;
   const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
   const admin = requireKey(db, "admin");
-  const reads = createWindowLimiter({
-    limit: deps.readsPerMinute ?? AUDIT_READS_PER_MINUTE,
-    windowMs: 60_000,
-    maxKeys: AUDIT_READ_KEYS_MAX,
-  });
+  const reads = deps.reads ?? createAuditReadLimiter(deps.readsPerMinute);
 
   /** The Organization's head now, signed. */
   async function signedHead(organizationId: string): Promise<SignedAuditHead> {

@@ -656,6 +656,8 @@ describe("navigation", () => {
       ["Never block", "/settings/allowlist"],
       // Slice 18a.
       ["Audit log", "/settings/audit"],
+      // Slice 18b.
+      ["Data controls", "/settings/data"],
     ]);
     expect(screen.getByTestId("nav-allowlist").getAttribute("aria-current")).toBe("page");
   });

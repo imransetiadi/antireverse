@@ -9,6 +9,7 @@ import { type AssessmentRunner, type AssessmentRunnerOptions, createAssessmentRu
 import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 import { createEventBus, type EventBus } from "./bus.ts";
 import { DEFAULT_HOST } from "./config.ts";
+import { createPurgeJob, type PurgeJob, type PurgeOptions } from "./data/purge.ts";
 import { type Db, openDb } from "./db/db.ts";
 import { createBeaconRecorder } from "./detect/beacon.ts";
 import { createDetector, type Detector } from "./detect/detector.ts";
@@ -104,6 +105,8 @@ export interface StartApiOptions {
   assessor?: Assessor;
   /** Settings of the Assessment runner (concurrency, tier budgets, grace, expiry interval). Default: `RUNNER_DEFAULTS`. */
   assessments?: Omit<AssessmentRunnerOptions, "db" | "assessor" | "now" | "logger">;
+  /** Settings of the daily purge of deleted Organizations (slice 18b). Default: `PURGE_DEFAULTS`. */
+  purge?: Omit<PurgeOptions, "db" | "signer" | "now" | "logger">;
 }
 
 export interface RunningApi extends Listening {
@@ -122,6 +125,8 @@ export interface RunningApi extends Listening {
   authorize: Authorize;
   /** The Assessment runner (slice 12a): started with the server, stopped on close. */
   assessments: AssessmentRunner;
+  /** The daily purge of Organizations past their deletion grace (slice 18b): started with the server, flushed on close. */
+  purge: PurgeJob;
   /**
    * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
    * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
@@ -238,6 +243,20 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const stopDetector = started.start();
   const recheck = createRecheckJob({ ...options.recheck, db, network, now: options.now, logger });
   const stopRecheck = recheck.start();
+  const purge = createPurgeJob({
+    ...options.purge,
+    db,
+    signer: auditSigner,
+    now: options.now,
+    logger,
+    // What the process still holds of a purged Organization in memory goes with it.
+    onPurged: (organizationId) => {
+      started.forget(organizationId);
+      beacon.forget(organizationId);
+      options.purge?.onPurged?.(organizationId);
+    },
+  });
+  const stopPurge = purge.start();
   // Fails the Assessments a previous process left running, then takes the queued ones.
   await assessments.start();
 
@@ -260,9 +279,11 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     // queue alerts. 5. The alert queue drains (bounded wait), then the database closes.
     stopDetector();
     stopRecheck();
+    stopPurge();
     // Running Assessments are aborted and recorded as failed (interrupted) while the database is still open.
     await assessments.stop();
     await recheck.flush();
+    await purge.flush();
     await started.flush();
     await beacon.flush();
     await exposureIncidents.flush();
@@ -280,6 +301,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     notifier,
     authorize: createAuthorize({ db, now: options.now }),
     assessments,
+    purge,
     close() {
       closing ??= stop();
       return closing;

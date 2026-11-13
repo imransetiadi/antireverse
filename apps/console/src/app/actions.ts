@@ -54,6 +54,7 @@ import {
   type RuleLimit,
   RulesOfEngagementContentSchema,
   type SimulationResult,
+  type SubjectEraseReport,
   TIER_IDS,
   type VerifyResult,
 } from "@antireverse/protocol";
@@ -70,6 +71,7 @@ import { ruleFingerprint } from "@/features/policy/simulation.ts";
 import {
   ApiError,
   ConflictError,
+  cancelDeletion,
   checkAuthorization,
   createAlertChannel,
   createAllowlistEntry,
@@ -78,9 +80,11 @@ import {
   createContainment,
   createOrganization,
   createTarget,
+  DeletionPendingError,
   deleteAlertChannel,
   deleteAllowlistEntry,
   deleteTarget,
+  eraseSubject,
   getOrganization,
   getPolicy,
   getPolicyVersion,
@@ -93,6 +97,7 @@ import {
   RateLimitedError,
   ReasonRequiredError,
   reopenFinding,
+  requestDeletion,
   resendConfirmation,
   rollbackPolicy,
   setPatchMode,
@@ -153,8 +158,20 @@ function isMode(value: string): value is DecisionMode {
   return (DECISION_MODES as readonly string[]).includes(value);
 }
 
+/**
+ * Slice 18b: what to say when the API refused because the Organization's deletion is pending — a change that was not
+ * saved, or a read that was not made — or null for any other error. Every failure branch of an action asks it first,
+ * so that a tab opened before the deletion explains the refusal instead of reporting a generic failure.
+ */
+function deletionPending(error: unknown, kind: "change" | "read" = "change"): string | null {
+  if (!(error instanceof DeletionPendingError)) return null;
+  return t(kind === "change" ? "error.api.deletionPending" : "error.api.deletionPending.read");
+}
+
 /** What to tell the person when the API refused or failed. Anything that is not an ApiError is a defect and is rethrown. */
 function apiErrors(error: unknown, fields: readonly string[]): FieldError[] {
+  const pending = deletionPending(error);
+  if (pending !== null) return [{ path: "", message: pending }];
   if (error instanceof ValidationError) {
     const known = error.errors.filter((entry) => fields.includes(entry.path));
     if (known.length === 0) return [{ path: "", message: t("error.api.failed") }];
@@ -257,6 +274,11 @@ export async function signInAction(_previous: SignInState, formData: FormData): 
   try {
     await getOrganization(key);
   } catch (error) {
+    // Slice 18b: a valid key of an Organization pending deletion signs in to the one page still open to it.
+    if (error instanceof DeletionPendingError) {
+      await writeSession(key);
+      redirect(ROUTES.dataControls({ blocked: true }));
+    }
     if (error instanceof ApiError) {
       const refused = error instanceof UnauthorizedError || error.status === 403;
       return { ok: false, message: refused ? t("signin.invalid") : t("error.api.signin") };
@@ -622,6 +644,8 @@ function simulationErrors(
   own: { index: number; fields: readonly string[] } | undefined,
   sent: readonly PolicyRuleInput[],
 ): FieldError[] {
+  const pending = deletionPending(error);
+  if (pending !== null) return [{ path: "", message: pending }];
   if (error instanceof RateLimitedError) {
     return [
       {
@@ -1027,6 +1051,8 @@ export async function testAlertChannelAction(
     return { ok: true, outcome: delivery.outcome, statusCode: delivery.status_code };
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const pending = deletionPending(error);
+    if (pending !== null) return { ok: false, message: pending };
     if (error instanceof NotFoundError) return { ok: false, message: t("error.alerts.gone") };
     if (error instanceof ConflictError && error.reason === "no-confirmed-recipients") {
       return { ok: false, message: t("error.alerts.unconfirmed") };
@@ -1062,6 +1088,8 @@ export async function resendConfirmationAction(
     await resendConfirmation(key, channelId, recipientId);
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const pending = deletionPending(error);
+    if (pending !== null) return { ok: false, message: pending };
     if (error instanceof RateLimitedError) {
       const count = String(ALERT_EMAIL_LIMITS.confirmationMailsPerAddressPerDay);
       return { ok: false, message: t("error.alerts.resend.limit", { count }) };
@@ -1522,6 +1550,8 @@ export async function verifyTargetAction(_previous: VerifyTargetState, formData:
     ({ result } = await verifyTarget(key, targetId));
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const pending = deletionPending(error);
+    if (pending !== null) return { ok: false, message: pending };
     if (error instanceof NotFoundError) return { ok: false, message: t("error.target.gone") };
     if (error instanceof RateLimitedError) {
       return {
@@ -1861,6 +1891,8 @@ export async function loadMoreAuditAction(
     return { ok: true, entries: page.entries, nextCursor: page.next_cursor };
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const pending = deletionPending(error, "read");
+    if (pending !== null) return { ok: false, message: pending };
     if (error instanceof ApiError) return { ok: false, message: t("audit.more.failed") };
     throw error;
   }
@@ -1868,7 +1900,7 @@ export async function loadMoreAuditAction(
 
 export type VerifyAuditChainState =
   | { ok: true; result: Awaited<ReturnType<typeof verifyAudit>> }
-  | { ok: false; limited?: { retryAfter: number | undefined } };
+  | { ok: false; limited?: { retryAfter: number | undefined }; message?: string };
 
 /** "Verify chain" of a filtered Audit log view: the chain checked now, a 429 with its wait, or a failure. */
 export async function verifyAuditChainAction(): Promise<VerifyAuditChainState> {
@@ -1878,9 +1910,119 @@ export async function verifyAuditChainAction(): Promise<VerifyAuditChainState> {
     return { ok: true, result: await verifyAudit(key) };
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const pending = deletionPending(error, "read");
+    if (pending !== null) return { ok: false, message: pending };
     if (error instanceof RateLimitedError) return { ok: false, limited: { retryAfter: error.retryAfter } };
     if (error instanceof ApiError) return { ok: false };
     throw error;
+  }
+}
+
+// ── Data controls (slice 18b) ─────────────────────────────────────────────────────────────────────────
+// Deleting the Organization needs its name typed exactly and a reason; cancelling it and erasing an end user's records
+// need a reason. Each is checked here before anything is sent; the API alone decides. After a request or a
+// cancellation the page is opened afresh, so that a reload never repeats it and the banner follows the new state.
+
+export type DeletionChangeState = null | { ok: false; errors: FieldError[]; reason?: string };
+
+export type EraseSubjectState =
+  | null
+  | { ok: false; errors: FieldError[]; reason?: string }
+  | { ok: true; report: SubjectEraseReport };
+
+/** Asks for the Organization's deletion: its keys stop at once, its data is erased after the grace period. */
+export async function requestDeletionAction(
+  previous: DeletionChangeState,
+  formData: FormData,
+): Promise<DeletionChangeState> {
+  return keptReason(await requestDeletionChange(previous, formData), formData);
+}
+
+async function requestDeletionChange(_previous: DeletionChangeState, formData: FormData): Promise<DeletionChangeState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  // The name exactly as typed: the API compares it with the Organization's name character for character.
+  const raw = formData.get("confirm_name");
+  const confirmName = typeof raw === "string" ? raw : "";
+  if (confirmName.trim().length === 0 || confirmName.length > 200) {
+    return failed("confirm_name", t("data.delete.name.required"));
+  }
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
+
+  try {
+    await requestDeletion(key, { confirm_name: confirmName }, withReason(read.reason));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    // Already pending: the page shows it.
+    if (error instanceof ConflictError || error instanceof DeletionPendingError) redirect(ROUTES.dataControls());
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
+    if (error instanceof ValidationError && error.errors.some((entry) => entry.path === "confirm_name")) {
+      return failed("confirm_name", t("data.delete.name.required"));
+    }
+    return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.dataControls());
+  redirect(ROUTES.dataControls({ done: "requested" }));
+}
+
+/** Cancels the pending deletion: every key works again at once. */
+export async function cancelDeletionAction(
+  previous: DeletionChangeState,
+  formData: FormData,
+): Promise<DeletionChangeState> {
+  return keptReason(await cancelDeletionChange(previous, formData), formData);
+}
+
+async function cancelDeletionChange(_previous: DeletionChangeState, formData: FormData): Promise<DeletionChangeState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
+
+  try {
+    await cancelDeletion(key, withReason(read.reason));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    // Nothing pending any more: the page shows what there is.
+    if (error instanceof NotFoundError) redirect(ROUTES.dataControls());
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
+    return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.dataControls());
+  redirect(ROUTES.dataControls({ done: "cancelled" }));
+}
+
+/**
+ * Erases one end user's Events and ended blocks by actor hash. Refused unless the form carries the confirmation: the
+ * actor hash named in the question. Active blocks are kept until they end; the report lists them.
+ */
+export async function eraseSubjectAction(previous: EraseSubjectState, formData: FormData): Promise<EraseSubjectState> {
+  const state = await eraseSubjectChange(previous, formData);
+  return state?.ok === true ? state : keptReason(state, formData);
+}
+
+async function eraseSubjectChange(_previous: EraseSubjectState, formData: FormData): Promise<EraseSubjectState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const ipHash = text(formData, "ip_hash");
+  if (!ACTOR_HASH_PATTERN.test(ipHash)) return failed("ip_hash", t("data.subject.invalid"));
+  if (text(formData, "confirm") !== ipHash) return failed("", t("data.subject.confirm.required"));
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
+
+  try {
+    const { report } = await eraseSubject(key, ipHash, withReason(read.reason));
+    return { ok: true, report };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
+    return { ok: false, errors: apiErrors(error, []) };
   }
 }
 

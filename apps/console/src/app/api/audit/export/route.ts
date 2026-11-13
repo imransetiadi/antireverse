@@ -1,8 +1,8 @@
 import { AUDIT_EXPORT_CONTENT_TYPE } from "@antireverse/protocol";
 import type { NextRequest } from "next/server";
 import { fetchAuditExport } from "@/lib/api.ts";
+import { crossSiteRefusal, sessionKeyOf } from "@/lib/download-guard.ts";
 import { ROUTES } from "@/lib/routes.ts";
-import { SESSION_COOKIE } from "@/lib/session.ts";
 
 // The export of the audit log (slice 18a): the API's NDJSON — the signed chain head, then every entry oldest first
 // with its hashes — streamed to the browser as a download. The session is checked here and the admin key stays on the
@@ -18,7 +18,10 @@ const goTo = (path: string): Response =>
   new Response(null, { status: 303, headers: { location: path, "cache-control": "no-store" } });
 
 export async function GET(request: NextRequest): Promise<Response> {
-  const key = request.cookies.get(SESSION_COOKIE)?.value;
+  // Slice 18b review: another site cannot start the download; a malformed session never reaches the API.
+  const refused = crossSiteRefusal(request);
+  if (refused) return refused;
+  const key = sessionKeyOf(request);
   if (!key) return goTo(ROUTES.home);
 
   let upstream: Response;

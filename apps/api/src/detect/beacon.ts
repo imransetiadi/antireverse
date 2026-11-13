@@ -124,6 +124,11 @@ export interface BeaconRecorder {
   flush(): Promise<void>;
   /** Builds whose limits are currently tracked: never more than `maxBuilds`. */
   trackedBuilds(): number;
+  /**
+   * Forgets everything kept for an Organization: the limits of its Builds and App Environments and its known
+   * tokens, so that its next report is looked up again (slice 18b: called once the Organization is purged).
+   */
+  forget(organizationId: string): void;
   /** Reports dropped since start, by reason. */
   dropped(): Readonly<Record<BeaconDropReason, number>>;
 }
@@ -178,6 +183,13 @@ function orgBounded<T>(perOrg: number, max: number) {
       return created;
     },
     size: () => total,
+    /** Drops every entry of the Organization. */
+    forget(organizationId: string): void {
+      const own = byOrg.get(organizationId);
+      if (own === undefined) return;
+      total -= own.size;
+      byOrg.delete(organizationId);
+    },
   };
 }
 
@@ -191,6 +203,10 @@ function expiringCache<T>(max: number, ttl: number) {
       if (ms - entry.at < ttl) return entry.value;
       entries.delete(key);
       return undefined;
+    },
+    /** Drops every entry whose value matches. */
+    deleteWhere(matches: (value: T) => boolean): void {
+      for (const [key, entry] of entries) if (matches(entry.value)) entries.delete(key);
     },
     set(key: string, value: T, ms: number): void {
       entries.delete(key);
@@ -432,6 +448,14 @@ export function createBeaconRecorder(deps: BeaconRecorderDeps): BeaconRecorder {
     },
 
     trackedBuilds: () => builds.size(),
+
+    forget(organizationId) {
+      builds.forget(organizationId);
+      appEnvs.forget(organizationId);
+      knownTokens.deleteWhere((build) => build.organizationId === organizationId);
+      // A lookup in flight may still cache the Organization's Build: it no longer will.
+      registrations++;
+    },
 
     dropped: () => ({ ...counts }),
   };

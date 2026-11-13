@@ -255,6 +255,11 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-077 | Slice 13: the RRS gate is a CLI flag (`--min-rrs`, exit 5) and an `antireverse gate` subcommand; no score exits 6 unless `--on-no-score pass`; a per-App threshold in the Console comes later | Jev 0.41 + 0.43 for CLI-now (both options), 0.89 fail-closed (2026-11-13) | accepted |
 | D-078 | Slice 16 next (Jev 0.77 over metering); step state from a setup endpoint (0.89); framework picker offers Express and plain Node http, others named as not supported (0.87) | Jev (2026-11-13) | accepted |
 | D-079 | Slice 18a audit log (owner pick over 17a); entries written explicitly in the change's transaction with a route-table coverage test; per-Organization hash chain; reason header required on sensitive actions | Owner (2026-11-13); Jev 0.99 | accepted |
+| D-080 | Slice 18b = Organization export, Organization deletion with a 7-day cancellable grace, and subject requests by actor hash; configurable retention and the retention job move to 18c | Owner (2026-11-13) after Jev 0.42 at confidence 0.32 | accepted |
+| D-081 | Export streamed as signed NDJSON (audit key); purge by an owner-only security-definer function with a catalog-wide no-rows test and a signed tombstone report; subject erasure removes Events and ended actor blocks, active blocks listed until they end | Jev 0.86, 0.94 (2026-11-13) | accepted |
+| D-082 | 18b forks: the signed deletion report is public by its random deletion id (keys are gone after the purge); keyless public routes (beacon, attestation, recipient confirmation) stay open during the grace and the purge erases what they add | Jev 0.71; owner (2026-11-14) after Jev 0.23 | accepted |
+| D-083 | 18b review: the export bounds its audit tables to the head read at start and states per-page consistency for other tables; audit entries of subject actions and actor blocks carry a derived `subj_` reference instead of the actor hash from now on | Jev 0.84, 0.80 (2026-11-14) | accepted |
+| D-084 | Console while a deletion is pending: the API's 403 becomes DeletionPendingError, every page's session guard redirects to Settings → Data controls (`?blocked=1`), which shows the banner, Export and Cancel deletion | Jev 0.87 (2026-11-14) | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -557,3 +562,4 @@ Next step for whoever continues:
 | 2026-11-13 | Slice 13 built; decision D-077; CI gate on the RRS |
 | 2026-11-13 | Slice 16 built; decision D-078; onboarding Set up page, docs/, bin entry fix |
 | 2026-11-13 | Slice 18a built; decision D-079; audit log with signed heads |
+| 2026-11-14 | Slice 18b built; decisions D-080–D-084; Organization export, deletion with a 7-day grace, subject requests |

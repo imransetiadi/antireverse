@@ -43,6 +43,11 @@ import {
   CreateOrganizationResponseSchema,
   type CurrentRulesOfEngagementResponse,
   CurrentRulesOfEngagementResponseSchema,
+  DATA_EXPORT_CONTENT_TYPE,
+  type DeletionResponse,
+  DeletionResponseSchema,
+  type DeletionStatusResponse,
+  DeletionStatusResponseSchema,
   type Environment,
   encodeAuditReason,
   type FindingDetailResponse,
@@ -105,6 +110,8 @@ import {
   type SimulatePolicyRequestInput,
   type SimulatePolicyResponse,
   SimulatePolicyResponseSchema,
+  type SubjectEraseResponse,
+  SubjectEraseResponseSchema,
   type TargetResponse,
   TargetResponseSchema,
   type TestAlertChannelResponse,
@@ -198,6 +205,20 @@ export class ReasonRequiredError extends ValidationError {
   }
 }
 
+/**
+ * 403 `organization-deletion-pending` (slice 18b): the Organization is scheduled for deletion, and the API refuses
+ * every route but the deletion status, its cancellation and the export until the deletion is cancelled.
+ */
+export class DeletionPendingError extends ApiError {
+  constructor(message: string) {
+    super(message, 403);
+    this.name = "DeletionPendingError";
+  }
+}
+
+/** The problem type of a pending deletion; matched on its last segment, whatever the API's base. */
+const DELETION_PENDING_TYPE = /\/organization-deletion-pending$/;
+
 /** The problem type of a missing reason; matched on its last segment, whatever the API's base. */
 const REASON_REQUIRED_TYPE = /\/reason-required$/;
 
@@ -273,6 +294,9 @@ async function failure(what: string, response: Response): Promise<ApiError> {
   const title = parsed.success ? `: ${scrub(parsed.data.title)}` : "";
   const message = `${what} failed with status ${response.status}${title}`;
   if (response.status === 401) return new UnauthorizedError(message);
+  if (response.status === 403 && parsed.success && DELETION_PENDING_TYPE.test(parsed.data.type)) {
+    return new DeletionPendingError(message);
+  }
   if (response.status === 404) return new NotFoundError(message);
   if (response.status === 409) return new ConflictError(message, parsed.success ? parsed.data.reason : undefined);
   if (response.status === 429) return new RateLimitedError(message, retryAfterSeconds(response));
@@ -897,4 +921,62 @@ export function verifyAudit(key: string): Promise<AuditVerifyResponse> {
 /** `GET /v1/audit/export` — the raw upstream NDJSON response for the export route, whatever its status. */
 export function fetchAuditExport(key: string, signal: AbortSignal): Promise<Response> {
   return send("/v1/audit/export", { key, accept: AUDIT_EXPORT_CONTENT_TYPE, signal });
+}
+
+// ── Data controls (slice 18b) ─────────────────────────────────────────────────────────────────────────
+
+/** `GET /v1/organization/deletion` — the pending deletion, or null. Answered while a deletion is pending. */
+export function getDeletionStatus(key: string): Promise<DeletionStatusResponse> {
+  return call("/v1/organization/deletion", DeletionStatusResponseSchema, { key });
+}
+
+/**
+ * `POST /v1/organization/deletion` — the Organization's name typed exactly and a reason (required). 201 with the
+ * pending deletion; 400 on `confirm_name` for another name; 409 when one is already pending.
+ */
+export function requestDeletion(
+  key: string,
+  request: { confirm_name: string },
+  options: ReasonOption = {},
+): Promise<DeletionResponse> {
+  return call("/v1/organization/deletion", DeletionResponseSchema, {
+    method: "POST",
+    key,
+    body: { confirm_name: request.confirm_name },
+    reason: options.reason,
+  });
+}
+
+/** `DELETE /v1/organization/deletion` — cancels the pending deletion (reason required); 404 when none is pending. */
+export function cancelDeletion(key: string, options: ReasonOption = {}): Promise<DeletionResponse> {
+  return call("/v1/organization/deletion", DeletionResponseSchema, { method: "DELETE", key, reason: options.reason });
+}
+
+/** `GET /v1/organization/export` — the raw upstream NDJSON response for the export route, whatever its status. */
+export function fetchOrganizationExport(key: string, signal: AbortSignal): Promise<Response> {
+  return send("/v1/organization/export", { key, accept: DATA_EXPORT_CONTENT_TYPE, signal });
+}
+
+/** `POST /v1/subjects/export` — the raw upstream NDJSON response of one actor hash, whatever its status. */
+export function fetchSubjectExport(key: string, ipHash: string, signal: AbortSignal): Promise<Response> {
+  return send("/v1/subjects/export", {
+    method: "POST",
+    key,
+    body: { ip_hash: ipHash },
+    accept: DATA_EXPORT_CONTENT_TYPE,
+    signal,
+  });
+}
+
+/**
+ * `POST /v1/subjects/erase` — erases the Events and ended blocks of one actor hash (reason required); active blocks
+ * are kept until they end and listed in the report.
+ */
+export function eraseSubject(key: string, ipHash: string, options: ReasonOption = {}): Promise<SubjectEraseResponse> {
+  return call("/v1/subjects/erase", SubjectEraseResponseSchema, {
+    method: "POST",
+    key,
+    body: { ip_hash: ipHash },
+    reason: options.reason,
+  });
 }

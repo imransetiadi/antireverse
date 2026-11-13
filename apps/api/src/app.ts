@@ -25,11 +25,12 @@ import { allowlistRoutes } from "./routes/allowlist.ts";
 import { appRoutes } from "./routes/apps.ts";
 import { assessmentRoutes } from "./routes/assessments.ts";
 import { attestRoutes } from "./routes/attest.ts";
-import { auditRoutes } from "./routes/audit.ts";
+import { auditRoutes, createAuditReadLimiter } from "./routes/audit.ts";
 import { beaconRoutes, type ClientAddress } from "./routes/beacon.ts";
 import { buildRoutes } from "./routes/builds.ts";
 import { bundleRoutes } from "./routes/bundle.ts";
 import { containmentRoutes } from "./routes/containments.ts";
+import { dataControlRoutes } from "./routes/data-controls.ts";
 import { eventRoutes } from "./routes/events.ts";
 import { findingRoutes } from "./routes/findings.ts";
 import { healthRoutes } from "./routes/health.ts";
@@ -125,7 +126,10 @@ export interface AppDeps {
    * Default: a new key in memory (`startApi` passes the one of `audit-key.json`).
    */
   auditSigner?: Signer;
-  /** Audit verifications and exports per Organization per minute, together. Default `AUDIT_READS_PER_MINUTE`. */
+  /**
+   * Audit verifications and exports and Organization exports (slice 18b) per Organization per minute, together.
+   * Default `AUDIT_READS_PER_MINUTE`. The audit key also signs the Organization export and the deletion reports.
+   */
   auditReadsPerMinute?: number;
 }
 
@@ -231,15 +235,11 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const assessor = deps.assessor ?? unavailableAssessor();
   const assessmentQueue = deps.assessments ?? createAssessmentRunner({ db: deps.db, assessor, now: deps.now, logger });
   app.route("/", assessmentRoutes({ db: deps.db, assessor, queue: assessmentQueue, now: deps.now }));
-  app.route(
-    "/",
-    auditRoutes({
-      db: deps.db,
-      signer: deps.auditSigner ?? createSigner(),
-      now: deps.now,
-      readsPerMinute: deps.auditReadsPerMinute,
-    }),
-  );
+  const auditSigner = deps.auditSigner ?? createSigner();
+  // Audit verifications and exports and the Organization export take from one budget per Organization.
+  const auditReads = createAuditReadLimiter(deps.auditReadsPerMinute);
+  app.route("/", auditRoutes({ db: deps.db, signer: auditSigner, now: deps.now, reads: auditReads }));
+  app.route("/", dataControlRoutes({ db: deps.db, signer: auditSigner, reads: auditReads, now: deps.now }));
 
   app.notFound((c) => problem(c, "not-found"));
   app.onError((error, c) => {

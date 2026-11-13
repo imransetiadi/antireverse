@@ -85,6 +85,11 @@ export interface Detector {
   /** Windows currently kept, all Organizations together: never more than `maxKeys`. */
   trackedKeys(): number;
   /**
+   * Forgets everything kept for an Organization: its windows and its Policy coverage (slice 18b: called once the
+   * Organization is purged). Coverage that Events are waiting on is left to finish.
+   */
+  forget(organizationId: string): void;
+  /**
    * Tells the Detector the latest published version of an App Environment, after the publishing transaction
    * committed: Events that name it are judged by its Rules at once, without waiting for the belief in an older
    * latest version to run out. Never lowers a version it believes.
@@ -475,6 +480,15 @@ export function createDetector(deps: DetectorDeps): Detector {
     },
 
     trackedKeys: () => total,
+
+    forget(organizationId) {
+      const own = windows.get(organizationId);
+      if (own !== undefined) {
+        total -= own.size;
+        windows.delete(organizationId);
+      }
+      if ((coverage.get(organizationId)?.waiting ?? 0) === 0) coverage.delete(organizationId);
+    },
     waitingEvents: () => waiting,
 
     policyPublished(policy) {

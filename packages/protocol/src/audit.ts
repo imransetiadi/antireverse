@@ -39,6 +39,12 @@ export const AUDIT_ACTIONS = deepFreeze([
   "target.delete",
   "target.verify",
   "rules_of_engagement.sign",
+  // Slice 18b: data controls. The deletion request, its cancellation and a subject erasure need a reason.
+  "organization.export",
+  "organization.deletion.request",
+  "organization.deletion.cancel",
+  "subject.export",
+  "subject.erase",
 ] as const);
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -58,6 +64,9 @@ export const AUDIT_TARGET_KINDS = deepFreeze([
   "alert_recipient",
   "target",
   "rules_of_engagement",
+  // Slice 18b: a deletion request (its `del_` id) and an end user named by actor hash (`iph_`).
+  "organization_deletion",
+  "subject",
 ] as const);
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 

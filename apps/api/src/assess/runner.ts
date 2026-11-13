@@ -29,6 +29,7 @@ import {
   type StoredCalls,
 } from "../stores/assessments.ts";
 import { findBuildLogic, findBuildRoutes, findManifest } from "../stores/builds.ts";
+import { pendingDeletion } from "../stores/deletions.ts";
 import type { Assessor, AssessorInput, AssessorOutcome } from "./assessor.ts";
 
 // The Assessment queue and runner (slice 12a). Runs queued Assessments oldest first, one running per Organization and
@@ -188,7 +189,11 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
       if (stopped || active.size >= concurrency) return;
       if (entry.status !== "queued" || busy.has(entry.organizationId)) continue;
       const { organizationId } = entry;
-      const claimed = await db.tx({ organizationId }, (q) => claimAssessment(q, entry.assessmentId, now()));
+      // Slice 18b: an Organization whose deletion is pending runs nothing more (the queue leaves it out too; this
+      // closes the race with a request made after the queue was read). Its Assessments stay queued until the purge.
+      const claimed = await db.tx({ organizationId }, async (q) =>
+        (await pendingDeletion(q)) !== null ? null : claimAssessment(q, entry.assessmentId, now()),
+      );
       busy.add(organizationId);
       if (claimed === null) continue;
       launch(organizationId, claimed);

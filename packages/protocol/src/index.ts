@@ -9,6 +9,7 @@ export * from "./build.ts";
 export * from "./canaries.ts";
 export * from "./constants.ts";
 export * from "./containment.ts";
+export * from "./data-controls.ts";
 export * from "./events.ts";
 export * from "./exposure.ts";
 export * from "./incidents.ts";

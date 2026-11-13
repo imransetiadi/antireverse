@@ -11,7 +11,7 @@ import {
   ID_PATTERNS,
   type ListContainmentsResponse,
 } from "@antireverse/protocol";
-import { newId } from "@antireverse/protocol/server";
+import { auditSubjectRef, newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import { z } from "zod";
 import { audit, auditActor, reasonMissing } from "../audit.ts";
@@ -136,7 +136,11 @@ export function containmentRoutes(deps: {
           appId: incident.app_id,
           target: { kind: "containment", id: containment.id },
           summary: `Blocked ${
-            target.kind === "actor" ? `the Actor ${target.ip_hash}` : `the network ${target.ip_prefix}`
+            // Slice 18b review: an Actor by its subject reference, never by its actor hash (an erasure must be able
+            // to remove the hash; the chain is append-only).
+            target.kind === "actor"
+              ? `the Actor ${auditSubjectRef(organizationId, target.ip_hash)}`
+              : `the network ${target.ip_prefix}`
           } in ${incident.environment} for ${request.ttl_s} s, from the Incident ${incident.id}.`,
           at,
         });

@@ -26,6 +26,7 @@ import type { Notifier } from "../src/notify/notifier.ts";
 import type { Resolve } from "../src/notify/ssrf.ts";
 import { PATCH_CATALOG } from "../src/patches/catalog.ts";
 import type { Fetcher, Resolver } from "../src/prove/verify.ts";
+import { auditEntriesAfter } from "../src/stores/audit.ts";
 import { recordDetection } from "../src/stores/incidents.ts";
 import { insertTarget } from "../src/stores/targets.ts";
 import { FIXTURE_ADVISORIES_FILE, fixtureSource } from "../src/vulns/source.ts";
@@ -70,6 +71,8 @@ const PREFIX = "192.0.2.0/24";
 const WEBHOOK_URL = "https://hooks.example.com/services/T0KEN-webhook-secret-path";
 const RECIPIENTS = ["oncall@acme.test", "Second.Person@acme.test"];
 const CONTACT = "security@acme.test";
+const ORGANIZATION_NAME = "Acme for owner@acme.test";
+const SUBJECT_HASH = "iph_0123456789abcdef0123456789abcdef";
 
 type Headers = Record<string, string>;
 
@@ -159,7 +162,7 @@ describe("audit coverage", () => {
       auditReadsPerMinute: 10_000,
     });
     await syncAdvisories(api.db, fixtureSource(FIXTURES));
-    const created = await createOrganization(api, "Acme for owner@acme.test");
+    const created = await createOrganization(api, ORGANIZATION_NAME);
     organizationId = created.organization.id;
     admin = created.admin_key.key;
     secrets.push(admin);
@@ -174,14 +177,11 @@ describe("audit coverage", () => {
   const bare = (method: string, path: string, headers: Headers = {}) =>
     api.app.request(path, { method, headers: { ...bearer(admin), ...headers } });
 
+  // Read from the store, not through /v1/audit/export: while the Organization's deletion is pending (slice 18b),
+  // its key is refused on the audit routes.
   async function entries(): Promise<AuditEntry[]> {
-    const res = await api.app.request("/v1/audit/export", { headers: bearer(admin) });
-    expect(res.status).toBe(200);
-    return (await res.text())
-      .split("\n")
-      .filter((line) => line !== "")
-      .slice(1) // the signed head
-      .map((line) => AuditExportLineSchema.parse(JSON.parse(line)));
+    const page = await api.db.tx({ organizationId }, (q) => auditEntriesAfter(q, 0, 10_000));
+    return page.map((entry) => AuditExportLineSchema.parse(entry));
   }
 
   const CASES: Case[] = [
@@ -469,6 +469,35 @@ describe("audit coverage", () => {
         }
         return bare("DELETE", `/v1/targets/${s.spareTargetId}`, h);
       },
+    },
+    // Slice 18b: data controls. The deletion request comes last but one: until it is cancelled, the key is refused
+    // everywhere else.
+    {
+      route: "POST /v1/subjects/export",
+      action: "subject.export",
+      status: 200,
+      run: (h) => post("/v1/subjects/export", { ip_hash: SUBJECT_HASH }, h),
+    },
+    {
+      route: "POST /v1/subjects/erase",
+      action: "subject.erase",
+      sensitive: true,
+      status: 200,
+      run: (h) => post("/v1/subjects/erase", { ip_hash: SUBJECT_HASH }, h),
+    },
+    {
+      route: "POST /v1/organization/deletion",
+      action: "organization.deletion.request",
+      sensitive: true,
+      status: 201,
+      run: (h) => post("/v1/organization/deletion", { confirm_name: ORGANIZATION_NAME }, h),
+    },
+    {
+      route: "DELETE /v1/organization/deletion",
+      action: "organization.deletion.cancel",
+      sensitive: true,
+      status: 200,
+      run: (h) => bare("DELETE", "/v1/organization/deletion", h),
     },
   ];
 

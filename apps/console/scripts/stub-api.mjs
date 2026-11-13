@@ -60,6 +60,10 @@
 // decoded and checked on every change and required (400 reason-required) on the sensitive ones: a publish or rollback
 // that enforces a Rule anew, enforcing a virtual patch, a block, signing Rules of Engagement, removing a target.
 // `POST /__stub/audit-tamper?seq=N` (with the admin key) alters entry N without rehashing it, to see a broken chain.
+// Slice 18b: data controls (stub-data.mjs, checked by a test against the protocol): the Organization export, the
+// deletion with its 7-day grace and its cancellation (reason required), subject export and erasure by actor hash. While
+// a deletion is pending every other route of the Organization answers 403 organization-deletion-pending, as the API
+// does. No purge runs: `GET /v1/deletions/:id/report` is always 404.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -72,6 +76,7 @@ import http from "node:http";
 import { createAlertStore } from "./stub-alerts.mjs";
 import { createAssessmentStore } from "./stub-assessments.mjs";
 import { auditOf, createAuditStore, promotedRules } from "./stub-audit.mjs";
+import { createDataStore } from "./stub-data.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
@@ -115,6 +120,62 @@ const assessments = createAssessmentStore();
 const setups = createSetupStore();
 /** The audit log of every Organization (slice 18a): stub-audit.mjs. */
 const audits = createAuditStore();
+/** Data controls of every Organization (slice 18b): stub-data.mjs. */
+const dataControls = createDataStore({
+  auditHead: (organizationId) => audits.signedHead(organizationId),
+  tables: (organizationId) => {
+    const ownApps = apps.get(organizationId) ?? [];
+    return {
+      apps: ownApps.map((app) => ({ ...app })),
+      events: ownApps.flatMap((app) => events.get(app.id) ?? []),
+      containments: [...(containments.get(organizationId) ?? [])],
+      allowlist_entries: [...(allowlists.get(organizationId) ?? [])],
+      findings: [...(findings.get(organizationId) ?? [])],
+    };
+  },
+  subject: {
+    rows: (organizationId, ipHash) => ({
+      events: (apps.get(organizationId) ?? [])
+        .flatMap((app) => events.get(app.id) ?? [])
+        .filter((event) => event.actor?.ip_hash === ipHash),
+      containments: (containments.get(organizationId) ?? []).filter((block) => block.target?.ip_hash === ipHash),
+    }),
+    erase: (organizationId, ipHash) => {
+      let eventsErased = 0;
+      for (const app of apps.get(organizationId) ?? []) {
+        const stored = events.get(app.id) ?? [];
+        const kept = stored.filter((event) => event.actor?.ip_hash !== ipHash);
+        eventsErased += stored.length - kept.length;
+        events.set(app.id, kept);
+      }
+      const blocks = containments.get(organizationId) ?? [];
+      const own = blocks.filter((block) => block.target?.ip_hash === ipHash);
+      const active = own.filter((block) => withStatus(block).status === "active");
+      containments.set(
+        organizationId,
+        blocks.filter((block) => block.target?.ip_hash !== ipHash || withStatus(block).status === "active"),
+      );
+      return {
+        events_erased: eventsErased,
+        containments_erased: own.length - active.length,
+        active_containments: active.map((block) => ({ id: block.id, expires_at: block.expires_at })),
+      };
+    },
+  },
+});
+
+/** Writes an answer of the data-control store: a problem document with its own type, NDJSON, or JSON (slice 18b). */
+function sendData(res, answer) {
+  if (answer.status >= 400) {
+    res.writeHead(answer.status, { "content-type": "application/problem+json", ...(answer.headers ?? {}) });
+    return res.end(JSON.stringify(answer.body));
+  }
+  if (answer.contentType) {
+    res.writeHead(answer.status, { "content-type": answer.contentType, ...(answer.headers ?? {}) });
+    return res.end(answer.body);
+  }
+  return json(res, answer.status, answer.body);
+}
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1315,6 +1376,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, 201, { organization, admin_key: adminKey });
   }
 
+  // Public (slice 18b): the signed report of a purged deletion. No purge runs in the stub.
+  if (req.method === "GET" && /^\/v1\/deletions\/[^/]+\/report$/.test(path)) {
+    return problem(res, 404, "Not Found");
+  }
+
   // Public (slice 06b): the Console posts the token of a confirmation link here from its server. Never logged.
   if (req.method === "POST" && path === "/v1/alert-recipients/confirm")
     return send(res, alerts.confirm(await readBody(req)));
@@ -1325,6 +1391,9 @@ const server = http.createServer(async (req, res) => {
   const organization = bearer ? organizations.get(bearer) : undefined;
   if (!organization) return problem(res, 401, "Unauthorized");
   const ownApps = apps.get(organization.id) ?? [];
+  // Slice 18b: while the Organization's deletion is pending, only its status, its cancellation and the export answer.
+  const gated = dataControls.gate(organization.id, req.method, path);
+  if (gated) return sendData(res, gated);
 
   // Slice 18a: the reason of a change, checked on every change; the audit log; the entry each change writes.
   let reason;
@@ -1332,6 +1401,32 @@ const server = http.createServer(async (req, res) => {
     const read = audits.parseReason(req.headers["x-airverse-reason"]);
     if (read.error) return sendAudit(res, read.error);
     reason = read.reason;
+  }
+  // Slice 18b: data controls; the entry of each export or change is recorded here.
+  if (path.startsWith("/v1/organization/") || path.startsWith("/v1/subjects/")) {
+    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const answer = dataControls.handle(organization, req.method, path, body, reason);
+    if (answer) {
+      if (answer.audit) {
+        audits.record(organization.id, { keyId: adminKeyIds.get(bearer) ?? newId("key"), reason, ...answer.audit });
+      }
+      return sendData(res, answer);
+    }
+  }
+  // Audit verification and the audit export take from the budget the Organization export uses (as in the API).
+  if (req.method === "GET" && (path === "/v1/audit/verify" || path === "/v1/audit/export")) {
+    const taken = dataControls.takeRead(organization.id);
+    if (!taken.allowed) {
+      return sendData(res, {
+        status: 429,
+        body: {
+          type: "https://antireverse.dev/problems/too-many-audit-reads",
+          title: "Too many requests",
+          status: 429,
+        },
+        headers: { "retry-after": String(taken.retryAfterS) },
+      });
+    }
   }
   if (path.startsWith("/v1/audit")) {
     const answer = audits.handle(organization.id, req.method, path, url.searchParams);

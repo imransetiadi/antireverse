@@ -468,7 +468,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 15 | Pentest Campaign (beta) against `ar-range` staging → Findings with retest | 14 |
 | 16 | Onboarding wizard and docs reaching G1 — **done 2026-11-13** | 02, 03, 05 |
 | 17 | Usage metering, plan limits, billing | 01 |
-| 18 | GA hardening: audit log, data controls, SLO dashboards, all release gates green — **18a audit log done 2026-11-13** | all |
+| 18 | GA hardening: audit log, data controls, SLO dashboards, all release gates green — **18a audit log done 2026-11-13; 18b data controls (export and deletion) done 2026-11-14** | all |
 | 19 | Exposure step 1: component inventory (build and runtime) → CVE Findings with fix versions → Incident, alert and CI gate — **done 2026-11-11** | 05, 06 |
 | 20 | Exposure step 2: virtual patches for known-exploit CVEs, active only where the vulnerable version runs — **done 2026-11-11** | 19, 02 |
 
