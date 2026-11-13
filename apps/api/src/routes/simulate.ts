@@ -10,7 +10,7 @@ import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
 import { prepareRules } from "../policy.ts";
 import { problem } from "../problem.ts";
-import { promotions, replayAsync, simulationResult } from "../simulate/replay.ts";
+import { promotions, type ReplayEvent, replayAsync, simulationResult } from "../simulate/replay.ts";
 import { allowlistCidrs } from "../stores/allowlist.ts";
 import { findApp } from "../stores/apps.ts";
 import { listReplayEvents } from "../stores/events.ts";
@@ -20,6 +20,8 @@ import { validateJson } from "../validate.ts";
 export interface SimulationOptions {
   /** Events replayed at most. Default `SIMULATION_LIMITS.eventsMax`. */
   eventsMax?: number;
+  /** Events from before the period read at most to seed the limit counters. Default `SEED_EVENTS_MAX`. */
+  seedEventsMax?: number;
   /** Milliseconds a simulation may run. Default `SIMULATION_LIMITS.timeLimitMs`. */
   timeLimitMs?: number;
   /** A clock that only moves forward, in milliseconds: what the time limit is measured with. Default `performance.now`. */
@@ -32,6 +34,27 @@ const BUDGET_KEYS_MAX = 10_000;
 const BUDGET_WINDOW_MS = 60_000;
 /** How far ahead of the API's clock an Event may be stamped and still be replayed: the clock of a Shield's host runs a little fast (review F11). */
 const CLOCK_AHEAD_MS = 5 * 60_000;
+/**
+ * Events from before the period read at most to seed the limit counters (plan 11 amendment A11), apart from
+ * `SIMULATION_LIMITS.eventsMax` (fourth review: 20,000 bounds the memory of a seed under 50 limit Rules).
+ */
+export const SEED_EVENTS_MAX = 20_000;
+/** The longest `latency_ms` Shield records: a request from before the seed may have been in flight that long. */
+export const LATENCY_MAX_MS = 600_000;
+/** The seed reaches back at most this far (twice the longest window a limit may have), plus `LATENCY_MAX_MS`. */
+const SEED_REACH_MAX_MS = 2 * 3_600_000;
+
+/**
+ * How far before the period the Events are read to seed the counters of the draft's limit Rules: what Shield still
+ * counted when the period began — twice the longest window (a limit above 1,000 reaches back that far), and the
+ * longest a request may have been in flight. Zero without a limit Rule.
+ */
+function seedReachMs(rules: readonly { limit?: { window_s: number } | undefined }[]): number {
+  const longest = Math.max(0, ...rules.map((rule) => rule.limit?.window_s ?? 0)) * 1_000;
+  if (longest === 0) return 0;
+  // One second more than the replay needs: its edges are a few milliseconds wide.
+  return Math.min(2 * longest, SEED_REACH_MAX_MS) + LATENCY_MAX_MS + 1_000;
+}
 
 /**
  * At most `limit` simulations in any `BUDGET_WINDOW_MS` per Organization (review F10): the times of the last ones
@@ -71,6 +94,7 @@ export function simulateRoutes(deps: { db: Db; now?: () => Date; simulation?: Si
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
   const eventsMax = deps.simulation?.eventsMax ?? SIMULATION_LIMITS.eventsMax;
+  const seedEventsMax = deps.simulation?.seedEventsMax ?? SEED_EVENTS_MAX;
   const timeLimitMs = deps.simulation?.timeLimitMs ?? SIMULATION_LIMITS.timeLimitMs;
   const elapsedMs = deps.simulation?.elapsedMs ?? (() => performance.now());
   const budget = createBudget(SIMULATION_LIMITS.perMinute);
@@ -120,7 +144,39 @@ export function simulateRoutes(deps: { db: Db; now?: () => Date; simulation?: Si
 
       const capped = read.newest.length > eventsMax;
       const events = (capped ? read.newest.slice(0, eventsMax) : read.newest).reverse();
-      const options = { shouldStop, neverBlock: read.neverBlock };
+      // What Shield's counters held when the replayed period began (A11, review R1 and R4). Seeded from the Events
+      // before the window; when the cap cut the window, the dropped Events are not read: the first reach of the
+      // replayed period then passes no limit (`completeFrom`), and claims rest on what was replayed.
+      const reach = seedReachMs(rules);
+      let seed: ReplayEvent[] = [];
+      let completeFrom: number | undefined;
+      if (reach > 0 && capped) {
+        completeFrom = events[0] === undefined ? undefined : Date.parse(events[0].ts);
+      } else if (reach > 0) {
+        const seedFrom = new Date(window.getTime() - reach);
+        const before = await db.tx({ organizationId }, (q) =>
+          listReplayEvents(q, {
+            organizationId,
+            appId,
+            environment,
+            from: seedFrom,
+            // Up to the start of the window, which the period's read includes: no Event falls between the two.
+            to: window,
+            before: true,
+            limit: seedEventsMax + 1,
+          }),
+        );
+        const seedCut = before.length > seedEventsMax;
+        seed = (seedCut ? before.slice(0, seedEventsMax) : before).reverse();
+        // A cut seed holds only its newest Events: nothing is known from before its oldest.
+        completeFrom = seedCut && seed[0] !== undefined ? Date.parse(seed[0].ts) : seedFrom.getTime();
+      }
+      const options = {
+        shouldStop,
+        neverBlock: read.neverBlock,
+        seed,
+        ...(completeFrom === undefined ? {} : { completeFrom }),
+      };
       const replayed = await replayAsync(rules, events, options);
       // What promoting each monitor Rule would do, in the time that is left; none when the main replay was cut.
       const promoted = replayed.stopped ? undefined : await promotions(rules, events, options);

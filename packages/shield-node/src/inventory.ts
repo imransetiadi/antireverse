@@ -205,6 +205,11 @@ export interface InventorySenderOptions {
   /** Reads the components; null without a readable lockfile. */
   load: () => Promise<InventoryComponent[] | null>;
   warn: (condition: InventoryCondition, message: string) => void;
+  /**
+   * The instance id the body carries: 32 lowercase hex characters. Shield passes its own (the one every Event
+   * carries, amendment A9 of slice 11). Left out, or not of that form: a random one of this sender.
+   */
+  instanceId?: string;
 }
 
 export interface InventorySender {
@@ -225,7 +230,10 @@ export interface InventorySender {
  */
 export function createInventorySender(options: InventorySenderOptions): InventorySender {
   const url = `${options.endpoint.replace(/\/+$/, "")}/v1/inventory`;
-  const instanceId = randomBytes(16).toString("hex");
+  const instanceId =
+    typeof options.instanceId === "string" && /^[0-9a-f]{32}$/.test(options.instanceId)
+      ? options.instanceId
+      : randomBytes(16).toString("hex");
   let state: InventoryState = "pending";
   let started = false;
   let closed = false;

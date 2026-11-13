@@ -200,12 +200,30 @@ describe("the words of an estimate", () => {
     expect(notSimulatedText("body_verification")).toBe(
       "Whether Shield checks request bodies on your routes is not known to the simulation.",
     );
+    expect(notSimulatedText("unrecorded_requests")).toBe(
+      "Requests Shield could not deliver, or that were still open when the simulation ran, are not included.",
+    );
+    expect(notSimulatedText("counter_eviction")).toBe(
+      "Shield may forget counters when it holds too many clients; the simulation does not.",
+    );
+    expect(notSimulatedText("custom_counter_store")).toBe(
+      "If Shield uses your own counter store, its counting may differ.",
+    );
+    expect(notSimulatedText("timing")).toBe(
+      "Clock changes or pauses on your server can shift counts by a few milliseconds.",
+    );
     expect(notSimulatedText("canaries")).toBe("Not simulated: canaries");
     // A name of something every object has is still only a value.
     expect(notSimulatedText("constructor")).toBe("Not simulated: constructor");
   });
 
-  it("explains every value the protocol names today", () => {
-    for (const value of SIMULATION_NOT_SIMULATED) expect(notSimulatedText(value)).not.toContain("Not simulated:");
+  it("explains every value the protocol names today, each in its own words", () => {
+    expect(SIMULATION_NOT_SIMULATED.length).toBe(9);
+    for (const value of SIMULATION_NOT_SIMULATED) {
+      expect([value, notSimulatedText(value).startsWith("Not simulated:")]).toEqual([value, false]);
+      // Sentence case, a full stop, no hyphen in the prose.
+      expect(notSimulatedText(value)).toMatch(/^[A-Z][^-]*\.$/);
+    }
+    expect(new Set(SIMULATION_NOT_SIMULATED.map(notSimulatedText)).size).toBe(SIMULATION_NOT_SIMULATED.length);
   });
 });

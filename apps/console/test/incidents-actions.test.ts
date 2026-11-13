@@ -175,15 +175,15 @@ describe("createAlertChannelAction", () => {
   });
 
   it("checks kind, name and URL before calling the API, and never returns the URL", async () => {
-    const state = await createAlertChannelAction(null, form({ kind: "email", name: "", url: "ftp://x" }));
+    const state = await createAlertChannelAction(null, form({ kind: "pager", name: "", url: "ftp://x" }));
     expect(state).toEqual({
       ok: false,
       errors: [
-        { path: "kind", message: "Choose Webhook or Slack." },
+        { path: "kind", message: "Choose Webhook, Slack or Email." },
         { path: "name", message: "Enter a name." },
         { path: "url", message: "Enter a full URL, for example https://hooks.example.com/alerts." },
       ],
-      values: { kind: "email", name: "" },
+      values: { kind: "pager", name: "" },
     });
     expect(await createAlertChannelAction(null, form({ kind: "slack", name: "x".repeat(81), url: "" }))).toMatchObject({
       errors: [

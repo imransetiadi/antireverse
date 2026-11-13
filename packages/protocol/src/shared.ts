@@ -20,6 +20,29 @@ export function trimmedText(max: number) {
   return z.string().trim().min(1).max(max).refine(storable, NOT_STORABLE);
 }
 
+/**
+ * Refused inside a name a person gives (an App, an alert channel; slice 06b), because names reach alert mails and
+ * messages: C0 and C1 controls (tab and NEL included), DEL, the line and paragraph separators, bidi embeddings,
+ * overrides and isolates, the BOM and the zero-width space, and lone surrogates. Allowed: ZWJ and ZWNJ (emoji and
+ * scripts need them) and the LRM and RLM marks (right-to-left text).
+ */
+const UNSAFE_IN_NAME =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing control characters is the point.
+  /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200b\ufeff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+/** A name as a person types it: trimmed first, then 1..max characters, none of `UNSAFE_IN_NAME`. */
+export function nameText(max: number) {
+  return z
+    .string()
+    .trim()
+    .min(1)
+    .max(max)
+    .refine(
+      (value) => !UNSAFE_IN_NAME.test(value),
+      "Must not contain control characters, line separators, bidi overrides, zero-width spaces or lone surrogates.",
+    );
+}
+
 const TS_MIN = Date.UTC(2000, 0, 1);
 const TS_MAX = Date.UTC(2100, 0, 1);
 

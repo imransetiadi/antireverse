@@ -12,6 +12,9 @@ import {
 const T0 = Date.parse("2026-11-11T08:00:00.000Z");
 const A = "iph_000000000000000000000000000000aa";
 const B = "iph_000000000000000000000000000000bb";
+/** Two Shield processes (amendment A9): each keeps its own limit counters. */
+const ONE = "0123456789abcdef0123456789abcdef";
+const TWO = "fedcba9876543210fedcba9876543210";
 
 function rule(overrides: Partial<ParsedPolicyRuleInput> & { name: string; path: string }): ParsedPolicyRuleInput {
   return { methods: [], action: overrides.limit === undefined ? "block" : "throttle", mode: "monitor", ...overrides };
@@ -28,11 +31,20 @@ function event(
     refused?: "block" | "throttle";
     attested?: boolean;
     prefix?: string | null;
+    /** The Shield process that recorded it; null: a Shield from before A9, which does not say. */
+    instance?: string | null;
+    latencyMs?: number;
   } = {},
 ): ReplayEvent {
   return {
     ts: new Date(T0 + atS * 1_000).toISOString(),
-    request: { method, route, status: more.status ?? (more.refused === "throttle" ? 429 : more.refused ? 403 : 200) },
+    ...(more.instance === null ? {} : { instance_id: more.instance ?? ONE }),
+    request: {
+      method,
+      route,
+      status: more.status ?? (more.refused === "throttle" ? 429 : more.refused ? 403 : 200),
+      latency_ms: more.latencyMs ?? 1,
+    },
     decision: { action: more.refused ?? "allow", mode: more.refused ? "enforce" : "monitor" },
     actor: { ip_hash: more.ip === undefined ? A : more.ip, ip_prefix: more.prefix ?? "198.51.100.0/24" },
     signature: more.signature === undefined ? null : more.signature,
@@ -329,19 +341,20 @@ describe("replay", () => {
     expect(result.undecidable_events).toBe(12);
     expect(result.totals.would_refuse).toBe(0);
 
-    // Shield counts an attested request on the address too, so a request without a token after it is not judged
-    // until it has left the window; then the address counter is the replay's again.
+    // Shield counts an attested request on the address too: a possible hit there, so a request without a token
+    // after it passes only while the limit leaves room for both (D-070), and is not judged once it does not.
     const mixed = replay(
       [device],
       [
         event(0, "GET", "/s", { attested: true }),
-        event(30, "GET", "/s"),
-        event(91, "GET", "/s"),
+        event(30, "GET", "/s"), // at most 1 + 1 on the address: passes
+        event(31, "GET", "/s"), // 1 certain, 2 possible: not judged
+        event(91, "GET", "/s"), // only the possible hit at 31 s may still count, at the edge: passes
         event(92, "GET", "/s"),
         event(93, "GET", "/s"), // over the two before: certain
       ],
     );
-    expect(mixed.rules[0]).toMatchObject({ matched: 5, would_throttle: 1, undecidable: 2 });
+    expect(mixed.rules[0]).toMatchObject({ matched: 6, would_throttle: 1, undecidable: 2 });
 
     // An `ip` limit never looks at the attestation.
     const ip = replay([{ ...device, limit: { requests: 2, window_s: 60, key: "ip", count: "requests" } }], attested);
@@ -382,9 +395,10 @@ describe("replay", () => {
         event(3, "POST", "/login", { status: 403 }),
         event(4, "POST", "/login", { status: 200 }), // 2 failures in the window: throttled
         event(5, "POST", "/login", { status: 401 }), // throttled, and not counted
-        event(61.01, "POST", "/login", { status: 401 }), // the first failure left: 1 in the window, admitted, counts
-        event(62, "POST", "/login", { status: 200 }), // failures at 3 s and 61.01 s: throttled
-        event(64, "POST", "/login", { status: 200 }), // only 61.01 s left: admitted
+        // The first failure (closed at 1.001 s, give or take 10 ms: A9 B2) left: 1 in the window, admitted, counts.
+        event(61.02, "POST", "/login", { status: 401 }),
+        event(62, "POST", "/login", { status: 200 }), // failures at 3 s and 61.02 s: throttled
+        event(64, "POST", "/login", { status: 200 }), // only 61.02 s left: admitted
       ],
     );
     expect(result.rules[0]).toMatchObject({ matched: 9, would_throttle: 3 });
@@ -567,6 +581,382 @@ describe("replay", () => {
     expect(
       replay([two], [event(0, "GET", "/a"), event(0.5, "GET", "/a"), event(0.998, "GET", "/a")]).rules[0],
     ).toMatchObject({ would_throttle: 0, undecidable: 1 });
+  });
+
+  describe("two counts per counter: certain hits and possible hits (D-070)", () => {
+    const generous = rule({
+      name: "Generous",
+      path: "/**",
+      limit: { requests: 100, window_s: 60, key: "ip", count: "requests" },
+    });
+    // Blocked by Me if the path was /api/users/me, else admitted and counted by Shield: a possible hit.
+    const me = rule({ name: "Me", path: "/api/users/me" });
+
+    it("judges the passes a generous limit leaves room for after one request it could not judge", () => {
+      const result = replay(
+        [me, generous],
+        [event(0, "GET", "/api/users/:id"), ...Array.from({ length: 50 }, (_, n) => event(1 + n, "GET", "/x"))],
+      );
+      // Shield's count is at most 1 + 49 before the last request: under 100 in any case.
+      expect(result.rules[1]).toMatchObject({ matched: 51, would_throttle: 0, undecidable: 1 });
+      expect(result.undecidable_events).toBe(1);
+    });
+
+    it("judges passes after requests Shield already refused, while they leave room", () => {
+      const limit = rule({
+        name: "L",
+        path: "/login",
+        limit: { requests: 5, window_s: 60, key: "ip", count: "requests" },
+      });
+      const result = replay(
+        [limit],
+        [
+          event(0, "POST", "/login", { refused: "throttle" }),
+          event(1, "POST", "/login", { refused: "throttle" }),
+          event(2, "POST", "/login"), // at most 2 + 1: passes
+          event(3, "POST", "/login"), // at most 3 + 1: passes
+          event(4, "POST", "/login"), // at most 4 + 1: passes
+          event(5, "POST", "/login"), // Shield's count is 3 to 5: throttled or not, it cannot be told
+          event(6, "POST", "/login"), // certainly 3 hits, possibly 6: still not told, and no claim
+        ],
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 7, already_refused: 2, would_throttle: 0, undecidable: 2 });
+    });
+
+    it("counts the passes it judges as certain hits, so a later throttle can be claimed from them", () => {
+      const limit = rule({
+        name: "L",
+        path: "/**",
+        limit: { requests: 3, window_s: 10, key: "ip", count: "requests" },
+      });
+      const result = replay(
+        [me, limit],
+        [
+          event(0, "GET", "/api/users/:id"), // possible
+          event(1, "GET", "/x"), // at most 1 + 1: passes, certain
+          event(2, "GET", "/x"), // at most 2 + 1: passes, certain
+          event(10.006, "GET", "/x"), // the possible hit has left any window: at most 2 + 1, passes
+          event(10.5, "GET", "/x"), // 3 certain hits in the window: over in Shield too
+        ],
+      );
+      expect(result.rules[1]).toMatchObject({ matched: 5, would_throttle: 1, undecidable: 1 });
+      expect(result.undecidable_events).toBe(1);
+    });
+
+    it("adds no possible hit to a failure limit for a request that certainly did not fail", () => {
+      const failures = rule({
+        name: "F",
+        path: "/**",
+        limit: { requests: 2, window_s: 60, key: "ip", count: "failures" },
+      });
+      const run = (status: number) =>
+        replay(
+          [me, failures],
+          [
+            event(0, "GET", "/api/users/:id", { status }), // Me may have blocked it
+            event(1, "GET", "/x", { status: 401 }),
+            event(2, "GET", "/x", { status: 401 }),
+            event(3, "GET", "/x", { status: 401 }),
+          ],
+        ).rules[1];
+      // A 200 is no failure whether Shield admitted it or not: the 401s are judged, and the third is over.
+      expect(run(200)).toMatchObject({ would_throttle: 1, undecidable: 1 });
+      // A 401 Shield may have counted: the second 401 after it is not told, nor the third.
+      expect(run(401)).toMatchObject({ would_throttle: 0, undecidable: 3 });
+    });
+
+    it("keeps the 5 ms edge for possible hits: one that left the window less than 5 ms ago still weighs", () => {
+      const two = rule({ name: "L", path: "/**", limit: { requests: 2, window_s: 1, key: "ip", count: "requests" } });
+      const at = (second: number) =>
+        replay([me, two], [event(0, "GET", "/api/users/:id"), event(0.5, "GET", "/x"), event(second, "GET", "/x")])
+          .rules[1];
+      // The second request passes with room for the possible one; the third meets it 1,002 ms on.
+      expect(at(1.002)).toMatchObject({ would_throttle: 0, undecidable: 2 });
+      expect(at(1.005)).toMatchObject({ would_throttle: 0, undecidable: 1 });
+    });
+
+    it("judges passes under a limit above 1,000 while two whole windows of possible hits leave room", () => {
+      const big = rule({
+        name: "Big",
+        path: "/**",
+        limit: { requests: 1_001, window_s: 60, key: "ip", count: "requests" },
+      });
+      const burst = Array.from({ length: 999 }, (_, n) => event(1 + n * 0.01, "GET", "/x"));
+      const result = replay([me, big], [event(0, "GET", "/api/users/:id"), ...burst, event(70, "GET", "/x")]);
+      // At 70 s the weighted count still reaches back to 0 s: 1 + 999 + 1 = 1,001 — room, so a pass.
+      expect(result.rules[1]).toMatchObject({ matched: 1_001, would_throttle: 0, undecidable: 1 });
+      const fuller = replay(
+        [me, big],
+        [event(0, "GET", "/api/users/:id"), ...burst, event(70, "GET", "/x"), event(71, "GET", "/x")],
+      );
+      // One more and the possible hit could make it 1,002: not told, never claimed above 1,000.
+      expect(fuller.rules[1]).toMatchObject({ matched: 1_002, would_throttle: 0, undecidable: 2 });
+    });
+  });
+
+  describe("Shield processes, response time and requests in flight (plan 11 amendment A9)", () => {
+    const login = (requests: number, windowS: number, count: "requests" | "failures") =>
+      rule({ name: "Login", path: "/login", limit: { requests, window_s: windowS, key: "ip", count } });
+
+    it("counts a failure when the response closed, not when the request arrived (review S1)", () => {
+      // A 401 that took 1.5 s: Shield counted it at 1.5 s, so a request at 2 s is within the 1 s window.
+      const result = replay(
+        [login(1, 1, "failures")],
+        [event(0, "POST", "/login", { status: 401, latencyMs: 1_500 }), event(2, "POST", "/login", { status: 401 })],
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 2, would_throttle: 1, undecidable: 0 });
+      // A failure that closes after a request arrives is not yet on Shield's counter: no claim from it.
+      const later = replay(
+        [login(1, 10, "failures")],
+        [event(0, "POST", "/login", { status: 401, latencyMs: 3_000 }), event(4, "POST", "/login", { status: 401 })],
+      );
+      expect(later.rules[0]).toMatchObject({ would_throttle: 1 });
+      const early = replay(
+        [login(1, 10, "failures")],
+        [event(0, "POST", "/login", { status: 401, latencyMs: 3_000 }), event(2.9, "POST", "/login", { status: 401 })],
+      );
+      expect(early.rules[0]).toMatchObject({ would_throttle: 0, undecidable: 1 });
+    });
+
+    it("does not pass a request a failure limit may refuse for the requests still in flight (review S2)", () => {
+      // A slow 200 holds a slot for 3 s: Shield refuses a second request in that time.
+      const result = replay(
+        [login(1, 10, "failures")],
+        [event(0, "POST", "/login", { latencyMs: 3_000 }), event(0.1, "POST", "/login")],
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 2, would_throttle: 0, undecidable: 1 });
+      // Once it has closed, the slot is free again.
+      const after = replay(
+        [login(1, 10, "failures")],
+        [event(0, "POST", "/login", { latencyMs: 3_000 }), event(3.1, "POST", "/login")],
+      );
+      expect(after.rules[0]).toMatchObject({ would_throttle: 0, undecidable: 0 });
+    });
+
+    it("leaves a generous failure limit room for as many requests in flight as it allows (review S2b)", () => {
+      const result = replay(
+        [login(3, 10, "failures")],
+        [0, 0.05, 0.1, 0.15].map((at) => event(at, "POST", "/login", { latencyMs: 3_000 })),
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 4, would_throttle: 0, undecidable: 1 });
+    });
+
+    it("keeps the counters of each Shield process apart (review S3)", () => {
+      // Round robin over two processes, limit 2: each process sees two requests and refuses none.
+      const result = replay(
+        [login(2, 10, "requests")],
+        [0, 0.1, 0.2, 0.3].map((at, n) => event(at, "POST", "/login", { instance: n % 2 === 0 ? ONE : TWO })),
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 4, would_throttle: 0, undecidable: 0 });
+      // One process: the third and fourth are over.
+      const one = replay(
+        [login(2, 10, "requests")],
+        [0, 0.1, 0.2, 0.3].map((at) => event(at, "POST", "/login")),
+      );
+      expect(one.rules[0]).toMatchObject({ would_throttle: 2, undecidable: 0 });
+    });
+
+    it("never claims a throttle for an Event that does not name its process, and passes it only with room", () => {
+      const events = [0, 0.1, 0.2, 0.3].map((at) => event(at, "POST", "/login", { instance: null }));
+      const result = replay([login(2, 10, "requests")], events);
+      expect(result.rules[0]).toMatchObject({ matched: 4, would_throttle: 0, undecidable: 2 });
+      // Under a limit that leaves room for all of them, they pass.
+      expect(replay([login(10, 10, "requests")], events).rules[0]).toMatchObject({ undecidable: 0 });
+      // Nor does such an Event support a claim for an Event that names its process.
+      const mixed = replay(
+        [login(1, 10, "requests")],
+        [event(0, "POST", "/login", { instance: null }), event(1, "POST", "/login")],
+      );
+      expect(mixed.rules[0]).toMatchObject({ would_throttle: 0, undecidable: 1 });
+    });
+  });
+
+  describe("a failure slot is held 600 s at most (D-071)", () => {
+    const failures = rule({
+      name: "F",
+      path: "/login",
+      limit: { requests: 1, window_s: 60, key: "ip", count: "failures" },
+    });
+    const CAP = 600_000;
+
+    it("ends the slot of a request at Shield's latency cap 600 s after it began", () => {
+      const result = replay([failures], [event(0, "POST", "/login", { latencyMs: CAP }), event(700, "POST", "/login")]);
+      expect(result.rules[0]).toMatchObject({ matched: 2, would_throttle: 0, undecidable: 0 });
+    });
+
+    it("never counts for certain a failure that closed at the cap, and judges nothing near it", () => {
+      const result = replay(
+        [failures],
+        [
+          event(0, "POST", "/login", { status: 401, latencyMs: CAP }),
+          // Shield counted the failure only if it closed a moment short of 600 s: not told, never claimed.
+          event(600.1, "POST", "/login", { status: 401 }),
+          // A window later nothing of it can count.
+          event(661, "POST", "/login"),
+        ],
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 3, would_throttle: 0, undecidable: 1 });
+      // 5 ms short of the cap is as uncertain: Shield's two clocks may differ that much.
+      const near = replay(
+        [failures],
+        [event(0, "POST", "/login", { status: 401, latencyMs: CAP - 3 }), event(600.1, "POST", "/login")],
+      );
+      expect(near.rules[0]).toMatchObject({ would_throttle: 0, undecidable: 1 });
+      // Well short of it, the failure counted: a claim.
+      const short = replay(
+        [failures],
+        [event(0, "POST", "/login", { status: 401, latencyMs: CAP - 1_000 }), event(600.1, "POST", "/login")],
+      );
+      expect(short.rules[0]).toMatchObject({ would_throttle: 1, undecidable: 0 });
+    });
+
+    it("holds the slot of a request refused when recorded 600 s at most", () => {
+      const result = replay(
+        [failures],
+        [event(0, "POST", "/login", { refused: "block" }), event(700, "POST", "/login")],
+      );
+      expect(result.rules[0]).toMatchObject({ matched: 2, already_refused: 1, undecidable: 0 });
+    });
+
+    it("judges the fourth review's f1 and f1b as Shield decides them", () => {
+      const W = 0;
+      // f1: a 20-minute request (recorded at the cap) from 800 s before the period; the seed reaches 721 s back.
+      const completeFrom = T0 + (W - 721) * 1_000;
+      const f1 = replay([failures], [event(W + 5, "POST", "/login", { status: 401, latencyMs: 0.01 })], {
+        completeFrom,
+      });
+      expect(f1.rules[0]).toMatchObject({ matched: 1, would_throttle: 0, undecidable: 0 });
+      // f1, the long request within the seed: its slot ended 600 s after it began, 100 s before the period.
+      const inSeed = replay([failures], [event(W + 5, "POST", "/login", { status: 401, latencyMs: 0.01 })], {
+        seed: [event(W - 700, "POST", "/login", { latencyMs: CAP })],
+        completeFrom,
+      });
+      expect(inSeed.rules[0]).toMatchObject({ matched: 1, would_throttle: 0, undecidable: 0 });
+      // f1b: the long request (805 s, recorded at the cap) began before the seed; a failure at 4 s, then a request
+      // at 30 s that Shield refuses.
+      const f1b = replay(
+        [failures],
+        [
+          event(W + 4, "POST", "/login", { status: 401, latencyMs: 0.01 }),
+          event(W + 30, "POST", "/login", { latencyMs: 0.01 }),
+        ],
+        { completeFrom },
+      );
+      expect(f1b.rules[0]).toMatchObject({ matched: 2, would_throttle: 1, undecidable: 0 });
+    });
+  });
+
+  describe("the final review", () => {
+    it("does not pass the first Event of a client that names no process while Shield may hold hits unseen", () => {
+      for (const count of ["requests", "failures"] as const) {
+        const limit = rule({ name: "L", path: "/login", limit: { requests: 1, window_s: 60, key: "ip", count } });
+        // Shield counted a request of this client just before `completeFrom`, which the replay was not given.
+        const unnamed = replay([limit], [event(0, "POST", "/login", { instance: null, latencyMs: 3 })], {
+          completeFrom: T0,
+        });
+        expect([count, unnamed.rules[0]?.undecidable]).toEqual([count, 1]);
+        expect(unnamed.totals.would_refuse).toBe(0);
+      }
+    });
+
+    it("lets a failure leave the window 10 ms early: 5 ms for each of Shield's two pauses (`timing`)", () => {
+      const failures = rule({
+        name: "F",
+        path: "/login",
+        limit: { requests: 1, window_s: 1, key: "ip", count: "failures" },
+      });
+      // Shield read the clock at 0, stamped 5 ms later, counted the 401 at 100 ms and measured its latency 5 ms
+      // after that: ts + latency_ms = 110 ms. At 1,100 ms the failure is exactly one window old: not counted.
+      const result = replay(
+        [failures],
+        [
+          event(0.005, "POST", "/login", { status: 401, latencyMs: 105 }),
+          event(1.1, "POST", "/login", { latencyMs: 1 }),
+        ],
+      );
+      expect(result.rules[0]).toMatchObject({ would_throttle: 0, undecidable: 1 });
+    });
+  });
+
+  describe("what Shield counted before the period (plan 11 amendment A11, review R1 and R4)", () => {
+    const limit = rule({
+      name: "L",
+      path: "/login",
+      limit: { requests: 2, window_s: 60, key: "ip", count: "requests" },
+    });
+    const failures = rule({
+      name: "F",
+      path: "/login",
+      limit: { requests: 1, window_s: 60, key: "ip", count: "failures" },
+    });
+
+    it("seeds the counters with the Events before the period and reports nothing of them (R1)", () => {
+      const seed = [event(-30, "POST", "/login"), event(-20, "POST", "/login")];
+      const result = replay([limit], [event(0, "POST", "/login")], { seed, completeFrom: T0 - 200_000 });
+      // Shield still held the two hits: the request is over.
+      expect(result.rules[0]).toMatchObject({ matched: 1, would_throttle: 1, undecidable: 0 });
+      expect(result.replayed).toBe(1);
+      expect(result.totals.would_refuse).toBe(1);
+    });
+
+    it("seeds the same way asynchronously, and a stop during the seed reports nothing of it", async () => {
+      const seed = Array.from({ length: 30 }, (_, n) => event(-60 + n, "POST", "/login"));
+      const options = { seed, completeFrom: T0 - 200_000, yieldEvery: 7 };
+      const events = [event(0, "POST", "/login")];
+      expect(await replayAsync([limit], events, options)).toEqual(replay([limit], events, options));
+      let asked = 0;
+      const stopped = await replayAsync([limit], events, { ...options, shouldStop: () => ++asked > 0 });
+      expect(stopped).toMatchObject({ stopped: true, replayed: 0, undecidable_events: 0 });
+      expect(stopped.rules[0]).toMatchObject({ matched: 0, would_throttle: 0, undecidable: 0 });
+    });
+
+    it("forgets the seed when the stop comes exactly at the start of the period (fourth review F2)", async () => {
+      // 1,024 Events of seed: the second check of the stop falls on the first Event of the period.
+      const block = rule({ name: "Admin", path: "/admin/**" });
+      const seed = Array.from({ length: 1_024 }, (_, n) => event(-600 + n / 1_000, "GET", "/admin/x"));
+      const events = Array.from({ length: 10 }, (_, n) => event(n / 1_000, "GET", "/home"));
+      let asked = 0;
+      const stopped = await replayAsync([block], events, { seed, shouldStop: () => ++asked > 1 });
+      expect(stopped).toMatchObject({ stopped: true, replayed: 0, undecidable_events: 0 });
+      expect(stopped.rules[0]).toMatchObject({ matched: 0, would_block: 0 });
+      expect(stopped.totals).toEqual({ would_refuse: 0, clients_affected: 0, unknown_client_events: 0 });
+    });
+
+    it("gives the seed a budget of its own: when it runs out the seed counts as cut, not the period (F3)", () => {
+      const seed = [-50, -40, -30, -20, -10].map((at, n) =>
+        event(at, "POST", "/login", { ip: `iph_${String(n).padStart(32, "0")}` }),
+      );
+      const events = [event(5, "POST", "/login"), event(200, "POST", "/login")];
+      const result = replay([limit], events, {
+        seed,
+        completeFrom: T0 - 1_000_000,
+        timestampsMax: 2,
+        seedTimestampsMax: 2,
+      });
+      // The seed held 2 of its 5 hits: what it could not hold may count until a reach after its newest Event.
+      expect(result).toMatchObject({ capped: false, replayed: 2 });
+      expect(result.rules[0]).toMatchObject({ matched: 2, would_throttle: 0, undecidable: 1 });
+    });
+
+    it("does not pass a limit while Shield may hold hits the replay never saw (R1, truncation)", () => {
+      // Nothing before 0 s was read: Shield may hold up to the limit from before.
+      const events = [event(0, "POST", "/login"), event(30, "POST", "/login"), event(61, "POST", "/login")];
+      const result = replay([limit], events, { completeFrom: T0 });
+      // The two not judged are possible hits: at 61 s only the one at 30 s may still count — room for one more.
+      expect(result.rules[0]).toMatchObject({ matched: 3, would_throttle: 0, undecidable: 2 });
+    });
+
+    it("counts a request still in flight from before the period on a failure limit (R4 a)", () => {
+      // A slow response from before the period holds the slot when the next request arrives.
+      const seed = [event(-10, "POST", "/login", { latencyMs: 20_000 })];
+      const result = replay([failures], [event(5, "POST", "/login")], { seed, completeFrom: T0 - 1_300_000 });
+      expect(result.rules[0]).toMatchObject({ matched: 1, would_throttle: 0, undecidable: 1 });
+      // Without what came before, a failure limit is not judged until a request from before could have closed.
+      const unseen = replay([failures], [event(5, "POST", "/login"), event(661, "POST", "/login")], {
+        completeFrom: T0,
+      });
+      expect(unseen.rules[0]).toMatchObject({ matched: 2, undecidable: 1 });
+    });
   });
 
   describe("tainted counters: the replay's count never exceeds Shield's", () => {

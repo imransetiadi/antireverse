@@ -11,8 +11,14 @@ import { createBeaconRecorder } from "./detect/beacon.ts";
 import { createDetector, type Detector } from "./detect/detector.ts";
 import { createIncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger } from "./log.ts";
-import { createNotifier, DEFAULT_CONSOLE_URL, type Notifier } from "./notify/notifier.ts";
+import { type AddressHasher, createAddressHasher } from "./mail/address-key.ts";
+import { readSmtpSettings, type SmtpSettings, smtpSummary } from "./mail/settings.ts";
+import { createSmtpMailer } from "./mail/smtp.ts";
+import { createNotifier, DEFAULT_CONSOLE_URL, type EmailDeps, type Notifier } from "./notify/notifier.ts";
 import type { PatchCatalog } from "./patches/catalog.ts";
+import { type Authorize, createAuthorize } from "./prove/authorize.ts";
+import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
+import { createRecheckJob, type RecheckOptions } from "./prove/recheck.ts";
 import { createSigner, type Signer } from "./signer.ts";
 
 export interface Listening {
@@ -69,8 +75,23 @@ export interface StartApiOptions {
   consoleUrl?: string;
   /** The wait after a failed first alert attempt; it doubles after each further one. Default 1,000 ms. */
   alertBackoffMs?: number;
+  /**
+   * The SMTP account of email alerts (slice 06b). Default: the `AR_SMTP_*` environment variables, all or none (a
+   * partial set fails the start, naming the missing variable); `null`: no email. Never logged beyond host, port and
+   * TLS mode.
+   */
+  smtp?: SmtpSettings | null;
+  /** Tests: a mailer and sender used instead of an SMTP client built from `smtp`. */
+  email?: EmailDeps;
   /** The Virtual patch catalog (slice 20). Default: `PATCH_CATALOG`; tests pass a fixture catalog. */
   patches?: PatchCatalog;
+  /**
+   * The network seams of Prove (slice 14). Default: node:dns and the guarded HTTPS fetcher without its test-only
+   * option. Tests pass stand-ins, or the guarded fetcher pointed at a local TLS server.
+   */
+  prove?: ProveDeps;
+  /** Settings of the daily re-check of Verified Targets (timer, jitter, concurrency). Default: `RECHECK_DEFAULTS`. */
+  recheck?: Omit<RecheckOptions, "db" | "network" | "now" | "logger">;
 }
 
 export interface RunningApi extends Listening {
@@ -83,8 +104,13 @@ export interface RunningApi extends Listening {
   /** Delivers alerts of newly opened Incidents. */
   notifier: Notifier;
   /**
-   * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and waits
-   * for its and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
+   * The authorization check every test must pass (slice 14; slice 15 calls it before any traffic): the
+   * Organization's verified targets and current signed Rules of Engagement against the request.
+   */
+  authorize: Authorize;
+  /**
+   * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
+   * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
    */
   close(): Promise<void>;
 }
@@ -93,14 +119,29 @@ export interface RunningApi extends Listening {
 export const SIGNING_KEY_FILE = "signing-key.json";
 /** The file name of the attestation key set: beside the data directory too, a separate file and key purpose. */
 export const ATTESTATION_KEY_FILE = "attestation-keys.json";
+/** The file name of the secret that keys the per-address count of confirmation mails (slice 06b), beside the others. */
+export const ADDRESS_KEY_FILE = "mail-hash-key.json";
 
 /** Opens the database, builds the app and listens: the whole API in one call, for `main.ts` and for tests. */
 export async function startApi(options: StartApiOptions = {}): Promise<RunningApi> {
   const { dataDir } = options;
-  const db = await openDb(dataDir === undefined ? {} : { dataDir });
   const logger = options.logger ?? consoleLogger;
+  // Read before anything opens: a partial SMTP set fails the start with the name of the missing variable.
+  const smtp = options.smtp === undefined ? readSmtpSettings(process.env) : options.smtp;
+  const email: EmailDeps | undefined =
+    options.email ??
+    (smtp === null
+      ? undefined
+      : {
+          mailer: createSmtpMailer({ settings: smtp }),
+          sender: smtp.from,
+          ...(smtp.confirmationsPerDay === undefined ? {} : { confirmationsPerDay: smtp.confirmationsPerDay }),
+        });
+  if (smtp !== null && options.email === undefined) logger.info(`email alerts on: ${smtpSummary(smtp)}`);
+  const db = await openDb(dataDir === undefined ? {} : { dataDir });
   let signer: Signer;
   let attestation: AttestationKeys;
+  let addressHasher: AddressHasher;
   try {
     // After the database: its lock makes this process the only one that can create or rewrite the key files.
     signer =
@@ -112,6 +153,9 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
         ...(options.now === undefined ? {} : { now: options.now }),
         logger,
       });
+    addressHasher = createAddressHasher(
+      dataDir === undefined ? {} : { file: join(dirname(dataDir), ADDRESS_KEY_FILE) },
+    );
   } catch (error) {
     await db.close();
     throw error;
@@ -126,6 +170,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     consoleUrl: options.consoleUrl ?? (process.env.AR_CONSOLE_URL || DEFAULT_CONSOLE_URL),
     backoffMs: options.alertBackoffMs,
     logger,
+    email,
   });
   const beacon = createBeaconRecorder({ db, notifier, now: options.now, logger });
   const exposureIncidents = createIncidentQueue({ db, notifier, logger });
@@ -143,6 +188,10 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     exposureIncidents,
     allowPrivateAlertUrls,
   };
+  if (email !== undefined) deps.email = email;
+  deps.addressHasher = addressHasher;
+  const network = proveNetwork(options.prove);
+  deps.prove = network;
   if (options.logger !== undefined) deps.logger = options.logger;
   if (options.heartbeatMs !== undefined) deps.heartbeatMs = options.heartbeatMs;
   if (options.now !== undefined) deps.now = options.now;
@@ -162,6 +211,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const started = createDetector({ db, bus, notifier, now: options.now, logger, patches: options.patches });
   detector = started;
   const stopDetector = started.start();
+  const recheck = createRecheckJob({ ...options.recheck, db, network, now: options.now, logger });
+  const stopRecheck = recheck.start();
 
   let closing: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
@@ -181,6 +232,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     // 4. No Event or beacon report arrives any more: the Detector stops, and both finish their writes, which may
     // queue alerts. 5. The alert queue drains (bounded wait), then the database closes.
     stopDetector();
+    stopRecheck();
+    await recheck.flush();
     await started.flush();
     await beacon.flush();
     await exposureIncidents.flush();
@@ -196,6 +249,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     signer,
     attestation,
     notifier,
+    authorize: createAuthorize({ db, now: options.now }),
     close() {
       closing ??= stop();
       return closing;

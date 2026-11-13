@@ -1,8 +1,13 @@
 "use client";
 
-import type { AlertChannel, AlertChannelKind } from "@antireverse/protocol";
+import type { AlertChannel, AlertChannelKind, AlertRecipient } from "@antireverse/protocol";
 import { useActionState, useId } from "react";
-import { deleteAlertChannelAction, type TestAlertChannelState, testAlertChannelAction } from "@/app/actions.ts";
+import {
+  deleteAlertChannelAction,
+  resendConfirmationAction,
+  type TestAlertChannelState,
+  testAlertChannelAction,
+} from "@/app/actions.ts";
 import { ButtonLink } from "@/components/button.tsx";
 import { ConfirmPanel } from "@/components/confirm-panel.tsx";
 import { EmptyState } from "@/components/empty-state.tsx";
@@ -12,6 +17,7 @@ import { CELL, DATA, HEAD, STICKY } from "@/features/policy/table.ts";
 import { formatDateTime } from "@/lib/format.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { type MessageKey, t } from "@/lib/t.ts";
+import { RecipientChip } from "./recipient-chip.tsx";
 
 const COLUMNS = [
   "alerts.col.name",
@@ -25,11 +31,17 @@ const NO_ERRORS: readonly SummaryError[] = [];
 export const KIND_LABEL: Record<AlertChannelKind, MessageKey> = {
   webhook: "alerts.kind.webhook",
   slack: "alerts.kind.slack",
+  email: "alerts.kind.email",
 };
 
-/** Where a channel sends to, as far as it may be shown: the host and the URL's last 4 characters. */
+/**
+ * Where a channel sends to, as far as it may be shown: the host and the URL's last 4 characters, or the addresses
+ * of an email channel.
+ */
 export const destination = (channel: AlertChannel): string =>
-  t("alerts.destination", { host: channel.host, lastFour: channel.url_last4 });
+  channel.kind === "email"
+    ? channel.recipients.map((recipient) => recipient.address).join(", ")
+    : t("alerts.destination", { host: channel.host, lastFour: channel.url_last4 });
 
 function outcomeText(state: Exclude<TestAlertChannelState, null>): string {
   if (!state.ok) return state.message;
@@ -66,6 +78,71 @@ function ChannelTest({ channel, describedBy }: { channel: AlertChannel; describe
         {state && !pending ? outcomeText(state) : null}
       </span>
     </div>
+  );
+}
+
+/** "Resend confirmation" for one pending recipient, with the outcome of the last resend next to it. */
+function ResendConfirmation({
+  channelId,
+  recipientId,
+  describedBy,
+}: {
+  channelId: string;
+  recipientId: string;
+  describedBy: string;
+}) {
+  const [state, formAction, pending] = useActionState(resendConfirmationAction, null);
+  const tone = state?.ok ? "text-fg" : "text-sev-critical-text";
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <form action={formAction}>
+        <input type="hidden" name="channelId" value={channelId} />
+        <input type="hidden" name="recipientId" value={recipientId} />
+        <SubmitButton
+          variant="quiet"
+          pendingLabel={t("alerts.recipient.resending")}
+          aria-describedby={describedBy}
+          data-testid="recipient-resend"
+        >
+          {t("alerts.recipient.resend")}
+        </SubmitButton>
+      </form>
+      <span
+        role="status"
+        data-testid={state && !pending ? "recipient-resend-outcome" : undefined}
+        className={`body-5 ${tone}`}
+      >
+        {state && !pending ? (state.ok ? t("alerts.recipient.resent") : state.message) : null}
+      </span>
+    </div>
+  );
+}
+
+/** One recipient of an email channel: its address, whether it confirmed, when it was last sent to. */
+function Recipient({ channelId, recipient }: { channelId: string; recipient: AlertRecipient }) {
+  const addressId = useId();
+  const lastSent = recipient.last_sent_at === null ? null : formatDateTime(recipient.last_sent_at);
+  return (
+    <li data-testid="recipient" data-recipient-id={recipient.id} className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span id={addressId} data-testid="recipient-address" className="break-all code-3 text-fg">
+          {recipient.address}
+        </span>
+        <RecipientChip status={recipient.status} />
+      </div>
+      <span data-testid="recipient-last-sent" className="body-5 text-fg-muted">
+        {lastSent === null ? (
+          t("alerts.recipient.unsent")
+        ) : (
+          <time dateTime={lastSent.iso} title={lastSent.iso}>
+            {t("alerts.recipient.sent", { time: lastSent.text })}
+          </time>
+        )}
+      </span>
+      {recipient.status === "pending" ? (
+        <ResendConfirmation channelId={channelId} recipientId={recipient.id} describedBy={addressId} />
+      ) : null}
+    </li>
   );
 }
 
@@ -137,7 +214,19 @@ export function ChannelList({ channels, confirmRemoveId }: ChannelListProps) {
                     {t(KIND_LABEL[channel.kind])}
                   </td>
                   <td data-testid="channel-destination" className={`${DATA} min-w-40 break-all`}>
-                    {destination(channel)}
+                    {channel.kind === "email" ? (
+                      <ul
+                        data-testid="channel-recipients"
+                        aria-label={t("alerts.recipients", { name: channel.name })}
+                        className="flex flex-col gap-3"
+                      >
+                        {channel.recipients.map((recipient) => (
+                          <Recipient key={recipient.id} channelId={channel.id} recipient={recipient} />
+                        ))}
+                      </ul>
+                    ) : (
+                      destination(channel)
+                    )}
                   </td>
                   <td className={`${DATA} whitespace-nowrap text-fg-muted`}>
                     <time data-testid="channel-created-at" dateTime={created.iso} title={created.iso}>

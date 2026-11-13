@@ -2,15 +2,28 @@ import type { LookupAddress, LookupOptions } from "node:dns";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { Readable } from "node:stream";
-import type { AlertDelivery, Incident, Severity, WebhookAlertPayload } from "@antireverse/protocol";
+import type { AlertDelivery, Incident, WebhookAlertPayload } from "@antireverse/protocol";
 import { newId, signWebhookBody } from "@antireverse/protocol/server";
 import type { Db } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
+import {
+  alertMail,
+  buildMessage,
+  confirmationMail,
+  type MailText,
+  newMessageId,
+  SEVERITY_WORDS,
+  type Sender,
+  testAlertMail,
+} from "../mail/message.ts";
+import type { MailEnvelope, Mailer, MailResult } from "../mail/smtp.ts";
 import {
   type DeliverableChannel,
   findChannelForDelivery,
   insertDelivery,
   listActiveChannelIds,
+  type MailRecipient,
+  markRecipientsSent,
 } from "../stores/alert-channels.ts";
 import { findApp } from "../stores/apps.ts";
 import { checkDestination, defaultResolve, type Resolve, resolveWithin } from "./ssrf.ts";
@@ -18,6 +31,9 @@ import { checkDestination, defaultResolve, type Resolve, resolveWithin } from ".
 // Delivers alerts to the alert channels of an Organization: asynchronously, in process, with retries, behind
 // the SSRF guard, and with webhook bodies signed. Every attempt is recorded. A channel's URL, its signing
 // secret and the bodies sent never appear in a log line or a delivery record.
+// Email channels (slice 06b) go through the `Mailer`: one message per confirmed recipient, all of a channel's in one
+// batch (one SMTP connection); a retry goes to the recipients that failed only. Confirmation mails go the same way.
+// No address and no token appears in a log line: recipients are named by their ids.
 
 /** The address the SSRF guard vetted: the connection goes there and nowhere else. */
 export interface Pin {
@@ -63,6 +79,8 @@ export interface NotifierDeps {
   drainMs?: number | undefined;
   /** Waits between attempts. Injectable so that tests can see the backoff without waiting it. */
   sleep?: ((ms: number) => Promise<void>) | undefined;
+  /** The service's SMTP account (slice 06b). Without it, email channels get a failed attempt and no retry. */
+  email?: EmailDeps | undefined;
   /** Alert jobs held at once, all Organizations together: a safety cap. Default 10,000. */
   maxPending?: number | undefined;
   /**
@@ -72,16 +90,96 @@ export interface NotifierDeps {
   maxPendingPerOrg?: number | undefined;
 }
 
+/** The mail side of the notifier: the SMTP client (or a fake in tests) and the From of every mail. */
+export interface EmailDeps {
+  mailer: Mailer;
+  sender: Sender;
+  /** Confirmation mails of the whole service per UTC day (`AR_SMTP_CONFIRMATIONS_PER_DAY`). Default 500. */
+  confirmationsPerDay?: number;
+}
+
+/** A confirmation mail to send: the token is in the link, and never stored or logged. */
+export interface ConfirmationMail {
+  recipientId: string;
+  address: string;
+  token: string;
+}
+
 export interface Notifier {
   /** Queues the alerts of a newly opened Incident to every active channel of its Organization. Never throws. */
   incidentOpened(incident: Incident, organizationId: string): void;
   /** Sends one `test` alert to the channel, one attempt, and returns its record. Null when no such channel. */
   test(channelId: string, organizationId: string): Promise<AlertDelivery | null>;
+  /**
+   * Queues confirmation mails (slice 06b): one attempt plus retries on the alert schedule, each accepted mail stamped
+   * on its recipient. Never throws. The caller has already counted them against the daily limit per address.
+   */
+  confirmations(organizationId: string, mails: readonly ConfirmationMail[]): void;
   /** Waits (bounded) for the deliveries in flight, then stops: later alerts are dropped. */
   drain(): Promise<void>;
 }
 
 export const MAX_ATTEMPTS = 3;
+/** SMTP connections open at once, all mail together (review F2): a flood can hold no more. */
+export const SMTP_CONNECTIONS_MAX = 4;
+/** Of those, the most confirmation mails may hold: alerts always keep the rest, and go first when one frees. */
+export const CONFIRMATION_CONNECTIONS_MAX = 2;
+
+type MailKind = "alert" | "confirmation";
+
+/**
+ * The connection pool of the mailer: at most `size` sends at once, at most `confirmations` of them confirmation
+ * mails; a waiting alert is served before a waiting confirmation. A wait ends with the notifier (`signal`).
+ */
+function createSendPool(size: number, confirmations: number) {
+  let inUse = 0;
+  let confirmationsInUse = 0;
+  const waiting: Record<MailKind, (() => void)[]> = { alert: [], confirmation: [] };
+  const grant = (kind: MailKind) => {
+    inUse++;
+    if (kind === "confirmation") confirmationsInUse++;
+  };
+  const next = () => {
+    while (inUse < size) {
+      const alert = waiting.alert.shift();
+      if (alert !== undefined) {
+        alert();
+        continue;
+      }
+      if (confirmationsInUse >= confirmations) return;
+      const confirmation = waiting.confirmation.shift();
+      if (confirmation === undefined) return;
+      confirmation();
+    }
+  };
+  return {
+    /** Waits for a connection slot; resolves to its release. Rejects when `signal` aborts first. */
+    acquire(kind: MailKind, signal: AbortSignal): Promise<() => void> {
+      return new Promise((resolve, reject) => {
+        if (signal.aborted) return reject(new Error("stopped"));
+        const release = () => {
+          inUse--;
+          if (kind === "confirmation") confirmationsInUse--;
+          next();
+        };
+        const start = () => {
+          signal.removeEventListener("abort", onAbort);
+          grant(kind);
+          resolve(release);
+        };
+        const onAbort = () => {
+          const queue = waiting[kind];
+          const at = queue.indexOf(start);
+          if (at !== -1) queue.splice(at, 1);
+          reject(new Error("stopped"));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        waiting[kind].push(start);
+        next();
+      });
+    },
+  };
+}
 /** Bytes of a response read, at most. The rest is never read: the connection is dropped. */
 export const RESPONSE_BYTES_MAX = 4_096;
 export const DEFAULT_CONSOLE_URL = "http://127.0.0.1:3000";
@@ -143,20 +241,27 @@ async function readBounded(body: ReadableStream<Uint8Array> | null): Promise<voi
   }
 }
 
-const SEVERITY_WORDS: Record<Severity, string> = {
-  critical: "Critical",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  info: "Info",
-};
-
 /** Slack's three control characters in message text (`<`, `>` and `&`), escaped as Slack documents. */
 function slackEscape(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 type Alert = { type: "incident.opened"; incident: Incident; appName: string } | { type: "test" };
+
+/** What a further attempt of one alert to one channel still has to do: for email, the recipients not yet reached. */
+interface Progress {
+  /** Null until the first email attempt: every confirmed recipient. */
+  remaining: Set<string> | null;
+}
+
+type UrlChannel = Extract<DeliverableChannel, { kind: "webhook" | "slack" }>;
+
+/**
+ * A mail worth another attempt: refused for now (4xx), or no reply at all (connection, TLS, timeout). A 5xx reply is
+ * permanent (RFC 5321 §4.2.1): recorded as failed at once and never sent again.
+ */
+const retryable = (result: { ok: boolean; code: number | null } | undefined): boolean =>
+  result === undefined || (!result.ok && (result.code === null || result.code < 500));
 
 const sleepFor = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -174,6 +279,21 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   const sleep = deps.sleep ?? sleepFor;
   const maxPending = deps.maxPending ?? 10_000;
   const maxPendingPerOrg = deps.maxPendingPerOrg ?? 100;
+  const email = deps.email;
+  const pool = createSendPool(SMTP_CONNECTIONS_MAX, CONFIRMATION_CONNECTIONS_MAX);
+
+  /** One batch through the pool. Never throws: a failure is every message failed without a reply. */
+  async function sendThroughPool(mail: EmailDeps, kind: MailKind, messages: MailEnvelope[]): Promise<MailResult[]> {
+    let release: (() => void) | undefined;
+    try {
+      release = await pool.acquire(kind, stop.signal);
+      return await mail.mailer.send(messages, stop.signal);
+    } catch {
+      return messages.map(() => ({ ok: false, code: null }));
+    } finally {
+      release?.();
+    }
+  }
 
   const pending = new Set<Promise<unknown>>();
   /** Aborted when a drain gives up waiting: every request in flight is cut. */
@@ -199,7 +319,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
 
   const consoleUrlOf = (incident: Incident) => `${consoleBase}/incidents/${incident.id}`;
 
-  function bodyFor(target: DeliverableChannel, alert: Alert): string {
+  function bodyFor(target: UrlChannel, alert: Alert): string {
     if (target.channel.kind === "slack") {
       const text =
         alert.type === "test"
@@ -215,7 +335,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
   }
 
   /** One request; the status code when a response arrived, else null. Never throws. */
-  async function send(target: DeliverableChannel, body: string): Promise<number | null> {
+  async function send(target: UrlChannel, body: string): Promise<number | null> {
     // One signal bounds the whole attempt: host lookup, connection and response.
     const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), stop.signal]);
     const check = await checkDestination(target.url, { resolve: resolveWithin(resolve, signal), allowPrivate });
@@ -236,20 +356,93 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     }
   }
 
-  /** One attempt, recorded. Null when the channel no longer exists (deleted or inactive) or the notifier stopped. */
+  /** One message per recipient: `To` names that recipient alone. */
+  function messagesFor(sender: Sender, recipients: readonly { address: string }[], text: MailText): MailEnvelope[] {
+    return recipients.map((recipient) => ({
+      from: sender.address,
+      to: recipient.address,
+      data: buildMessage({
+        from: sender,
+        to: recipient.address,
+        subject: text.subject,
+        body: text.body,
+        date: now(),
+        messageId: newMessageId(sender.address),
+      }),
+    }));
+  }
+
+  /**
+   * Mails the recipients over one connection. Returns the reply code to record (the first failing one, else the
+   * last accepting one; null when none arrived), whether any failed, and the ids worth a retry (temporary failures
+   * only). Stamps the recipients reached.
+   */
+  async function mailTo(
+    organizationId: string,
+    mail: EmailDeps,
+    recipients: readonly MailRecipient[],
+    text: MailText,
+  ): Promise<{ status: number | null; anyFailed: boolean; retry: string[] }> {
+    const results = await sendThroughPool(mail, "alert", messagesFor(mail.sender, recipients, text));
+    const reached = recipients.filter((_, index) => results[index]?.ok === true).map((recipient) => recipient.id);
+    const anyFailed = reached.length < recipients.length;
+    const retry = recipients.filter((_, index) => retryable(results[index])).map((recipient) => recipient.id);
+    const firstFailure = results.find((result) => !result.ok);
+    const status = firstFailure !== undefined ? firstFailure.code : (results.at(-1)?.code ?? null);
+    if (reached.length > 0 && !closed) {
+      await db.tx({ organizationId }, (q) => markRecipientsSent(q, reached, now()));
+    }
+    return { status, anyFailed, retry };
+  }
+
+  /** The text of an alert mail. */
+  const mailTextOf = (alert: Alert): MailText =>
+    alert.type === "test"
+      ? testAlertMail()
+      : alertMail({ incident: alert.incident, appName: alert.appName, consoleUrl: consoleBase });
+
+  /**
+   * One attempt, recorded. Null when the channel no longer exists (deleted or inactive), when an email channel has
+   * nobody left to mail, or when the notifier stopped. `retry` is false when a further attempt cannot help.
+   */
   async function attempt(
     organizationId: string,
     channelId: string,
     alert: Alert,
     number: number,
-  ): Promise<AlertDelivery | null> {
+    progress: Progress = { remaining: null },
+  ): Promise<{ delivery: AlertDelivery; retry: boolean } | null> {
     if (closed) return null;
     // Read again on every attempt: a channel deleted meanwhile is not contacted again.
     const target = await db.tx({ organizationId }, (q) => findChannelForDelivery(q, channelId));
     if (target === null) return null;
-    const status = await send(target, bodyFor(target, alert));
+    let status: number | null;
+    let delivered: boolean;
+    let retry = true;
+    if (target.kind === "email") {
+      // Only confirmed recipients, and on a retry only those not reached yet.
+      const remaining = progress.remaining;
+      const recipients = target.recipients.filter((recipient) => remaining === null || remaining.has(recipient.id));
+      if (recipients.length === 0) return null;
+      if (email === undefined) {
+        // No SMTP settings: nothing can be sent, now or on a retry.
+        status = null;
+        delivered = false;
+        retry = false;
+      } else {
+        const sent = await mailTo(organizationId, email, recipients, mailTextOf(alert));
+        progress.remaining = new Set(sent.retry);
+        status = sent.status;
+        delivered = !sent.anyFailed;
+        // Only temporary failures are tried again; permanent refusals are final.
+        retry = sent.retry.length > 0;
+      }
+    } else {
+      status = await send(target, bodyFor(target, alert));
+      delivered = status !== null && status >= 200 && status < 300;
+    }
     if (closed) return null;
-    const outcome = status !== null && status >= 200 && status < 300 ? "delivered" : "failed";
+    const outcome = delivered ? "delivered" : "failed";
     const delivery = await db.tx({ organizationId }, (q) =>
       insertDelivery(q, {
         organizationId,
@@ -266,16 +459,59 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     logger.info(
       `alert channel=${channelId} incident=${incident} attempt=${number} outcome=${outcome} status=${status ?? "none"}`,
     );
-    return delivery;
+    return { delivery, retry };
   }
 
   async function deliver(organizationId: string, channelId: string, alert: Alert): Promise<void> {
+    const progress: Progress = { remaining: null };
     for (let number = 1; number <= MAX_ATTEMPTS; number++) {
-      const delivery = await attempt(organizationId, channelId, alert, number);
-      if (delivery === null || delivery.outcome === "delivered") return;
+      const result = await attempt(organizationId, channelId, alert, number, progress);
+      if (result === null || result.delivery.outcome === "delivered" || !result.retry) return;
       if (number < MAX_ATTEMPTS && !closed) await sleep(backoffMs * 2 ** (number - 1));
     }
   }
+
+  /** Confirmation mails with retries: each attempt goes to the recipients not reached yet. */
+  async function confirm(organizationId: string, mails: readonly ConfirmationMail[]): Promise<void> {
+    if (email === undefined) {
+      logger.warn(`confirmation mails dropped count=${mails.length} reason=smtp-not-configured`);
+      return;
+    }
+    let remaining = [...mails];
+    for (let number = 1; number <= MAX_ATTEMPTS && remaining.length > 0 && !closed; number++) {
+      // One connection for all of them; each mail has its own text (its own link).
+      const messages = remaining.flatMap((mail) =>
+        messagesFor(email.sender, [mail], confirmationMail({ token: mail.token, consoleUrl: consoleBase })),
+      );
+      const results = await sendThroughPool(email, "confirmation", messages);
+      const reached = remaining.filter((_, index) => results[index]?.ok === true);
+      if (reached.length > 0 && !closed) {
+        await db.tx({ organizationId }, (q) =>
+          markRecipientsSent(
+            q,
+            reached.map((mail) => mail.recipientId),
+            now(),
+          ),
+        );
+      }
+      for (const [index, mail] of remaining.entries()) {
+        const result = results[index];
+        logger.info(
+          `confirmation recipient=${mail.recipientId} attempt=${number} outcome=${outcomeOf(result)} status=${result?.code ?? "none"}`,
+        );
+      }
+      // Temporary failures only: a 5xx refusal is final, and a mail whose data went out without a final reply counts
+      // as sent (review F4): sending it again could exceed the address's mails of the day.
+      remaining = remaining.filter((_, index) => {
+        const result = results[index];
+        return retryable(result) && !(result !== undefined && !result.ok && result.dataSent === true);
+      });
+      if (remaining.length > 0 && number < MAX_ATTEMPTS && !closed) await sleep(backoffMs * 2 ** (number - 1));
+    }
+  }
+
+  const outcomeOf = (result: MailResult | undefined): string =>
+    result?.ok === true ? "delivered" : result?.dataSent === true ? "unknown" : "failed";
 
   /** The kind of error only: its message could quote a value. */
   const failed = (error: unknown) => {
@@ -305,7 +541,26 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     },
 
     test(channelId, organizationId) {
-      return track(organizationId, attempt(organizationId, channelId, { type: "test" }, 1));
+      return track(
+        organizationId,
+        attempt(organizationId, channelId, { type: "test" }, 1).then((result) => result?.delivery ?? null),
+      );
+    },
+
+    confirmations(organizationId, mails) {
+      if (mails.length === 0) return;
+      if (closed) {
+        logger.warn(`confirmation mails dropped count=${mails.length} reason=stopped`);
+        return;
+      }
+      // The same queue limits as alerts (review F2): one Organization's mails never crowd out another's alerts.
+      if (pending.size >= maxPending || (pendingByOrg.get(organizationId) ?? 0) >= maxPendingPerOrg) {
+        logger.warn(
+          `confirmation mails dropped count=${mails.length} organization=${organizationId} reason=queue-full`,
+        );
+        return;
+      }
+      track(organizationId, confirm(organizationId, mails).catch(failed));
     },
 
     async drain() {

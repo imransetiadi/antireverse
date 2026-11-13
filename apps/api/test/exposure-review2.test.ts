@@ -38,6 +38,7 @@ describe("exposure, second review", () => {
   const notifier: Notifier = {
     incidentOpened: (incident) => void opened.push(incident),
     test: async () => null,
+    confirmations: () => {},
     drain: async () => {},
   };
   let admin: string;

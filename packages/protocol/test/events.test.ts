@@ -10,6 +10,7 @@ import {
   EXAMPLE_STORED_EVENT,
   LIMITS,
   PROTOCOL_VERSION,
+  SHIELD_INSTANCE_ID_PATTERN,
   type ShieldEvent,
   ShieldEventSchema,
   type StoredEvent,
@@ -294,6 +295,44 @@ describe("ShieldEventSchema: actor.ip_hash and decision.containment_id (slice 09
   it("accepts a containment id and null", () => {
     expect(accepts(withDecision({ action: "block", mode: "enforce", containment_id: CONTAINMENT }))).toBe(true);
     expect(accepts(withDecision({ containment_id: null }))).toBe(true);
+  });
+});
+
+describe("ShieldEventSchema: instance_id (slice 11, amendment A9)", () => {
+  const INSTANCE = "0123456789abcdef0123456789abcdef";
+
+  it("is 32 lowercase hex characters, the form of the inventory's instance id", () => {
+    expect(SHIELD_INSTANCE_ID_PATTERN.source).toBe("^[0-9a-f]{32}$");
+    expect(accepts({ ...EXAMPLE_SHIELD_EVENT, instance_id: INSTANCE })).toBe(true);
+  });
+
+  it("an older Shield's Event has none: absent stays absent, in an Event, a batch and a stored Event", () => {
+    expect(EXAMPLE_SHIELD_EVENT).not.toHaveProperty("instance_id");
+    expect(ShieldEventSchema.parse(EXAMPLE_SHIELD_EVENT)).not.toHaveProperty("instance_id");
+    const batch = EventBatchSchema.parse(EXAMPLE_EVENT_BATCH);
+    expect(batch.events[0]).not.toHaveProperty("instance_id");
+    expect(StoredEventSchema.parse(EXAMPLE_STORED_EVENT)).not.toHaveProperty("instance_id");
+  });
+
+  it("round-trips through JSON in an Event, a batch and a stored Event", () => {
+    const stamped: ShieldEvent = { ...EXAMPLE_SHIELD_EVENT, instance_id: INSTANCE };
+    expect(ShieldEventSchema.parse(JSON.parse(JSON.stringify(stamped)))).toEqual(stamped);
+    expect(EventBatchSchema.parse({ ...EXAMPLE_EVENT_BATCH, events: [stamped] }).events).toEqual([stamped]);
+    const stored: StoredEvent = { ...EXAMPLE_STORED_EVENT, instance_id: INSTANCE };
+    expect(StoredEventSchema.parse(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
+  });
+
+  it.each([
+    "0123456789ABCDEF0123456789ABCDEF",
+    "0123456789abcdef0123456789abcde",
+    "0123456789abcdef0123456789abcdef0",
+    "0123456789abcdef-123456789abcdef",
+    "",
+    null,
+    7,
+    ["0123456789abcdef0123456789abcdef"],
+  ])("rejects the instance id %j", (value) => {
+    expect(accepts({ ...EXAMPLE_SHIELD_EVENT, instance_id: value })).toBe(false);
   });
 });
 

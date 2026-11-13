@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { createAttestationChecker, HEADER_NAME } from "./attestation.ts";
 import { canarySignals } from "./canary.ts";
 import { containmentOf, describeClient, resolveActorKey } from "./containment.ts";
@@ -160,6 +161,10 @@ function activeShield(
     warn,
   });
 
+  // The id of this Shield for its lifetime (amendment A9 of slice 11): on every Event, and in the inventory body.
+  // Limit counters live in this Shield, so the API's replay of limit Rules counts per this id. Never logged.
+  const instanceId = randomBytes(16).toString("hex");
+
   // The runtime component inventory: the option, else AR_SHIELD_INVENTORY=0 turns it off. Started below, once.
   const inventoryOn =
     typeof config.inventory === "boolean" ? config.inventory : process.env.AR_SHIELD_INVENTORY !== "0";
@@ -173,6 +178,7 @@ function activeShield(
         transport,
         load: () => readInventory(projectRoot),
         warn,
+        instanceId,
       })
     : undefined;
   /** Starts the inventory (once; later calls do nothing) and cancels the timer that would have started it. */
@@ -328,6 +334,7 @@ function activeShield(
           patchChecker.evaluate(store.current(), request, method, hasBody(request), recordMonitor),
         ...(bodyTypes === null ? {} : { bodyTypes }),
         routeOf: routeOfDecision,
+        instanceId,
         record: (event) => emitter.record(event),
         now,
         clientAddress: typeof config.clientAddress === "function" ? config.clientAddress : undefined,

@@ -104,11 +104,13 @@ describe("shield.express(): one Event per request, from the allowlist only", () 
     expect(event.request.latency_ms).toBeLessThan(5_000);
 
     // Nothing of the concrete URL: not the identifier, not the query string.
-    // (Identifier, time, latency and the actor hash are generated values and could contain "42" by chance.)
+    // (Identifier, time, latency, the actor hash and the Shield instance id are generated values and could contain
+    // "42" by chance.)
     const fromRequest = JSON.stringify({
       ...event,
       event_id: "",
       ts: "",
+      instance_id: event.instance_id === undefined ? undefined : "",
       request: { ...event.request, latency_ms: 0 },
       actor: { ...event.actor, ip_hash: event.actor.ip_hash === null ? null : "" },
     });
@@ -135,6 +137,7 @@ describe("shield.express(): one Event per request, from the allowlist only", () 
         "attestation",
         "decision",
         "event_id",
+        "instance_id",
         "request",
         "signals",
         "signature",
@@ -143,6 +146,7 @@ describe("shield.express(): one Event per request, from the allowlist only", () 
         "type",
       ].sort(),
     );
+    expect(event.instance_id).toMatch(/^[0-9a-f]{32}$/); // the Shield's random id, nothing of the client
     expect(event.attestation).toEqual({ status: "missing", verdict: null, risk: null });
     expect(event.signature).toEqual({ status: "missing", body: null });
     expect(Object.keys(event.request ?? {}).sort()).toEqual(["latency_ms", "method", "route", "status"]);

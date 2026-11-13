@@ -148,6 +148,10 @@ describe("SimulationPanel", () => {
     expect(within(panel).getByTestId("simulation-caption").textContent).toBe(
       "Estimate from the last 24 hours of recorded requests",
     );
+    // The promise, in one line beside the caption.
+    expect(within(panel).getByTestId("simulation-promise").textContent).toBe(
+      "Never claims a refusal Shield would not make for the recorded traffic, within the limits listed below.",
+    );
     expect(within(panel).getByTestId("simulation-period").textContent).toBe(
       "2026-11-10 09:00:00 to 2026-11-11 09:00:00 UTC",
     );
@@ -279,6 +283,10 @@ describe("SimulationPanel", () => {
       "Requests whose path Shield decodes or resolves differently may be missed.",
       "Limits per device are a lower bound: recorded requests carry no device.",
       "Whether Shield checks request bodies on your routes is not known to the simulation.",
+      "Requests Shield could not deliver, or that were still open when the simulation ran, are not included.",
+      "Shield may forget counters when it holds too many clients; the simulation does not.",
+      "If Shield uses your own counter store, its counting may differ.",
+      "Clock changes or pauses on your server can shift counts by a few milliseconds.",
     ]);
   });
 
@@ -354,6 +362,8 @@ describe("SimulationPanel", () => {
     expect(within(panel).queryByRole("table")).toBeNull();
     expect(within(panel).queryByTestId("simulation-totals")).toBeNull();
     expect(within(panel).getByTestId("simulation-caption")).toBeTruthy();
+    // The promise points at limits listed below the figures: with no figures it is not shown.
+    expect(within(panel).queryByTestId("simulation-promise")).toBeNull();
   });
 
   it("says clearly when there were too many simulations, as an alert, and shows no figures", async () => {

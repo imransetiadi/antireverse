@@ -74,6 +74,11 @@ export interface AdapterDeps {
   patches?(request: IncomingMessage, method: string, recordMonitor: boolean): PatchState | null;
   /** The path pattern of the Rule behind a block Decision of `decide`, if it is one of Shield's own. */
   routeOf(decision: Decision): string | undefined;
+  /**
+   * The random id of this Shield (amendment A9 of slice 11): stamped on every Event as `instance_id`, the id the
+   * inventory sends. Left out: the Events carry none. Never logged.
+   */
+  instanceId?: string;
   /** Buffers the Event. Synchronous, no I/O. */
   record(event: ShieldEvent): void;
   /** Milliseconds since the epoch. */
@@ -89,7 +94,7 @@ const UNMATCHED_ROUTE = "(unmatched)";
 export const BLOCK_BODY = '{"error":"request_blocked"}';
 /** Every method `node:http` can parse; the protocol accepts nothing else. */
 const METHOD = /^[A-Z-]{1,16}$/;
-const LATENCY_MAX_MS = 600_000;
+export const LATENCY_MAX_MS = 600_000;
 /** When no Decision could be made the request proceeds: fail open. */
 const FAIL_OPEN: Decision = Object.freeze({ action: "allow", mode: "monitor", ruleId: null, policyVersion: 0 });
 
@@ -334,6 +339,7 @@ export function createExpressMiddleware(deps: AdapterDeps): ShieldMiddleware {
               ? null
               : { status: attestation.status, verdict: attestation.verdict, risk: attestation.risk },
           signature: signature === null ? null : signatureOf(signature),
+          ...(deps.instanceId === undefined ? {} : { instance_id: deps.instanceId }),
         });
       } catch {
         contained();

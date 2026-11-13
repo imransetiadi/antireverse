@@ -102,7 +102,9 @@ function recorded(sent: Sent): ReplayEvent {
   const octets = sent.ip.split(".").map((octet) => Number(octet).toString(16).padStart(2, "0"));
   return {
     ts: new Date(sent.at).toISOString(),
-    request: { method: sent.method, route: sent.route, status: sent.status },
+    // One Shield process (A9), and the application answers at once.
+    instance_id: "0123456789abcdef0123456789abcdef",
+    request: { method: sent.method, route: sent.route, status: sent.status, latency_ms: 0 },
     decision: { action: "allow", mode: "monitor" },
     actor: { ip_hash: `iph_${octets.join("").padStart(32, "0")}` },
     signature: sent.signature,
@@ -130,11 +132,21 @@ function traffic(): Sent[] {
   const random = sequence(20_261_111);
   const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)] as T;
   const sent: Sent[] = [];
+  const times = new Set<number>();
+  // Within 10 ms of a whole window (30, 60 or 120 s) after an earlier request, the replay rightly declines to judge:
+  // Shield's clock readings and latency may each lie up to 5 ms off what an Event records (`timing`).
+  const nearEdge = (at: number): boolean =>
+    [30_000, 60_000, 120_000].some((window) => {
+      for (let off = -10; off <= 10; off++) if (times.has(at - window + off)) return true;
+      return false;
+    });
   let at = T0;
   for (let n = 0; n < 3_000; n++) {
-    // Multiples of 37 ms: no two requests are within 5 ms of a whole window apart (30, 60 and 120 s), where the
-    // replay rightly declines to judge (the limiter reads the clock a moment before the Event is stamped).
-    at += 37 * Math.floor(random() * 6);
+    // Multiples of 37 ms, never the same moment: whether a response closed before the next request arrived could
+    // not be told (A9 B2); moved on by 37 ms while near a window's edge.
+    at += 37 * (1 + Math.floor(random() * 5));
+    while (nearEdge(at)) at += 37;
+    times.add(at);
     const ip = `203.0.113.${1 + Math.floor(random() * 6)}`;
     const signature = pick(SIGNATURES);
     const id = 1 + Math.floor(random() * 50);

@@ -47,6 +47,12 @@ export const ID_PATTERNS = {
   cnt: /^cnt_[0-9a-f]{24}$/,
   alw: /^alw_[0-9a-f]{24}$/,
   fnd: /^fnd_[0-9a-f]{24}$/,
+  /** A Verified Target (slice 14). */
+  tgt: /^tgt_[0-9a-f]{24}$/,
+  /** A signed Rules of Engagement version (slice 14). */
+  roe: /^roe_[0-9a-f]{24}$/,
+  /** A recipient of an email alert channel (slice 06b). */
+  rcp: /^rcp_[0-9a-f]{24}$/,
 } as const;
 export type IdPrefix = keyof typeof ID_PATTERNS;
 

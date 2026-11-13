@@ -991,3 +991,45 @@ describe("A7: limit_rule_id on the Event", () => {
     expect(seen.map((event) => event.decision.limit_rule_id)).toEqual([protection.id, null]);
   });
 });
+
+describe("D-071 through the adapter: a failure slot is held 600 s at most", () => {
+  it("a login held open for 1,200 s blocks guesses until 600 s, and its late 401 counts nothing", async () => {
+    let answerHeld: (() => void) | undefined;
+    const { base, clock, calls, events } = await setup(
+      {
+        limit_rules: [
+          limitRule(1, {
+            path: "/held-login",
+            methods: ["POST"],
+            limit: { requests: 1, window_s: 3_600, key: "ip", count: "failures" },
+          }),
+        ],
+      },
+      {
+        routes: (app, seen) =>
+          app.post("/held-login", (_req, res) => {
+            seen.push("login");
+            if (answerHeld === undefined) answerHeld = () => void res.status(401).json({ error: "bad" });
+            else res.json({ ok: true });
+          }),
+      },
+    );
+    const start = clock.now;
+    const post = () => exchange(`${base}/held-login`, { method: "POST" });
+    const held = post();
+    for (let i = 0; i < 200 && answerHeld === undefined; i++) await sleep(5);
+    clock.now = start + 599_000;
+    expect((await post()).status).toBe(429);
+    clock.now = start + 601_000;
+    expect((await post()).status).toBe(200);
+    clock.now = start + 1_200_000;
+    answerHeld?.();
+    expect((await held).status).toBe(401);
+    // Its 401 came after 600 s: not counted, so the next guess reaches the handler.
+    expect((await post()).status).toBe(200);
+    expect(calls).toEqual(["login", "login", "login"]);
+    const seen = await events(4);
+    const late = seen.find((event) => event.request.status === 401);
+    expect(late?.decision.action).toBe("allow");
+  });
+});

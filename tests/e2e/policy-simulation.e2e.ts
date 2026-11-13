@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { SIMULATION_NOT_SIMULATED } from "@antireverse/protocol";
 import { createShield, type Shield } from "@antireverse/shield-node";
 import { expect, type Page, test } from "@playwright/test";
 import express from "express";
@@ -133,14 +134,27 @@ test("Simulate shows the estimate per Rule, the promote confirmation shows it, a
     await expect(panel.getByTestId("simulation-totals")).toHaveText(
       `In total these Rules would refuse ${ADMIN_READS} requests from 1 client.`,
     );
-    // What the estimate leaves out, each explained.
-    await expect(panel.getByTestId("simulation-note")).toHaveText([
+    // What the estimate leaves out: one note per value the API names, each explained in words — none falls back to
+    // the raw value ("Not simulated: name"). The list comes from the protocol, so a value added there must be
+    // explained by the Console before this passes.
+    const notes = panel.getByTestId("simulation-note");
+    await expect(notes).toHaveCount(SIMULATION_NOT_SIMULATED.length);
+    const texts = await notes.allTextContents();
+    expect(new Set(texts).size).toBe(SIMULATION_NOT_SIMULATED.length);
+    for (const text of texts) {
+      expect(text).not.toMatch(/^Not simulated: /);
+      expect(text.trim()).not.toBe("");
+    }
+    // The explanations of the first five, as the panel words them.
+    for (const known of [
       "Virtual patches are not simulated.",
       "Blocks on individual clients are not simulated.",
       "Requests whose path Shield decodes or resolves differently may be missed.",
       "Limits per device are a lower bound: recorded requests carry no device.",
       "Whether Shield checks request bodies on your routes is not known to the simulation.",
-    ]);
+    ]) {
+      expect(texts).toContain(known);
+    }
     // Shield has an actor key: no request without a known client.
     await expect(panel.getByTestId("simulation-unknown-total")).toHaveCount(0);
     // Nothing was published by simulating.

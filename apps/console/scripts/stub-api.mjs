@@ -5,6 +5,10 @@
 // App of an Organization gets three Incidents (open, acknowledged, resolved) with Detections and evidence,
 // and every Organization starts with a webhook and a Slack alert channel. A test alert to a host under
 // example.com fails with 503, to a host under .invalid gets no response, and is delivered anywhere else.
+// Slice 06b: every Organization also has an email channel with a confirmed and a pending recipient; resend, the
+// daily cap, the public confirmation and `smtp_configured` work as in the API (stub-alerts.mjs, checked by a test
+// against the protocol). No mail is sent: `GET /__stub/confirmation-link/<recipient id>` (with the admin key) gives
+// the link of a pending recipient's latest confirmation mail. `AR_STUB_SMTP=off` answers as an API without SMTP.
 // Slice 07: the newest Build has a clean leak scan and three Canaries, the next one a scan with two suppressed
 // findings and three Canaries, the oldest neither; the first App also gets an open "Canary used" Incident
 // naming the newest Build's decoy key. Canaries are returned as id and kind only, never a value.
@@ -38,7 +42,12 @@
 // Slice 11: `POST /v1/apps/:appId/policy/simulate` answers with made-up figures derived from each Rule's pattern
 // (stub-simulation.mjs, whose shape a test checks against the protocol); it refuses what a publish refuses (400)
 // and a seventh simulation of an Organization within a minute (429 with Retry-After). Nothing is stored.
-// Channel URLs and signing secrets are never logged or returned after creation. The server is not used by any test.
+// Slice 14: every Organization has Verified Targets in each status and two signed Rules of Engagement versions;
+// targets can be added, verified (the outcome follows the host's first label, see stub-prove.mjs) and removed
+// (409 while in the current scope), versions signed with the exact phrase, and tests checked by authorize.
+// Verification tokens are never logged.
+// Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
+// creation. The server is not used by any test.
 //
 //   PORT=39201 node apps/console/scripts/stub-api.mjs
 //   AR_API_URL=http://127.0.0.1:39201 PORT=39200 npm run dev -w @antireverse/console
@@ -46,6 +55,8 @@
 // `POST /__stub/outage?ms=6000` simulates an API restart. It never logs a key.
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import http from "node:http";
+import { createAlertStore } from "./stub-alerts.mjs";
+import { createProveStore } from "./stub-prove.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
@@ -65,8 +76,9 @@ const policies = new Map();
 const builds = new Map();
 /** @type {Map<string, Array<{ incident: object, detections: object[], evidence: object[] }>>} Organization id → Incidents */
 const incidents = new Map();
-/** @type {Map<string, Array<{ channel: object, url: string, secret: string | null }>>} Organization id → alert channels, oldest first */
-const channels = new Map();
+/** Alert channels of every Organization (slices 06 and 06b): stub-alerts.mjs. `AR_STUB_SMTP=off` answers as an API
+ * without SMTP settings. */
+const alerts = createAlertStore({ smtpConfigured: process.env.AR_STUB_SMTP !== "off" });
 /** @type {Map<string, string>} admin key → its key id (`created_by` of blocks and ranges) */
 const adminKeyIds = new Map();
 /** @type {Map<string, object[]>} Organization id → blocks without their computed status, newest first */
@@ -78,6 +90,8 @@ const findings = new Map();
 /** @type {Map<string, number[]>} Organization id → when its simulations of the last minute ran (ms) */
 const simulations = new Map();
 const SIMULATIONS_PER_MINUTE = 6;
+/** @type {Map<string, ReturnType<typeof createProveStore>>} Organization id → its Prove state (slice 14) */
+const proveStores = new Map();
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1150,70 +1164,22 @@ function exploitIncident(organizationId, app, now) {
   return [{ incident, detections: [detection], evidence, actors: actorsOf(evidence) }];
 }
 
-// ── Alert channels (slice 06) ─────────────────────────────────────────────────────────────────────────
-
-/** Like the API's SSRF guard, roughly: no loopback, private or link-local literal and no localhost. */
-function refusedHost(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  return (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    /^(?:127|10|0)\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^172\.(?:1[6-9]|2[0-9]|3[01])\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(host) ||
-    host === "::1" ||
-    host.startsWith("::ffff:") ||
-    /^f[cd]|^fe[89ab]/.test(host)
-  );
-}
-
-function makeChannel(kind, name, url) {
-  const parsed = new URL(url);
-  const channel = {
-    id: newId("chn"),
-    kind,
-    name,
-    host: parsed.hostname,
-    url_last4: url.slice(-4),
-    active: true,
-    created_at: new Date().toISOString(),
-  };
-  const secret = kind === "webhook" ? `whsec_${randomBytes(32).toString("base64url")}` : null;
-  return { channel, url, secret };
-}
-
-function seedChannels(organizationId) {
-  const hook = makeChannel("webhook", "Ops webhook", "https://hooks.example.com/anti-reverse/alerts");
-  hook.channel.created_at = new Date(Date.now() - 2 * 86_400_000).toISOString();
-  const slack = makeChannel(
-    "slack",
-    "#security-alerts",
-    `https://hooks.slack.com/services/T0000/B0000/${randomBytes(18).toString("base64url")}`,
-  );
-  channels.set(organizationId, [hook, slack]);
-}
-
-/** What a test alert to this channel would do: example.com never answers well, .invalid never answers. */
-function testDelivery(entry) {
-  const host = entry.channel.host;
-  const failedNoResponse = host.endsWith(".invalid");
-  const failed = failedNoResponse || host === "example.com" || host.endsWith(".example.com");
-  return {
-    id: newId("dlv"),
-    channel_id: entry.channel.id,
-    incident_id: null,
-    attempt: 1,
-    outcome: failed ? "failed" : "delivered",
-    status_code: failedNoResponse ? null : failed ? 503 : 200,
-    at: new Date().toISOString(),
-  };
-}
-
 function json(res, status, body, contentType = "application/json") {
   res.writeHead(status, { "content-type": contentType });
   res.end(JSON.stringify(body));
+}
+
+/** Writes an answer of a store module: a body, nothing for 204, a problem document with its headers otherwise. */
+function send(res, answer) {
+  if (answer.status === 204) {
+    res.writeHead(204);
+    return res.end();
+  }
+  if (answer.status >= 400) {
+    const { type: _type, title, status: _status, ...extra } = answer.body;
+    return problem(res, answer.status, title, extra, answer.headers ?? {});
+  }
+  return json(res, answer.status, answer.body);
 }
 
 function problem(res, status, title, extra = {}, more = {}) {
@@ -1271,9 +1237,14 @@ const server = http.createServer(async (req, res) => {
     organizations.set(adminKey.key, organization);
     adminKeyIds.set(adminKey.key, newId("key"));
     apps.set(organization.id, []);
-    seedChannels(organization.id);
+    proveStores.set(organization.id, createProveStore({ keyId: adminKeyIds.get(adminKey.key) }));
+    alerts.seed(organization.id);
     return json(res, 201, { organization, admin_key: adminKey });
   }
+
+  // Public (slice 06b): the Console posts the token of a confirmation link here from its server. Never logged.
+  if (req.method === "POST" && path === "/v1/alert-recipients/confirm")
+    return send(res, alerts.confirm(await readBody(req)));
 
   // Everything below needs an admin key.
   const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
@@ -1281,6 +1252,23 @@ const server = http.createServer(async (req, res) => {
   const organization = bearer ? organizations.get(bearer) : undefined;
   if (!organization) return problem(res, 401, "Unauthorized");
   const ownApps = apps.get(organization.id) ?? [];
+
+  // Prove (slice 14): targets, Rules of Engagement and the dry authorization check.
+  if (path.startsWith("/v1/targets") || path.startsWith("/v1/rules-of-engagement") || path === "/v1/prove/authorize") {
+    const prove = proveStores.get(organization.id);
+    const answer = prove?.handle(req.method, path, req.method === "POST" ? await readBody(req) : undefined);
+    if (answer) {
+      if (answer.status === 204) {
+        res.writeHead(204);
+        return res.end();
+      }
+      if (answer.status >= 400) {
+        const { type: _type, title, status: _status, ...extra } = answer.body;
+        return problem(res, answer.status, title, extra, answer.headers ?? {});
+      }
+      return json(res, answer.status, answer.body);
+    }
+  }
 
   if (req.method === "GET" && path === "/v1/organization") return json(res, 200, { organization });
 
@@ -1597,48 +1585,24 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  // Alert channels (slice 06, contract P2). The URL and the signing secret never leave after creation.
-  const ownChannels = channels.get(organization.id) ?? [];
-  if (path === "/v1/alert-channels") {
-    if (req.method === "GET") return json(res, 200, { channels: ownChannels.map((entry) => entry.channel) });
-    if (req.method === "POST") {
-      const body = await readBody(req);
-      const errors = [];
-      if (body?.kind !== "webhook" && body?.kind !== "slack") errors.push({ path: "kind", message: "Invalid option" });
-      const name = validName(body);
-      if (!name) errors.push({ path: "name", message: "Invalid name" });
-      let parsed = null;
-      try {
-        parsed = typeof body?.url === "string" && body.url.length <= 2048 ? new URL(body.url) : null;
-      } catch {
-        parsed = null;
-      }
-      // Refused without repeating the URL.
-      if (parsed?.protocol !== "https:" || refusedHost(parsed.hostname)) {
-        errors.push({ path: "url", message: "This destination is not allowed" });
-      }
-      if (errors.length > 0) return problem(res, 400, "Bad Request", { errors });
-      if (ownChannels.length >= 10) return problem(res, 409, "Too many alert channels");
-      const entry = makeChannel(body.kind, name, body.url);
-      ownChannels.push(entry);
-      channels.set(organization.id, ownChannels);
-      const response = { channel: entry.channel };
-      if (entry.secret) response.signing_secret = entry.secret;
-      return json(res, 201, response);
-    }
-    return problem(res, 405, "Method Not Allowed");
+  // Alert channels (slices 06 and 06b). The URL and the signing secret never leave after creation; no token ever does.
+  if (path.startsWith("/v1/alert-channels")) {
+    const answer = alerts.handle(
+      organization.id,
+      req.method,
+      path,
+      req.method === "POST" ? await readBody(req) : undefined,
+    );
+    if (answer) return send(res, answer);
   }
-  const channelMatch = /^\/v1\/alert-channels\/([^/]+)(\/test)?$/.exec(path);
-  if (channelMatch) {
-    const index = ownChannels.findIndex((entry) => entry.channel.id === channelMatch[1]);
-    if (index === -1) return problem(res, 404, "Not Found");
-    if (req.method === "DELETE" && !channelMatch[2]) {
-      ownChannels.splice(index, 1);
-      res.writeHead(204);
-      return res.end();
-    }
-    if (req.method === "POST" && channelMatch[2]) return json(res, 200, { delivery: testDelivery(ownChannels[index]) });
-    return problem(res, 405, "Method Not Allowed");
+  // Stub only: the link of the latest confirmation mail of a pending recipient, since the stub sends no mail. The
+  // token travels in this response alone and is never logged.
+  const linkMatch = /^\/__stub\/confirmation-link\/([^/]+)$/.exec(path);
+  if (linkMatch && req.method === "GET") {
+    const token = alerts.confirmationToken(organization.id, linkMatch[1]);
+    if (token === null) return problem(res, 404, "Not Found");
+    const consoleUrl = process.env.AR_CONSOLE_URL ?? "http://127.0.0.1:39200";
+    return json(res, 200, { url: `${consoleUrl}/alerts/confirm?token=${token}` });
   }
 
   // The Builds of an App (contract P4): the list newest first, and one Build by its id.

@@ -8,7 +8,7 @@ import { BrandMark } from "./brand-mark.tsx";
 import { Button } from "./button.tsx";
 
 /** The top-level screen a page belongs to; its navigation entry is marked as current. */
-export type ShellSection = "apps" | "incidents" | "findings" | "alerts" | "allowlist";
+export type ShellSection = "apps" | "incidents" | "findings" | "targets" | "rules" | "alerts" | "allowlist";
 
 // The current entry is carried by `aria-current`, its weight and a solid underline — not by colour alone.
 const NAV_LINK = "inline-flex h-8 items-center px-1 pointer-coarse:h-12";
@@ -67,6 +67,10 @@ export function AppShell({ organization, width = "wide", current, children }: Ap
               <NavLink section="apps" current={current} href={ROUTES.apps} label={t("nav.apps")} />
               <NavLink section="incidents" current={current} href={ROUTES.incidents()} label={t("nav.incidents")} />
               <NavLink section="findings" current={current} href={ROUTES.findings()} label={t("nav.findings")} />
+            </nav>
+            <nav aria-label={t("nav.prove")} className="flex flex-wrap items-center gap-3">
+              <NavLink section="targets" current={current} href={ROUTES.targets} label={t("nav.targets")} />
+              <NavLink section="rules" current={current} href={ROUTES.rulesOfEngagement} label={t("nav.rules")} />
             </nav>
             <nav aria-label={t("nav.settings")} className="flex flex-wrap items-center gap-3">
               <NavLink section="alerts" current={current} href={ROUTES.alerts()} label={t("nav.alerts")} />

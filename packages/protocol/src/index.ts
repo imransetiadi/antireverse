@@ -13,4 +13,5 @@ export * from "./incidents.ts";
 export * from "./patches.ts";
 export * from "./policy.ts";
 export * from "./problem.ts";
+export * from "./prove.ts";
 export * from "./signature.ts";

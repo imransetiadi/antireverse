@@ -4,15 +4,19 @@ import {
   ACTOR_HASH_PATTERN,
   ADMIN_KEY_PATTERN,
   ALERT_CHANNEL_KINDS,
+  ALERT_EMAIL_LIMITS,
   type AlertChannel,
   type AlertChannelKind,
   type AlertDelivery,
   type AllowlistEntry,
   type App,
+  type AuthorizeResult,
   CONTAINMENT_LIMITS,
   CONTAINMENT_TTLS,
   type ContainmentTtl,
+  CreateAlertChannelRequestSchema,
   type CreateContainmentRequest,
+  confirmationPhrase,
   DECISION_MODES,
   type DecisionMode,
   ENVIRONMENTS,
@@ -20,6 +24,8 @@ import {
   EXPOSURE_LIMITS,
   ID_PATTERNS,
   INCIDENT_LIMITS,
+  INTENSITIES,
+  type Intensity,
   IP_PREFIX_PATTERN,
   isBroadPattern,
   LIMIT_COUNTS,
@@ -28,6 +34,7 @@ import {
   LIMITS,
   type LimitCount,
   type LimitKey,
+  normaliseHost,
   type Organization,
   PATCH_ID_PATTERN,
   PATH_PATTERN,
@@ -35,11 +42,15 @@ import {
   type PolicyRule,
   type PolicyRuleInput,
   parseCidr,
+  ROE_LIMITS,
   type RuleLimit,
+  RulesOfEngagementContentSchema,
   type SimulationResult,
+  type VerifyResult,
 } from "@antireverse/protocol";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { confirmRecipientToken } from "@/features/alerts/confirm.ts";
 import { suggestCidr } from "@/features/containment/format.ts";
 import { untilFromDate } from "@/features/findings/format.ts";
 import { isBroadEnforce, newlyBroad } from "@/features/policy/broad.ts";
@@ -49,13 +60,16 @@ import { ruleFingerprint } from "@/features/policy/simulation.ts";
 import {
   ApiError,
   ConflictError,
+  checkAuthorization,
   createAlertChannel,
   createAllowlistEntry,
   createApp,
   createContainment,
   createOrganization,
+  createTarget,
   deleteAlertChannel,
   deleteAllowlistEntry,
+  deleteTarget,
   getOrganization,
   getPolicy,
   getPolicyVersion,
@@ -66,13 +80,16 @@ import {
   publishPolicy,
   RateLimitedError,
   reopenFinding,
+  resendConfirmation,
   rollbackPolicy,
   setPatchMode,
+  signRulesOfEngagement,
   simulatePolicy,
   testAlertChannel,
   UnauthorizedError,
   updateIncident,
   ValidationError,
+  verifyTarget,
 } from "@/lib/api.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { clearSession, readSession, writeSession } from "@/lib/session.ts";
@@ -723,14 +740,17 @@ export async function updateIncidentAction(
 // ── Alert channels ────────────────────────────────────────────────────────────────────────────────────
 // A channel URL can itself be a secret (a Slack webhook URL): it is sent to the API once and never comes
 // back — not in the action state, not in an error, not in a refilled field. A webhook's signing secret
-// comes back once, in the action state of the form that created it, and is rendered once.
+// comes back once, in the action state of the form that created it, and is rendered once. An email channel
+// (slice 06b) carries recipients instead, which are not secret; a confirmation token never reaches an action.
 
 export type CreateAlertChannelState =
   | null
-  | { ok: false; errors: FieldError[]; values: { kind: string; name: string } }
+  | { ok: false; errors: FieldError[]; values: { kind: string; name: string; recipients?: string } }
   | { ok: true; channel: AlertChannel; signingSecret?: string };
 
 export type AlertChannelChangeState = null | { ok: false; errors: FieldError[] };
+
+export type ResendConfirmationState = null | { ok: false; message: string } | { ok: true };
 
 export type TestAlertChannelState =
   | null
@@ -754,7 +774,63 @@ function urlError(url: string): FieldError | null {
   return null;
 }
 
-/** Adds a webhook or Slack channel. A webhook's signing secret is returned to be shown once. */
+/**
+ * The recipients of an email channel, typed one per line: checked with the protocol's own rules (trimmed,
+ * lower-cased, 1 to 5 valid addresses, each once) and refused in the Console's words, naming the line. Blank
+ * lines are dropped but still counted, so that a line number matches what the person sees.
+ */
+function parseRecipients(raw: string): { recipients: string[] } | { error: FieldError } {
+  const lines = raw.split(/\r\n|\r|\n/);
+  const given = lines.flatMap((line, index) => (line.trim().length > 0 ? [{ line: index + 1, address: line }] : []));
+  if (given.length === 0) return { error: { path: "recipients", message: t("error.alerts.recipients.required") } };
+  if (given.length > ALERT_EMAIL_LIMITS.recipientsMax) {
+    const max = String(ALERT_EMAIL_LIMITS.recipientsMax);
+    return { error: { path: "recipients", message: t("error.alerts.recipients.max", { max }) } };
+  }
+  // The name is checked apart (`nameError`): a fixed valid one here keeps its issues out of this answer.
+  const parsed = CreateAlertChannelRequestSchema.safeParse({
+    kind: "email",
+    name: "Recipients",
+    recipients: given.map((entry) => entry.address),
+  });
+  if (parsed.success) {
+    return { recipients: parsed.data.kind === "email" ? parsed.data.recipients : [] };
+  }
+  const issue = parsed.error.issues.find((one) => one.path[0] === "recipients" && typeof one.path[1] === "number");
+  if (!issue) return { error: { path: "recipients", message: t("error.alerts.recipients.refused") } };
+  const line = String(given[issue.path[1] as number]?.line ?? 1);
+  // The protocol marks a repeated address with a custom issue; anything else is an address it does not accept.
+  const message =
+    issue.code === "custom"
+      ? t("error.alerts.recipients.duplicate", { line })
+      : t("error.alerts.recipients.invalid", { line });
+  return { error: { path: "recipients", message } };
+}
+
+/** What to say when the API refused a new channel: a 409 by its reason, a 400 by the fields it names. */
+function createRefusal(error: unknown): FieldError[] | null {
+  if (error instanceof ConflictError) {
+    return error.reason === "smtp-not-configured"
+      ? [{ path: "kind", message: t("alerts.add.smtp") }]
+      : [{ path: "", message: t("error.alerts.max") }];
+  }
+  if (error instanceof ValidationError) {
+    const errors: FieldError[] = [];
+    const paths = new Set(error.errors.map((entry) => entry.path.split(".")[0]));
+    // A refused URL (scheme, private address, …) is explained without repeating it.
+    if (paths.has("url")) errors.push({ path: "url", message: t("error.alerts.url.refused") });
+    if (paths.has("recipients")) errors.push({ path: "recipients", message: t("error.alerts.recipients.refused") });
+    if (paths.has("name")) errors.push({ path: "name", message: t("error.field") });
+    if (paths.has("kind")) errors.push({ path: "kind", message: t("error.alerts.kind") });
+    return errors.length > 0 ? errors : [{ path: "", message: t("error.api.failed") }];
+  }
+  return null;
+}
+
+/**
+ * Adds a webhook, Slack or email channel. A webhook's signing secret is returned to be shown once. An email
+ * channel's recipients come back with the refusal, since they are not a secret; a URL never does.
+ */
 export async function createAlertChannelAction(
   _previous: CreateAlertChannelState,
   formData: FormData,
@@ -764,35 +840,38 @@ export async function createAlertChannelAction(
 
   const kind = text(formData, "kind");
   const name = text(formData, "name");
-  const url = text(formData, "url");
+  const email = kind === "email";
+  const rawRecipients = (() => {
+    const value = formData.get("recipients");
+    return typeof value === "string" ? value : "";
+  })();
   // The URL is deliberately not among the values sent back to the form.
-  const values = { kind, name };
+  const values = email ? { kind, name, recipients: rawRecipients } : { kind, name };
 
   const invalid: FieldError[] = [];
   if (!isChannelKind(kind)) invalid.push({ path: "kind", message: t("error.alerts.kind") });
   const badName = nameError(name);
   if (badName) invalid.push(badName);
-  const badUrl = urlError(url);
-  if (badUrl) invalid.push(badUrl);
-  if (invalid.length > 0 || !isChannelKind(kind)) return { ok: false, errors: invalid, values };
+  let request: Parameters<typeof createAlertChannel>[1] | null = null;
+  if (email) {
+    const recipients = parseRecipients(rawRecipients);
+    if ("error" in recipients) invalid.push(recipients.error);
+    else request = { kind, name, recipients: recipients.recipients };
+  } else {
+    const url = text(formData, "url");
+    const badUrl = urlError(url);
+    if (badUrl) invalid.push(badUrl);
+    else if (kind === "webhook" || kind === "slack") request = { kind, name, url };
+  }
+  if (invalid.length > 0 || request === null) return { ok: false, errors: invalid, values };
 
   let created: Awaited<ReturnType<typeof createAlertChannel>>;
   try {
-    created = await createAlertChannel(key, { kind, name, url });
+    created = await createAlertChannel(key, request);
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
-    if (error instanceof ConflictError)
-      return { ok: false, errors: [{ path: "", message: t("error.alerts.max") }], values };
-    if (error instanceof ValidationError) {
-      const errors: FieldError[] = [];
-      const paths = new Set(error.errors.map((entry) => entry.path));
-      // A refused URL (scheme, private address, …) is explained without repeating it.
-      if (paths.has("url")) errors.push({ path: "url", message: t("error.alerts.url.refused") });
-      if (paths.has("name")) errors.push({ path: "name", message: t("error.field") });
-      if (paths.has("kind")) errors.push({ path: "kind", message: t("error.alerts.kind") });
-      return { ok: false, errors: errors.length > 0 ? errors : [{ path: "", message: t("error.api.failed") }], values };
-    }
-    return { ok: false, errors: apiErrors(error, []), values };
+    const refusal = createRefusal(error);
+    return { ok: false, errors: refusal ?? apiErrors(error, []), values };
   }
   revalidatePath(ROUTES.alerts());
   return created.signing_secret === undefined
@@ -840,11 +919,69 @@ export async function testAlertChannelAction(
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
     if (error instanceof NotFoundError) return { ok: false, message: t("error.alerts.gone") };
+    if (error instanceof ConflictError && error.reason === "no-confirmed-recipients") {
+      return { ok: false, message: t("error.alerts.unconfirmed") };
+    }
+    if (error instanceof ConflictError && error.reason === "smtp-not-configured") {
+      return { ok: false, message: t("alerts.add.smtp") };
+    }
     if (error instanceof ApiError) {
       return { ok: false, message: t(error.status === 0 ? "error.alerts.test.api" : "error.alerts.test") };
     }
     throw error;
   }
+}
+
+/**
+ * Sends a pending recipient of an email channel a new confirmation email, by ids only: no address travels. The
+ * API counts it toward the address's emails of the day and refuses a recipient that already confirmed.
+ */
+export async function resendConfirmationAction(
+  _previous: ResendConfirmationState,
+  formData: FormData,
+): Promise<ResendConfirmationState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const channelId = text(formData, "channelId");
+  const recipientId = text(formData, "recipientId");
+  if (!ID_PATTERNS.chn.test(channelId) || !ID_PATTERNS.rcp.test(recipientId)) {
+    return { ok: false, message: t("error.alerts.resend.gone") };
+  }
+
+  try {
+    await resendConfirmation(key, channelId, recipientId);
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof RateLimitedError) {
+      const count = String(ALERT_EMAIL_LIMITS.confirmationMailsPerAddressPerDay);
+      return { ok: false, message: t("error.alerts.resend.limit", { count }) };
+    }
+    if (error instanceof ConflictError && error.reason === "recipient-confirmed") {
+      revalidatePath(ROUTES.alerts());
+      return { ok: false, message: t("error.alerts.resend.confirmed") };
+    }
+    if (error instanceof ConflictError && error.reason === "smtp-not-configured") {
+      return { ok: false, message: t("alerts.add.smtp") };
+    }
+    if (error instanceof NotFoundError) return { ok: false, message: t("error.alerts.resend.gone") };
+    if (error instanceof ApiError) {
+      return { ok: false, message: t(error.status === 0 ? "error.alerts.resend.api" : "error.alerts.resend") };
+    }
+    throw error;
+  }
+  revalidatePath(ROUTES.alerts());
+  return { ok: true };
+}
+
+/**
+ * "Confirm email" of a confirmation link (slice 06b). Public: whoever got the email clicks it, with no session.
+ * The token comes in a hidden field of the POST and goes to the API server-side; the answer is a redirect to a page
+ * that names the outcome only, so the token leaves the address bar and the history. Never logged.
+ */
+export async function confirmRecipientAction(formData: FormData): Promise<never> {
+  const outcome = await confirmRecipientToken(formData.get("token"));
+  redirect(ROUTES.alertConfirmDone(outcome));
 }
 
 // ── Containment (slice 09) ────────────────────────────────────────────────────────────────────────────
@@ -1191,6 +1328,310 @@ export async function deleteAllowlistEntryAction(
   }
   revalidatePath(ROUTES.allowlist());
   redirect(ROUTES.allowlist());
+}
+
+// ── Prove (slice 14) ──────────────────────────────────────────────────────────────────────────────────
+// A host is checked here with the protocol's own rules before anything is sent; the API checks it again and
+// alone decides. The API's own words are never shown: each refusal is explained in the Console's words. A
+// verification token never travels in an action state — the target's page reads it from the API.
+
+export type CreateTargetState = null | { ok: false; errors: FieldError[]; values: { host: string } };
+
+export type VerifyTargetState = null | { ok: true; result: VerifyResult } | { ok: false; message: string };
+
+export type TargetChangeState = null | { ok: false; errors: FieldError[] };
+
+/** Adds a host and opens its page, which shows how to prove it. */
+export async function createTargetAction(_previous: CreateTargetState, formData: FormData): Promise<CreateTargetState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const host = text(formData, "host");
+  const values = { host };
+  if (host.length === 0) return failedWith("host", t("error.target.host.required"), values);
+  if (normaliseHost(host) === null) return failedWith("host", t("error.target.host.invalid"), values);
+
+  let targetId: string;
+  try {
+    ({
+      target: { id: targetId },
+    } = await createTarget(key, { host }));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ConflictError) {
+      if (error.reason === "target-limit") return failedWith("", t("error.target.max"), values);
+      if (error.reason === "target-duplicate") return failedWith("host", t("error.target.duplicate"), values);
+      return failedWith("", t("error.target.conflict"), values);
+    }
+    if (error instanceof ValidationError) {
+      const aboutHost = error.errors.some((entry) => entry.path === "host");
+      return aboutHost
+        ? failedWith("host", t("error.target.host.refused"), values)
+        : failedWith("", t("error.api.failed"), values);
+    }
+    return { ok: false, errors: apiErrors(error, []), values };
+  }
+  revalidatePath(ROUTES.targets);
+  redirect(ROUTES.target(targetId));
+}
+
+function failedWith<V>(path: string, message: string, values: V): { ok: false; errors: FieldError[]; values: V } {
+  return { ok: false, errors: [{ path, message }], values };
+}
+
+/** Checks the DNS record, then the file, of one target and returns the outcome. */
+export async function verifyTargetAction(_previous: VerifyTargetState, formData: FormData): Promise<VerifyTargetState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const targetId = text(formData, "targetId");
+  if (!ID_PATTERNS.tgt.test(targetId)) return { ok: false, message: t("error.target.gone") };
+
+  let result: VerifyResult;
+  try {
+    ({ result } = await verifyTarget(key, targetId));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof NotFoundError) return { ok: false, message: t("error.target.gone") };
+    if (error instanceof RateLimitedError) {
+      return {
+        ok: false,
+        message:
+          error.retryAfter === undefined
+            ? t("target.verify.limited.soon")
+            : t("target.verify.limited", { minutes: Math.max(1, Math.ceil(error.retryAfter / 60)) }),
+      };
+    }
+    if (error instanceof ApiError) {
+      return { ok: false, message: t(error.status === 0 ? "target.verify.unreachable" : "target.verify.error") };
+    }
+    throw error;
+  }
+  revalidatePath(ROUTES.target(targetId));
+  revalidatePath(ROUTES.targets);
+  return { ok: true, result };
+}
+
+/** Removes a target. Refused unless the form carries the confirmation: the id of the target named in the question. */
+export async function deleteTargetAction(_previous: TargetChangeState, formData: FormData): Promise<TargetChangeState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const targetId = text(formData, "targetId");
+  if (!ID_PATTERNS.tgt.test(targetId)) return failed("", t("error.target.gone"));
+  if (text(formData, "confirm") !== targetId) return failed("confirm", t("target.confirm.required"));
+
+  try {
+    await deleteTarget(key, targetId);
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    // The reason alone decides the message; without a known one it is never guessed.
+    if (error instanceof ConflictError) {
+      return failed("", t(error.reason === "target-in-scope" ? "error.target.inScope" : "error.target.conflict"));
+    }
+    // A target that is already gone is what was asked for.
+    if (!(error instanceof NotFoundError)) return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.targets);
+  redirect(ROUTES.targets);
+}
+
+/** What the form of a new Rules of Engagement version holds, sent back after a refusal. The phrase is not. */
+export interface RulesOfEngagementFormValues {
+  scope: string[];
+  exclusions: string;
+  intensity: string;
+  days: string[];
+  allDay: boolean;
+  from: string;
+  to: string;
+  contacts: string;
+}
+
+export type SignRulesOfEngagementState = null | {
+  ok: false;
+  errors: FieldError[];
+  values: RulesOfEngagementFormValues;
+};
+
+/** The fields of the form, in the order their errors are listed. */
+const ROE_FIELDS = ["scope", "exclusions", "intensity", "days", "from", "to", "contacts", "confirm"] as const;
+type RoeField = (typeof ROE_FIELDS)[number];
+
+const ROE_FIELD_ERROR: Record<RoeField, MessageKey> = {
+  scope: "error.roe.scope.required",
+  exclusions: "error.roe.exclusions.invalid",
+  intensity: "error.roe.intensity",
+  days: "error.roe.days",
+  from: "error.roe.from",
+  to: "error.roe.to",
+  contacts: "error.roe.contacts",
+  confirm: "error.roe.confirm",
+};
+
+/** The form field a protocol path (`window.from`, `exclusions.2`, …) is about, or null. */
+function roeField(path: readonly PropertyKey[]): RoeField | null {
+  const [head, next] = path.map(String);
+  if (head === "window") return next === "days" || next === "from" || next === "to" ? next : null;
+  return (ROE_FIELDS as readonly string[]).includes(head ?? "") ? (head as RoeField) : null;
+}
+
+/** One error per field, in form order. */
+function roeErrors(fields: Iterable<RoeField>, messages: Partial<Record<RoeField, string>> = {}): FieldError[] {
+  const set = new Set(fields);
+  return ROE_FIELDS.filter((field) => set.has(field)).map((field) => ({
+    path: field,
+    message: messages[field] ?? t(ROE_FIELD_ERROR[field]),
+  }));
+}
+
+/** The non-empty, trimmed lines of a text area. */
+const lines = (value: string): string[] =>
+  value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+const all = (formData: FormData, name: string): string[] =>
+  formData.getAll(name).filter((value): value is string => typeof value === "string");
+
+/**
+ * Signs a new Rules of Engagement version: the content is checked with the protocol's schema and the typed phrase
+ * must be exactly `I authorise <intensity> testing` for the chosen intensity, before anything is sent. A signed
+ * version is never changed; the new one becomes current.
+ */
+export async function signRulesOfEngagementAction(
+  _previous: SignRulesOfEngagementState,
+  formData: FormData,
+): Promise<SignRulesOfEngagementState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const values: RulesOfEngagementFormValues = {
+    scope: all(formData, "scope"),
+    exclusions: String(formData.get("exclusions") ?? ""),
+    intensity: text(formData, "intensity"),
+    days: all(formData, "days"),
+    allDay: formData.get("allDay") === "on",
+    from: text(formData, "from"),
+    to: text(formData, "to"),
+    contacts: String(formData.get("contacts") ?? ""),
+  };
+  const exclusions = lines(values.exclusions);
+  const content = {
+    scope: values.scope,
+    exclusions,
+    intensity: values.intensity,
+    window: {
+      days: values.days,
+      from: values.allDay ? "00:00" : values.from,
+      to: values.allDay ? "24:00" : values.to,
+    },
+    contacts: lines(values.contacts),
+  };
+  const parsed = RulesOfEngagementContentSchema.safeParse(content);
+  if (!parsed.success) {
+    const fields = parsed.error.issues.map((issue) => roeField(issue.path)).filter((field) => field !== null);
+    const messages = exclusions.length > ROE_LIMITS.exclusionsMax ? { exclusions: t("error.roe.exclusions.max") } : {};
+    return { ok: false, errors: roeErrors(fields, messages), values };
+  }
+  const confirm = text(formData, "confirm");
+  if (confirm !== confirmationPhrase(parsed.data.intensity)) {
+    return { ok: false, errors: roeErrors(["confirm"]), values };
+  }
+
+  try {
+    await signRulesOfEngagement(key, { ...parsed.data, confirm });
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    // A chosen target that lost its verification comes back as a 400 on `scope.N` (below); a 409 is not guessed at.
+    if (error instanceof ConflictError) {
+      return { ok: false, errors: [{ path: "", message: t("error.target.conflict") }], values };
+    }
+    if (error instanceof ValidationError) {
+      const fields = error.errors.map((entry) => roeField(entry.path.split("."))).filter((field) => field !== null);
+      if (fields.length === 0) return { ok: false, errors: [{ path: "", message: t("error.api.failed") }], values };
+      return { ok: false, errors: roeErrors(fields, { scope: t("error.roe.scope.stale") }), values };
+    }
+    return { ok: false, errors: apiErrors(error, []), values };
+  }
+  revalidatePath(ROUTES.rulesOfEngagement);
+  redirect(ROUTES.rulesOfEngagement);
+}
+
+export interface CheckTestValues {
+  host: string;
+  path: string;
+  intensity: string;
+  at: string;
+}
+
+export type CheckAuthorizationState =
+  | null
+  | { ok: true; result: AuthorizeResult; values: CheckTestValues }
+  | { ok: false; errors: FieldError[]; values: CheckTestValues };
+
+/** `YYYY-MM-DDTHH:MM` (or with seconds), read as UTC, as ISO text; null when it is not a real time. */
+function utcFromLocalInput(value: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(value)) return null;
+  const iso = `${value.length === 16 ? `${value}:00` : value}.000Z`;
+  const time = Date.parse(iso);
+  return Number.isFinite(time) && new Date(time).toISOString() === iso ? iso : null;
+}
+
+const isIntensity = (value: string): value is Intensity => (INTENSITIES as readonly string[]).includes(value);
+
+/** Asks the API whether a test would be allowed. A dry check: nothing is started. */
+export async function checkAuthorizationAction(
+  _previous: CheckAuthorizationState,
+  formData: FormData,
+): Promise<CheckAuthorizationState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const values: CheckTestValues = {
+    host: text(formData, "host"),
+    path: text(formData, "path"),
+    intensity: text(formData, "intensity"),
+    at: text(formData, "at"),
+  };
+  const errors: FieldError[] = [];
+  if (normaliseHost(values.host) === null) errors.push({ path: "host", message: t("error.target.host.invalid") });
+  if (!values.path.startsWith("/") || values.path.length > ROE_LIMITS.pathMax)
+    errors.push({ path: "path", message: t("error.check.path") });
+  if (!isIntensity(values.intensity)) errors.push({ path: "intensity", message: t("error.roe.intensity") });
+  const at = utcFromLocalInput(values.at);
+  if (at === null) errors.push({ path: "at", message: t("error.check.at") });
+  if (errors.length > 0 || at === null || !isIntensity(values.intensity)) return { ok: false, errors, values };
+
+  try {
+    const result = await checkAuthorization(key, {
+      host: values.host,
+      path: values.path,
+      intensity: values.intensity,
+      at,
+    });
+    return { ok: true, result, values };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ValidationError) {
+      const messages: Record<string, MessageKey> = {
+        host: "error.target.host.invalid",
+        path: "error.check.path",
+        intensity: "error.roe.intensity",
+        at: "error.check.at",
+      };
+      const known = error.errors.filter((entry) => Object.hasOwn(messages, entry.path));
+      if (known.length > 0) {
+        return {
+          ok: false,
+          errors: known.map((entry) => ({ path: entry.path, message: t(messages[entry.path] as MessageKey) })),
+          values,
+        };
+      }
+    }
+    return { ok: false, errors: apiErrors(error, []), values };
+  }
 }
 
 /** Ends the session. */

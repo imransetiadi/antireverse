@@ -68,7 +68,7 @@ describe("incident constants", () => {
     const kind: AlertChannelKind = "webhook";
     expect(SEVERITIES).toEqual(["critical", severity, "medium", "low", "info"]);
     expect(INCIDENT_STATUSES).toEqual([status, "acknowledged", "resolved"]);
-    expect(ALERT_CHANNEL_KINDS).toEqual([kind, "slack"]);
+    expect(ALERT_CHANNEL_KINDS).toEqual([kind, "slack", "email"]);
   });
 
   it("has the seven managed rules of the plans' tables", () => {
@@ -616,9 +616,10 @@ describe("channel list, delivery and test response", () => {
   it("wraps a list of channels", () => {
     const list: ListAlertChannelsResponse = ListAlertChannelsResponseSchema.parse({
       channels: [EXAMPLE_ALERT_CHANNEL],
+      smtp_configured: true,
     });
     expect(list.channels).toEqual([EXAMPLE_ALERT_CHANNEL]);
-    expect(ok(ListAlertChannelsResponseSchema, { channels: [] })).toBe(true);
+    expect(ok(ListAlertChannelsResponseSchema, { channels: [], smtp_configured: false })).toBe(true);
   });
 
   it("parses a delivery and a failed delivery without a status code", () => {

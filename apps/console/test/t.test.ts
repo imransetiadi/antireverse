@@ -176,7 +176,8 @@ const INCIDENT_COPY: Array<[string, string]> = [
   ["alerts.title", "Alert channels"],
   ["alerts.kind.webhook", "Webhook"],
   ["alerts.kind.slack", "Slack"],
-  ["alerts.empty", "No alert channels yet. Add a webhook or a Slack channel to be told when an Incident opens."],
+  // Slice 06b adds the email kind: these two name it.
+  ["alerts.empty", "No alert channels yet. Add a webhook, Slack or email channel to be told when an Incident opens."],
   ["alerts.destination", "{host}…{lastFour}"],
   ["alerts.add.title", "Add a channel"],
   ["alerts.add.kind", "Kind"],
@@ -192,7 +193,7 @@ const INCIDENT_COPY: Array<[string, string]> = [
   ["alerts.remove", "Remove"],
   ["alerts.confirm.remove", "Remove the alert channel {name}? New Incidents will no longer be sent to {destination}."],
   ["alerts.confirm.required", "Nothing was removed. Confirm the change first."],
-  ["error.alerts.kind", "Choose Webhook or Slack."],
+  ["error.alerts.kind", "Choose Webhook, Slack or Email."],
   ["error.alerts.url.required", "Enter a URL."],
   ["error.alerts.url.long", "Use 2,048 characters or fewer."],
   ["error.alerts.url.invalid", "Enter a full URL, for example https://hooks.example.com/alerts."],

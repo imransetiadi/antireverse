@@ -63,6 +63,8 @@ interface ReplayRow {
   method: string;
   route: string;
   status: number;
+  latency_ms: number | null;
+  instance_id: string | null;
   action: string;
   mode: string;
   ip_hash: string | null;
@@ -80,6 +82,8 @@ export const REPLAY_EVENTS_SQL = `SELECT ts,
             payload->'request'->>'method' AS method,
             payload->'request'->>'route' AS route,
             (payload->'request'->>'status')::int AS status,
+            (payload->'request'->>'latency_ms')::float8 AS latency_ms,
+            payload->>'instance_id' AS instance_id,
             payload->'decision'->>'action' AS action,
             payload->'decision'->>'mode' AS mode,
             payload->'actor'->>'ip_hash' AS ip_hash,
@@ -92,17 +96,29 @@ export const REPLAY_EVENTS_SQL = `SELECT ts,
        AND ts >= $4 AND ts <= $5
      ORDER BY ts DESC, event_id DESC
      LIMIT $6`;
+/** `REPLAY_EVENTS_SQL` with `to` left out: the seed of a simulation ends where its period begins (plan 11 A11). */
+export const REPLAY_EVENTS_BEFORE_SQL = REPLAY_EVENTS_SQL.replace("AND ts <= $5", "AND ts < $5");
 
 /**
  * What a Policy simulation replays (slice 11): the `request.decision` Events of one App and Environment of the
- * transaction's Organization with `ts` from `from` to `to`, newest first by `ts` (then by identifier), at most
- * `limit`. Only the members the replay reads leave the database. Read only.
+ * transaction's Organization with `ts` from `from` to `to` — before `to` with `before` — newest first by `ts` (then
+ * by identifier), at most `limit`. Only the members the replay reads leave the database. Read only.
  */
 export async function listReplayEvents(
   q: Queryable,
-  filter: { organizationId: string; appId: string; environment: Environment; from: Date; to: Date; limit: number },
+  filter: {
+    organizationId: string;
+    appId: string;
+    environment: Environment;
+    from: Date;
+    to: Date;
+    limit: number;
+    /** `to` itself left out: whatever fraction of a millisecond an Event carries, it is in one read or the other. */
+    before?: boolean;
+  },
 ): Promise<ReplayEvent[]> {
-  const { rows } = await q.query<ReplayRow>(REPLAY_EVENTS_SQL, [
+  const sql = filter.before === true ? REPLAY_EVENTS_BEFORE_SQL : REPLAY_EVENTS_SQL;
+  const { rows } = await q.query<ReplayRow>(sql, [
     filter.organizationId,
     filter.appId,
     filter.environment,
@@ -112,7 +128,14 @@ export async function listReplayEvents(
   ]);
   return rows.map((row) => ({
     ts: row.ts.toISOString(),
-    request: { method: row.method, route: row.route, status: row.status },
+    // The Shield process and the response time (plan 11 amendment A9); absent when not recorded.
+    ...(row.instance_id === null ? {} : { instance_id: row.instance_id }),
+    request: {
+      method: row.method,
+      route: row.route,
+      status: row.status,
+      ...(row.latency_ms === null ? {} : { latency_ms: row.latency_ms }),
+    },
     decision: { action: row.action, mode: row.mode },
     actor: { ip_hash: row.ip_hash, ip_prefix: row.ip_prefix },
     signature: row.signature_status === null ? null : { status: row.signature_status, body: row.signature_body },

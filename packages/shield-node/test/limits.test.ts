@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import { parseAddress, parseCidr } from "../src/address.ts";
 import type { Client } from "../src/containment.ts";
 import { type CounterStore, MemoryCounterStore } from "../src/counters.ts";
+import { LATENCY_MAX_MS } from "../src/express.ts";
 import {
   createLimiter,
   LIMIT_COUNTS,
@@ -24,6 +25,7 @@ import {
   LIMIT_FAILURE_STATUSES,
   LIMIT_KEYS,
   LIMIT_LIMITS,
+  LIMIT_SLOT_HOLD_MS,
   type LimitRuleInput,
   RATE_LIMITED_BODY,
 } from "../src/limits.ts";
@@ -972,5 +974,103 @@ describe("the limiter: a store that misbehaves", () => {
     } as CounterStore;
     const limiter = createLimiter(store);
     expect(() => limiter.evaluate(policyOf([input(1)]), { ...POST, client }, T0)).toThrow("store down");
+  });
+});
+
+describe("D-071: a failure slot is held 600 s at most", () => {
+  const failures = input(9, { count: "failures", requests: 1, windowS: 3_600 });
+  const client = clientOf("203.0.113.9");
+  const at = (s: number): number => T0 + s * 1_000;
+
+  it("the hold is the cap of the recorded latency: 600 s", () => {
+    expect(LIMIT_SLOT_HOLD_MS).toBe(600_000);
+    expect(LIMIT_SLOT_HOLD_MS).toBe(LATENCY_MAX_MS);
+  });
+
+  it("a request open for 1,200 s holds its slot until 600 s; a guess at 599 s is refused, at 601 s it is not", () => {
+    const limiter = createLimiter(new MemoryCounterStore());
+    const policy = policyOf([failures]);
+    const open = limiter.evaluate(policy, { ...POST, client }, at(0));
+    expect(open?.throttled).toBeNull();
+    expect(limiter.evaluate(policy, { ...POST, client }, at(599))?.throttled?.id).toBe(failures.id);
+    const later = limiter.evaluate(policy, { ...POST, client }, at(601));
+    expect(later?.throttled).toBeNull();
+    expect(limiter.inFlight()).toBe(1); // the open request's slot went; the new one holds its own
+    if (open === null || later === null) throw new Error("no outcome");
+    // The open request closes at 1,200 s with a 401: it counts nothing and releases nothing a second time.
+    limiter.settle(open, 401, at(1_200));
+    expect(limiter.inFlight()).toBe(1);
+    limiter.settle(later, 200, at(1_201));
+    expect(limiter.inFlight()).toBe(0);
+    expect(limiter.evaluate(policy, { ...POST, client }, at(1_202))?.throttled).toBeNull();
+  });
+
+  it("at exactly 600 s the slot is gone (held for [start, start + 600 s))", () => {
+    const limiter = createLimiter(new MemoryCounterStore());
+    const policy = policyOf([failures]);
+    limiter.evaluate(policy, { ...POST, client }, at(0));
+    expect(limiter.evaluate(policy, { ...POST, client }, at(600) - 1)?.throttled).not.toBeNull();
+    expect(limiter.evaluate(policy, { ...POST, client }, at(600))?.throttled).toBeNull();
+  });
+
+  it("a request that closes before 600 s behaves as before: its 401 counts when it closes", () => {
+    const limiter = createLimiter(new MemoryCounterStore());
+    const policy = policyOf([failures]);
+    const open = limiter.evaluate(policy, { ...POST, client }, at(0));
+    if (open === null) throw new Error("no outcome");
+    limiter.settle(open, 401, at(599));
+    expect(limiter.inFlight()).toBe(0);
+    expect(limiter.evaluate(policy, { ...POST, client }, at(700))?.throttled?.id).toBe(failures.id);
+  });
+
+  it("a 401 that closes after 600 s counts nothing, even when no other request expired the slot first", () => {
+    const store = recordingStore();
+    const limiter = createLimiter(store);
+    const policy = policyOf([failures]);
+    const open = limiter.evaluate(policy, { ...POST, client }, at(0));
+    if (open === null) throw new Error("no outcome");
+    store.calls.length = 0;
+    limiter.settle(open, 401, at(600));
+    expect(store.calls.filter((call) => call.startsWith("hit"))).toEqual([]);
+    expect(limiter.inFlight()).toBe(0);
+    limiter.release(open); // nothing left to release
+    expect(limiter.inFlight()).toBe(0);
+  });
+
+  it("nan-hol: a reading of a broken clock holds no slot, counts nothing and never pins the expiry of others", () => {
+    const store = recordingStore();
+    const limiter = createLimiter(store);
+    const policy = policyOf([failures]);
+    for (const broken of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      store.calls.length = 0;
+      const odd = limiter.evaluate(policy, { ...POST, client: clientOf("198.51.100.1") }, broken);
+      expect(odd?.throttled ?? null).toBeNull();
+      expect(odd?.pending ?? []).toEqual([]);
+      expect(limiter.inFlight()).toBe(0);
+      if (odd !== null) limiter.settle(odd, 401, at(1));
+      expect(store.calls.filter((call) => call.startsWith("hit"))).toEqual([]);
+    }
+    // The reviewer's script: one broken reading, then a request that never closes, then a guess an hour later.
+    limiter.evaluate(policy, { ...POST, client: clientOf("198.51.100.2") }, Number.NaN);
+    limiter.evaluate(policy, { ...POST, client }, at(0));
+    expect(limiter.inFlight()).toBe(1);
+    const later = limiter.evaluate(policy, { ...POST, client }, at(3_600));
+    expect(later?.throttled).toBeNull();
+    expect(limiter.inFlight()).toBe(1); // the hour-old slot went; the new guess holds its own
+  });
+
+  it("expired slots leave the books: 100,000 requests that never close hold nothing 600 s later", () => {
+    const limiter = createLimiter(new MemoryCounterStore());
+    const policy = policyOf([{ ...failures, requests: 1_000 }]);
+    for (let i = 0; i < 100_000; i++) {
+      limiter.evaluate(
+        policy,
+        { ...POST, client: clientOf(`10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`) },
+        at(0) + i / 100,
+      );
+    }
+    expect(limiter.inFlight()).toBe(100_000);
+    limiter.evaluate(policy, { ...POST, client }, at(1_601));
+    expect(limiter.inFlight()).toBe(1);
   });
 });

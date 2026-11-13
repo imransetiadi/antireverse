@@ -8,8 +8,11 @@ const COPIED_FOR_MS = 2_000;
 
 type CopyState = "idle" | "copied" | "failed";
 
-/** Copies `value` to the clipboard — and nowhere else — and answers "Copy" with "Copied" for two seconds. */
-export function CopyButton({ value }: { value: string }) {
+/**
+ * Copies `value` to the clipboard — and nowhere else — and answers "Copy" with "Copied" for two seconds.
+ * `describedBy` names the element that says what is copied, when a screen has several values to copy.
+ */
+export function CopyButton({ value, describedBy }: { value: string; describedBy?: string | undefined }) {
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -30,7 +33,7 @@ export function CopyButton({ value }: { value: string }) {
   return (
     <span className="inline-flex flex-col items-end gap-1">
       {/* A fixed minimum width keeps the layout still when the label changes. */}
-      <Button variant="secondary" className="min-w-20" onClick={copy}>
+      <Button variant="secondary" className="min-w-20" onClick={copy} aria-describedby={describedBy}>
         {state === "copied" ? t("copied") : t("copy")}
       </Button>
       {state === "failed" ? (

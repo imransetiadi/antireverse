@@ -4,6 +4,10 @@
 // the keys that sign Attestation Tokens are attestation-keys.json beside it (a separate purpose, rotated daily).
 // Alerts: AR_CONSOLE_URL (default http://127.0.0.1:3000) for the links in alerts; AR_ALLOW_PRIVATE_ALERT_URLS=1
 // allows http: and private addresses as alert channel URLs, for local development only.
+// Email alerts (slice 06b): AR_SMTP_HOST, AR_SMTP_PORT (default 587), AR_SMTP_TLS (starttls, the default, or implicit),
+// AR_SMTP_USER, AR_SMTP_PASSWORD or AR_SMTP_PASSWORD_FILE, AR_SMTP_FROM, AR_SMTP_FROM_NAME (default Airverse); all or
+// none, a partial set stops the start naming the missing variable. AR_SMTP_TEST_CA_FILE: a local test server's CA only.
+// The secret that keys the per-address count of confirmation mails is mail-hash-key.json beside the data directory.
 import { readConfig } from "./config.ts";
 import { consoleLogger } from "./log.ts";
 import { type RunningApi, startApi } from "./server.ts";

@@ -6,7 +6,7 @@ import { ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
 import { ActorHashSchema, CONTAINMENT_LIMITS, ContainmentSchema } from "./containment.ts";
 import { IP_PREFIX_PATTERN, StoredEventSchema } from "./events.ts";
 import { AdvisoryIdSchema, EXAMPLE_FINDING } from "./exposure.ts";
-import { deepFreeze, isoDateTime, text, trimmedText } from "./shared.ts";
+import { deepFreeze, isoDateTime, nameText, text } from "./shared.ts";
 
 // The detection contract: Detections (one managed rule's threshold crossed by one network prefix, or, for
 // `clone-origin`, one Clone Beacon report of a foreign origin), the
@@ -24,8 +24,63 @@ export type Severity = (typeof SEVERITIES)[number];
 export const INCIDENT_STATUSES = ["open", "acknowledged", "resolved"] as const;
 export type IncidentStatus = (typeof INCIDENT_STATUSES)[number];
 
-export const ALERT_CHANNEL_KINDS = ["webhook", "slack"] as const;
+export const ALERT_CHANNEL_KINDS = ["webhook", "slack", "email"] as const;
 export type AlertChannelKind = (typeof ALERT_CHANNEL_KINDS)[number];
+/** The kinds whose destination is a URL (slice 06). */
+const URL_CHANNEL_KINDS = ["webhook", "slack"] as const;
+
+/** A recipient of an email channel receives alerts only once it confirmed by the link of its confirmation mail. */
+export const ALERT_RECIPIENT_STATUSES = ["pending", "confirmed"] as const;
+export type AlertRecipientStatus = (typeof ALERT_RECIPIENT_STATUSES)[number];
+
+/** Email channels (slice 06b, D-072). Deeply frozen. */
+export const ALERT_EMAIL_LIMITS = deepFreeze({
+  /** Recipients of one email channel (at least 1). */
+  recipientsMax: 5,
+  /** Characters of an address (RFC 5321 path limit less the angle brackets). */
+  addressMax: 254,
+  /** Characters of an address's local part (RFC 5321). */
+  localPartMax: 64,
+  /** Lifetime of a confirmation link: 72 hours. */
+  confirmationTtlS: 72 * 3600,
+  /**
+   * Confirmation mails per address per UTC day. The API counts it twice: per Organization and address (the limit a
+   * tenant is told of), and silently for all Organizations together, the address normalised (no `+tag`; Gmail dots
+   * ignored).
+   */
+  confirmationMailsPerAddressPerDay: 3,
+  /** Confirmation mails per Organization per UTC day. Enforced by the API. */
+  confirmationMailsPerOrganizationPerDay: 20,
+  /** Confirmation mails of the whole service per UTC day; the API's `AR_SMTP_CONFIRMATIONS_PER_DAY` may change it. */
+  confirmationMailsPerDay: 500,
+  /** Email channels an Organization may create per UTC day (deleting one does not give it back). Enforced by the API. */
+  emailChannelsPerOrganizationPerDay: 20,
+  /**
+   * Attempts per token at the public confirmation endpoint, counted by the token's hash even while no recipient holds
+   * it; further attempts confirm nothing. Enforced by the API.
+   */
+  confirmAttemptsPerToken: 5,
+  /**
+   * Requests to the public confirmation endpoint per minute, all callers together (the Console calls it from its
+   * server, so a per-address limit would block everyone). Enforced by the API.
+   */
+  confirmPerMinute: 600,
+} as const);
+
+const LOCAL_ATOM = "[a-z0-9!#$%&'*+/=?^_`{|}~-]+";
+const DOMAIN_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+/**
+ * An email address as Airverse accepts it: lower-case ASCII only, a dot-atom local part of at most 64 characters, and
+ * a domain name of at least two labels. No quoted local part, no address literal, no internationalised address.
+ * Nothing in it can end an SMTP command or a header line: no space, control character, `<`, `>`, `,`, `;`, `:`,
+ * `"`, `(`, `)`, `[`, `]` or `\`. The length bound (`ALERT_EMAIL_LIMITS.addressMax`) is checked apart.
+ */
+export const EMAIL_ADDRESS_PATTERN = new RegExp(
+  `^(?=[^@]{1,64}@)${LOCAL_ATOM}(?:\\.${LOCAL_ATOM})*@${DOMAIN_LABEL}(?:\\.${DOMAIN_LABEL})+$`,
+);
+
+/** A confirmation token: 32 random bytes as 43 base64url characters. Only its SHA-256 is stored. */
+export const CONFIRMATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
 /**
  * The managed detection rules. A rule counts matching Events per (Organization, App, Environment, rule,
@@ -173,18 +228,57 @@ export const UpdateIncidentRequestSchema = z.object({
 });
 export type UpdateIncidentRequest = z.infer<typeof UpdateIncidentRequestSchema>;
 
-/** An alert channel as the API returns it. Never its URL and never its signing secret. */
-export const AlertChannelSchema = z.object({
+/** An email address as stored and returned: see `EMAIL_ADDRESS_PATTERN`. */
+export const EmailAddressSchema = z
+  .string()
+  .max(ALERT_EMAIL_LIMITS.addressMax)
+  .regex(EMAIL_ADDRESS_PATTERN, "Must be a valid email address.");
+
+/**
+ * One recipient of an email channel. Never its confirmation token. `last_sent_at` is when the last mail (confirmation
+ * or alert) to this recipient of this channel was accepted by the SMTP server; null before the first.
+ */
+export const AlertRecipientSchema = z
+  .object({
+    id: z.string().regex(ID_PATTERNS.rcp),
+    address: EmailAddressSchema,
+    status: z.enum(ALERT_RECIPIENT_STATUSES),
+    /** Set exactly when the status is `confirmed`. */
+    confirmed_at: z.iso.datetime().nullable(),
+    last_sent_at: z.iso.datetime().nullable(),
+  })
+  .refine((recipient) => (recipient.status === "confirmed") === (recipient.confirmed_at !== null), {
+    message: "confirmed_at is set exactly when the recipient is confirmed.",
+    path: ["confirmed_at"],
+  });
+export type AlertRecipient = z.infer<typeof AlertRecipientSchema>;
+
+const ChannelCommon = {
   id: z.string().regex(ID_PATTERNS.chn),
-  kind: z.enum(ALERT_CHANNEL_KINDS),
   name: text(INCIDENT_LIMITS.nameMax).min(1),
+  active: z.boolean(),
+  created_at: z.iso.datetime(),
+};
+
+/** A webhook or Slack channel: its URL's host and last 4 characters, never the URL and never the signing secret. */
+const UrlAlertChannelSchema = z.object({
+  ...ChannelCommon,
+  kind: z.enum(URL_CHANNEL_KINDS),
   /** The host of the URL, for recognition. */
   host: text(HOST_MAX).min(1),
   /** The last 4 characters of the URL. */
   url_last4: z.string().length(4),
-  active: z.boolean(),
-  created_at: z.iso.datetime(),
 });
+
+/** An email channel (slice 06b): its recipients in the order given, with their confirmation status. */
+const EmailAlertChannelSchema = z.object({
+  ...ChannelCommon,
+  kind: z.literal("email"),
+  recipients: z.array(AlertRecipientSchema).min(1).max(ALERT_EMAIL_LIMITS.recipientsMax),
+});
+
+/** An alert channel as the API returns it. Never a URL, a signing secret or a confirmation token. */
+export const AlertChannelSchema = z.discriminatedUnion("kind", [UrlAlertChannelSchema, EmailAlertChannelSchema]);
 export type AlertChannel = z.infer<typeof AlertChannelSchema>;
 
 function isHttpUrl(value: string): boolean {
@@ -196,15 +290,37 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+/** The recipients of a new email channel: trimmed and lower-cased, then 1..5 valid addresses, each once. */
+const RecipientListSchema = z
+  .array(z.string().trim().toLowerCase().pipe(EmailAddressSchema))
+  .min(1)
+  .max(ALERT_EMAIL_LIMITS.recipientsMax)
+  .superRefine((addresses, context) => {
+    addresses.forEach((address, index) => {
+      if (addresses.indexOf(address) !== index) {
+        context.addIssue({ code: "custom", message: "Each address may be given once.", path: [index] });
+      }
+    });
+  });
+
 /**
- * Body of `POST /v1/alert-channels`. The URL must parse with an `http:` or `https:` scheme; whether `http:`
- * and private addresses are allowed is the API's decision (SSRF guard), not this schema's.
+ * Body of `POST /v1/alert-channels`. A webhook or Slack channel has a URL, which must parse with an `http:` or
+ * `https:` scheme; whether `http:` and private addresses are allowed is the API's decision (SSRF guard), not this
+ * schema's. An email channel has 1..5 recipients instead; the API refuses it (409 `smtp-not-configured`) when the
+ * service has no SMTP settings.
  */
-export const CreateAlertChannelRequestSchema = z.object({
-  kind: z.enum(ALERT_CHANNEL_KINDS),
-  name: trimmedText(INCIDENT_LIMITS.nameMax),
-  url: text(INCIDENT_LIMITS.urlMax).min(1).refine(isHttpUrl, "Must be an http: or https: URL."),
-});
+export const CreateAlertChannelRequestSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.enum(URL_CHANNEL_KINDS),
+    name: nameText(INCIDENT_LIMITS.nameMax),
+    url: text(INCIDENT_LIMITS.urlMax).min(1).refine(isHttpUrl, "Must be an http: or https: URL."),
+  }),
+  z.object({
+    kind: z.literal("email"),
+    name: nameText(INCIDENT_LIMITS.nameMax),
+    recipients: RecipientListSchema,
+  }),
+]);
 export type CreateAlertChannelRequestInput = z.input<typeof CreateAlertChannelRequestSchema>;
 export type CreateAlertChannelRequest = z.infer<typeof CreateAlertChannelRequestSchema>;
 
@@ -215,14 +331,40 @@ export const CreateAlertChannelResponseSchema = z
     signing_secret: SigningSecretSchema.optional(),
   })
   .refine((response) => (response.channel.kind === "webhook") === (response.signing_secret !== undefined), {
-    message: "A webhook channel carries its signing secret once; a Slack channel carries none.",
+    message: "A webhook channel carries its signing secret once; Slack and email channels carry none.",
     path: ["signing_secret"],
   });
 export type CreateAlertChannelResponse = z.infer<typeof CreateAlertChannelResponseSchema>;
 
-/** 200 of `GET /v1/alert-channels`. */
-export const ListAlertChannelsResponseSchema = z.object({ channels: z.array(AlertChannelSchema) });
+/**
+ * 200 of `GET /v1/alert-channels`. `smtp_configured` is false when the service has no SMTP settings: email channels
+ * can then be neither created nor delivered to, and the Console says why.
+ */
+export const ListAlertChannelsResponseSchema = z.object({
+  channels: z.array(AlertChannelSchema),
+  smtp_configured: z.boolean(),
+});
 export type ListAlertChannelsResponse = z.infer<typeof ListAlertChannelsResponseSchema>;
+
+/** Body of the public `POST /v1/alert-recipients/confirm` (no key): the token of the confirmation link. */
+export const ConfirmAlertRecipientRequestSchema = z.object({
+  token: z.string().regex(CONFIRMATION_TOKEN_PATTERN),
+});
+export type ConfirmAlertRecipientRequest = z.infer<typeof ConfirmAlertRecipientRequestSchema>;
+
+/**
+ * 200 of `POST /v1/alert-recipients/confirm`. `confirmed: false` alike for an unknown, expired or used token: the
+ * answer says nothing about which, nor about any address, channel or Organization.
+ */
+export const ConfirmAlertRecipientResponseSchema = z.object({ confirmed: z.boolean() });
+export type ConfirmAlertRecipientResponse = z.infer<typeof ConfirmAlertRecipientResponseSchema>;
+
+/**
+ * 202 of `POST /v1/alert-channels/:channelId/recipients/:recipientId/resend`: the recipient, still pending; a new
+ * confirmation mail is on its way and the previous link no longer works.
+ */
+export const ResendConfirmationResponseSchema = z.object({ recipient: AlertRecipientSchema });
+export type ResendConfirmationResponse = z.infer<typeof ResendConfirmationResponseSchema>;
 
 /** One attempt to deliver an alert. It records no URL, no secret and no response body. */
 export const AlertDeliverySchema = z.object({
@@ -232,9 +374,15 @@ export const AlertDeliverySchema = z.object({
   incident_id: z.string().regex(ID_PATTERNS.inc).nullable(),
   /** 1 for the first attempt. */
   attempt: z.int().min(1),
-  /** `delivered` for a 2xx response, else `failed`. */
+  /**
+   * `delivered` for a 2xx response, else `failed`. For an email channel: `delivered` when the SMTP server accepted the
+   * mail of every recipient of the attempt (a retry is made for the recipients that failed only).
+   */
   outcome: z.enum(["delivered", "failed"]),
-  /** Null when no response arrived (refused, timed out, network error). */
+  /**
+   * The HTTP status, or for an email channel the SMTP reply code (the first failing one, else the last accepting
+   * one). Null when no response arrived (refused, timed out, network error).
+   */
   status_code: z.int().min(100).max(599).nullable(),
   at: z.iso.datetime(),
 });
@@ -371,6 +519,31 @@ export const EXAMPLE_ALERT_CHANNEL: AlertChannel = deepFreeze({
   name: "Ops webhook",
   host: "hooks.example.com",
   url_last4: "k/ar",
+  active: true,
+  created_at: "2026-11-10T08:00:00.000Z",
+});
+
+/** An email channel as the API returns it: one confirmed and one pending recipient, never a token. */
+export const EXAMPLE_EMAIL_CHANNEL: AlertChannel = deepFreeze({
+  id: "chn_89abcdef0123456789abcdef",
+  kind: "email",
+  name: "On-call email",
+  recipients: [
+    {
+      id: "rcp_0123456789abcdef01234567",
+      address: "oncall@example.com",
+      status: "confirmed",
+      confirmed_at: "2026-11-10T08:05:00.000Z",
+      last_sent_at: "2026-11-10T08:05:00.000Z",
+    },
+    {
+      id: "rcp_89abcdef0123456789abcdef",
+      address: "lead@example.com",
+      status: "pending",
+      confirmed_at: null,
+      last_sent_at: "2026-11-10T08:00:01.000Z",
+    },
+  ],
   active: true,
   created_at: "2026-11-10T08:00:00.000Z",
 });

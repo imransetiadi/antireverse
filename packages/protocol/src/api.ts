@@ -2,9 +2,12 @@
 import { z } from "zod";
 import { ADMIN_KEY_PATTERN, ENVIRONMENTS, ID_PATTERNS, LIMITS, SHIELD_KEY_PATTERN } from "./constants.ts";
 import { StoredEventSchema } from "./events.ts";
+import { nameText } from "./shared.ts";
 
 /** A name as a client sends it: trimmed first, then 1..80 characters. */
 const NameInputSchema = z.string().trim().min(1).max(LIMITS.nameMax);
+/** An App name as a client sends it: the one rule of names (`nameText`). */
+const AppNameInputSchema = nameText(LIMITS.nameMax);
 const NameSchema = z.string().min(1).max(LIMITS.nameMax);
 const EnvironmentSchema = z.enum(ENVIRONMENTS);
 
@@ -43,7 +46,7 @@ export type OrganizationResponse = z.infer<typeof OrganizationResponseSchema>;
 
 /** Body of `POST /v1/apps`. The Environment of the App's first Shield key defaults to development. */
 export const CreateAppRequestSchema = z.object({
-  name: NameInputSchema,
+  name: AppNameInputSchema,
   environment: EnvironmentSchema.default("development"),
 });
 /** What a client may send: `environment` is optional. */

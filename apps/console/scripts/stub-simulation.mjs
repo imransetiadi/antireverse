@@ -83,7 +83,17 @@ export function stubSimulation(rules, nowMs = Date.now()) {
     truncated: false,
     undecidable_events:
       rows.length === 0 ? 0 : UNMATCHED + (rows.some((row) => row.would_fail_signature > 0) ? UNSIGNED_UNKNOWN : 0),
-    not_simulated: ["patches", "containments", "decoded_paths", "device_limits", "body_verification"],
+    not_simulated: [
+      "patches",
+      "containments",
+      "decoded_paths",
+      "device_limits",
+      "body_verification",
+      "unrecorded_requests",
+      "counter_eviction",
+      "custom_counter_store",
+      "timing",
+    ],
     rules: rows,
     totals: {
       would_refuse,

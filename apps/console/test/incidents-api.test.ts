@@ -170,8 +170,8 @@ describe("api client — Incidents", () => {
 
 describe("api client — alert channels", () => {
   it("lists the channels", async () => {
-    fetchMock.mockResolvedValueOnce(json(200, { channels: [EXAMPLE_ALERT_CHANNEL] }));
-    expect(await listAlertChannels(key)).toEqual({ channels: [EXAMPLE_ALERT_CHANNEL] });
+    fetchMock.mockResolvedValueOnce(json(200, { channels: [EXAMPLE_ALERT_CHANNEL], smtp_configured: true }));
+    expect(await listAlertChannels(key)).toEqual({ channels: [EXAMPLE_ALERT_CHANNEL], smtp_configured: true });
     const { url, headers } = lastCall();
     expect(url).toBe(`${API}/v1/alert-channels`);
     expect(headers.get("authorization")).toBe(`Bearer ${key}`);
@@ -252,7 +252,9 @@ describe("api client — alert channels", () => {
   });
 
   it("turns a channel list or a delivery that fails the schema into ApiError 502", async () => {
-    fetchMock.mockResolvedValueOnce(json(200, { channels: [{ ...EXAMPLE_ALERT_CHANNEL, kind: "email" }] }));
+    fetchMock.mockResolvedValueOnce(
+      json(200, { channels: [{ ...EXAMPLE_ALERT_CHANNEL, kind: "pager" }], smtp_configured: true }),
+    );
     expect(((await caught(listAlertChannels(key))) as ApiError).status).toBe(502);
     fetchMock.mockResolvedValueOnce(json(200, { delivery: { ...DELIVERY, outcome: "maybe" } }));
     expect(((await caught(testAlertChannel(key, channelId))) as ApiError).status).toBe(502);

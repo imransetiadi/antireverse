@@ -7,7 +7,7 @@ import {
   type SimulationResult,
 } from "@antireverse/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { insertEvents, REPLAY_EVENTS_SQL } from "../src/stores/events.ts";
+import { insertEvents, REPLAY_EVENTS_BEFORE_SQL, REPLAY_EVENTS_SQL } from "../src/stores/events.ts";
 import {
   bearer,
   createAppFor,
@@ -50,10 +50,19 @@ describe("Policy simulation", () => {
     agoMs: number,
     method: string,
     route: string,
-    more: { status?: number; ip?: string | null; signature?: ShieldEvent["signature"]; prefix?: string } = {},
+    more: {
+      status?: number;
+      ip?: string | null;
+      signature?: ShieldEvent["signature"];
+      prefix?: string;
+      /** The Shield process (A9); null: a Shield from before A9, which does not say. */
+      instance?: string | null;
+      latencyMs?: number;
+    } = {},
   ): ShieldEvent {
     return shieldEvent(clock.now.getTime() - agoMs, {
-      request: { method, route, status: more.status ?? 200, latency_ms: 1 },
+      ...(more.instance === null ? {} : { instance_id: more.instance ?? "0123456789abcdef0123456789abcdef" }),
+      request: { method, route, status: more.status ?? 200, latency_ms: more.latencyMs ?? 1 },
       actor: { ip_prefix: more.prefix ?? "198.51.100.0/24", ip_hash: more.ip === undefined ? A : more.ip },
       signature: more.signature ?? null,
     });
@@ -96,6 +105,7 @@ describe("Policy simulation", () => {
       now: () => clock.now,
       simulation: {
         eventsMax: 20,
+        seedEventsMax: 3,
         timeLimitMs: 10_000,
         // A clock the tests move: every read of it costs `perRead` milliseconds.
         elapsedMs: () => {
@@ -151,7 +161,17 @@ describe("Policy simulation", () => {
       events: 11,
       truncated: false,
       undecidable_events: 2,
-      not_simulated: ["patches", "containments", "decoded_paths", "device_limits", "body_verification"],
+      not_simulated: [
+        "patches",
+        "containments",
+        "decoded_paths",
+        "device_limits",
+        "body_verification",
+        "unrecorded_requests",
+        "counter_eviction",
+        "custom_counter_store",
+        "timing",
+      ],
       rules: [
         {
           index: 0,
@@ -329,6 +349,95 @@ describe("Policy simulation", () => {
     expect(simulation.totals).toEqual({ would_refuse: 3, clients_affected: 1, unknown_client_events: 2 });
   });
 
+  it("replays limits per Shield process and response time, as stored (plan 11 amendment A9)", async () => {
+    const appId = await freshApp();
+    const failures = {
+      name: "Login failures",
+      path: "/login",
+      methods: ["POST"],
+      action: "throttle",
+      mode: "monitor",
+      limit: { requests: 1, window_s: 1, key: "ip", count: "failures" },
+    };
+    await store(appId, [
+      // Does not name its process: supports no claim.
+      ...[9, 8].map((s) => event(s * 1_000, "POST", "/login", { instance: null })),
+      // A 401 that took 1.5 s, then another 2 s after it arrived: Shield counted the first when it closed.
+      event(4_000, "POST", "/login", { status: 401, latencyMs: 1_500, ip: B }),
+      event(2_000, "POST", "/login", { status: 401, ip: B }),
+    ]);
+    const simulation = await simulate(appId, [limitRule, failures]);
+    expect(simulation.rules[0]).toMatchObject({ matched: 4, would_throttle: 0 });
+    expect(simulation.rules[1]).toMatchObject({ matched: 4, would_throttle: 1 });
+  });
+
+  describe("what Shield counted before the period (plan 11 amendment A11)", () => {
+    const DAY = 24 * 3_600_000;
+    const generous = { ...limitRule, name: "Generous", limit: { requests: 100, window_s: 60, key: "ip" } };
+    const failures = {
+      ...limitRule,
+      name: "Failures",
+      limit: { requests: 1, window_s: 60, key: "ip", count: "failures" },
+    };
+
+    it("seeds the limit counters with the Events before the period, reporting none of them (R1)", async () => {
+      const appId = await freshApp();
+      await store(appId, [
+        event(DAY + 30_000, "POST", "/login"),
+        event(DAY + 20_000, "POST", "/login"),
+        event(DAY - 5_000, "POST", "/login"),
+      ]);
+      const simulation = await simulate(appId, [limitRule]);
+      expect(simulation).toMatchObject({ events: 1, truncated: false });
+      expect(simulation.rules[0]).toMatchObject({ matched: 1, would_throttle: 1, undecidable: 0 });
+    });
+
+    it("holds a failure slot for a request in flight from before the period (R4 a)", async () => {
+      const appId = await freshApp();
+      await store(appId, [
+        event(DAY + 10_000, "POST", "/login", { latencyMs: 20_000 }),
+        event(DAY - 5_000, "POST", "/login"),
+      ]);
+      const simulation = await simulate(appId, [failures]);
+      expect(simulation.rules[0]).toMatchObject({ matched: 1, would_throttle: 0, undecidable: 1 });
+    });
+
+    it("does not pass a limit early in the period when the Events read were cut", async () => {
+      const appId = await freshApp();
+      // 22 Events a second apart: the cap of 20 drops the oldest two, which Shield still counted.
+      await store(
+        appId,
+        Array.from({ length: 22 }, (_, n) => event((22 - n) * 1_000, "POST", "/login")),
+      );
+      const simulation = await simulate(appId, [generous]);
+      expect(simulation).toMatchObject({ events: 20, truncated: true });
+      expect(simulation.rules[0]).toMatchObject({ matched: 20, would_throttle: 0, undecidable: 20 });
+    });
+
+    it("leaves no Event between the seed and the period, whatever its fraction of a millisecond (fourth review)", async () => {
+      const appId = await freshApp();
+      const window = clock.now.getTime() - DAY;
+      const late = { ...event(0, "POST", "/login"), ts: `${new Date(window - 1).toISOString().slice(0, -1)}5Z` };
+      await store(appId, [late, event(DAY - 1_000, "POST", "/login"), event(DAY - 2_000, "POST", "/login")]);
+      // Limit 2 a minute: the Event half a millisecond before the period is the first of three.
+      const simulation = await simulate(appId, [limitRule]);
+      expect(simulation.rules[0]).toMatchObject({ matched: 2, would_throttle: 1, undecidable: 0 });
+    });
+
+    it("does not pass a limit early in the period when the seed was cut", async () => {
+      const appId = await freshApp();
+      const before = [50, 40, 30, 20, 10].map((s) => event(DAY + s * 1_000, "POST", "/login"));
+      await store(appId, [...before, event(DAY - 5_000, "POST", "/login")]);
+      // The seed holds 3 of the 5: the two oldest may still count at 5 s into the period.
+      const simulation = await simulate(appId, [generous]);
+      expect(simulation.rules[0]).toMatchObject({ matched: 1, would_throttle: 0, undecidable: 1 });
+      // A seed that holds them all leaves room: a pass.
+      const whole = await freshApp();
+      await store(whole, [...before.slice(2), event(DAY - 5_000, "POST", "/login")]);
+      expect((await simulate(whole, [generous])).rules[0]).toMatchObject({ matched: 1, undecidable: 0 });
+    });
+  });
+
   it("does not judge a limit for a network on the Organization's never-block list (review F3)", async () => {
     const appId = await freshApp();
     const listed = await api.app.request(
@@ -379,22 +488,27 @@ describe("Policy simulation", () => {
       appId,
       Array.from({ length: 200 }, (_, n) => event((n + 1) * 1_000, "GET", "/api/admin/users")),
     );
-    const plan = await api.db.owner(async (q) => {
-      await q.query("ANALYZE events");
-      await q.query("SET LOCAL enable_seqscan = off");
-      const { rows } = await q.query<Record<string, string>>(
-        `EXPLAIN ${REPLAY_EVENTS_SQL.replace("$1", `'${organizationA}'`)
-          .replace("$2", `'${appId}'`)
-          .replace("$3", "'production'")
-          .replace("$4", "'2026-11-10T00:00:00Z'")
-          .replace("$5", "'2026-11-12T00:00:00Z'")
-          .replace("$6", "21")}`,
-      );
-      return rows.map((row) => Object.values(row)[0]).join("\n");
-    });
-    expect(plan).toContain("events_replay");
-    // The index gives the order: nothing is sorted.
-    expect(plan).not.toContain("Sort");
+    // The period's read, and the seed's (A11), which ends before the period begins.
+    expect(REPLAY_EVENTS_BEFORE_SQL).toContain("AND ts < $5");
+    for (const sql of [REPLAY_EVENTS_SQL, REPLAY_EVENTS_BEFORE_SQL]) {
+      const plan = await api.db.owner(async (q) => {
+        await q.query("ANALYZE events");
+        await q.query("SET LOCAL enable_seqscan = off");
+        const { rows } = await q.query<Record<string, string>>(
+          `EXPLAIN ${sql
+            .replace("$1", `'${organizationA}'`)
+            .replace("$2", `'${appId}'`)
+            .replace("$3", "'production'")
+            .replace("$4", "'2026-11-10T00:00:00Z'")
+            .replace("$5", "'2026-11-12T00:00:00Z'")
+            .replace("$6", "21")}`,
+        );
+        return rows.map((row) => Object.values(row)[0]).join("\n");
+      });
+      expect(plan).toContain("events_replay");
+      // The index gives the order: nothing is sorted.
+      expect(plan).not.toContain("Sort");
+    }
   });
 
   it("replays a device limit with the recorded attestation", async () => {

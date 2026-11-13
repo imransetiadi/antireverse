@@ -15,6 +15,14 @@ export const API_URL = `http://127.0.0.1:${API_PORT}`;
 export const CONSOLE_URL = `http://127.0.0.1:${CONSOLE_PORT}`;
 
 const dataDir = join(mkdtempSync(join(tmpdir(), "antireverse-e2e-")), "pg");
+// The stand-in DNS of the e2e API (slice 14): a JSON file of TXT records the journey publishes and the API's resolver
+// reads (fixtures/api-fixture-patches.ts). Set once by the runner, so that its workers, which inherit the environment
+// and load this file again, use the same path.
+process.env.E2E_FAKE_DNS_FILE ||= join(mkdtempSync(join(tmpdir(), "antireverse-e2e-dns-")), "dns-records.json");
+export const FAKE_DNS_FILE = process.env.E2E_FAKE_DNS_FILE;
+// The mails of the e2e API's local SMTP server (slice 06b), written by fixtures/api-fixture-patches.ts as they arrive.
+process.env.E2E_FAKE_MAIL_FILE ||= join(mkdtempSync(join(tmpdir(), "antireverse-e2e-mail-")), "mails.json");
+export const FAKE_MAIL_FILE = process.env.E2E_FAKE_MAIL_FILE;
 
 export default defineConfig({
   testDir: ".",
@@ -33,7 +41,8 @@ export default defineConfig({
       name: "api",
       // The fixture advisories (slice 19) are imported into the fresh data directory with the real sync command
       // before the API takes it over (PGlite allows one owner at a time). Advisories are global, not tenant data.
-      // The API is main.ts with the fixture Virtual patch catalog (slice 20): see fixtures/api-fixture-patches.ts.
+      // The API is main.ts with the fixture Virtual patch catalog (slice 20) and a stand-in DNS resolver for Prove
+      // (slice 14): see fixtures/api-fixture-patches.ts.
       command:
         "npx tsx apps/api/src/vulns/cli.ts --fixture apps/api/test/fixtures/advisories.json && exec npx tsx tests/e2e/fixtures/api-fixture-patches.ts",
       cwd: root,
@@ -44,6 +53,8 @@ export default defineConfig({
         AR_DATA_DIR: dataDir,
         AR_ALLOW_PRIVATE_ALERT_URLS: "1",
         AR_CONSOLE_URL: CONSOLE_URL,
+        E2E_FAKE_DNS_FILE: FAKE_DNS_FILE,
+        E2E_FAKE_MAIL_FILE: FAKE_MAIL_FILE,
       },
       url: `${API_URL}/healthz`,
       reuseExistingServer: false,

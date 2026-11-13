@@ -4,8 +4,13 @@ import {
   AllowlistEntryResponseSchema,
   type AppResponse,
   AppResponseSchema,
+  type AuthorizeRequest,
+  type AuthorizeResult,
+  AuthorizeResultSchema,
   type BuildResponse,
   BuildResponseSchema,
+  type ConfirmAlertRecipientResponse,
+  ConfirmAlertRecipientResponseSchema,
   type ConflictReason,
   type ContainmentResponse,
   ContainmentResponseSchema,
@@ -21,6 +26,8 @@ import {
   type CreateOrganizationRequestInput,
   type CreateOrganizationResponse,
   CreateOrganizationResponseSchema,
+  type CurrentRulesOfEngagementResponse,
+  CurrentRulesOfEngagementResponseSchema,
   type Environment,
   type FindingDetailResponse,
   FindingDetailResponseSchema,
@@ -53,6 +60,10 @@ import {
   ListIncidentsResponseSchema,
   type ListPatchesResponse,
   ListPatchesResponseSchema,
+  type ListRulesOfEngagementResponse,
+  ListRulesOfEngagementResponseSchema,
+  type ListTargetsResponse,
+  ListTargetsResponseSchema,
   type OrganizationResponse,
   OrganizationResponseSchema,
   type PolicyResponse,
@@ -62,16 +73,25 @@ import {
   PolicyVersionsResponseSchema,
   type ProblemError,
   ProblemSchema,
+  type ResendConfirmationResponse,
+  ResendConfirmationResponseSchema,
   type RollbackPolicyRequest,
+  type RulesOfEngagementResponse,
+  RulesOfEngagementResponseSchema,
   type SetPatchModeRequest,
   type SigningKeyResponse,
   SigningKeyResponseSchema,
+  type SignRulesOfEngagementRequest,
   type SimulatePolicyRequestInput,
   type SimulatePolicyResponse,
   SimulatePolicyResponseSchema,
+  type TargetResponse,
+  TargetResponseSchema,
   type TestAlertChannelResponse,
   TestAlertChannelResponseSchema,
   type UpdateIncidentRequest,
+  type VerifyTargetResponse,
+  VerifyTargetResponseSchema,
 } from "@antireverse/protocol";
 import { z } from "zod";
 
@@ -86,7 +106,10 @@ const DEFAULT_API_URL = "http://127.0.0.1:8787";
 const KEY_LIKE = /\b(?:aro|ark|whsec)_[A-Za-z0-9_-]+/g;
 /** Anything that looks like a URL: an alert channel URL must never travel in an error. */
 const URL_LIKE = /\b[a-z][a-z0-9+.-]*:\/\/\S*/gi;
-const scrub = (text: string): string => text.replace(URL_LIKE, "[redacted]").replace(KEY_LIKE, "[redacted]");
+/** Anything that looks like a confirmation token of an alert recipient (43 base64url characters, slice 06b). */
+const TOKEN_LIKE = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+const scrub = (text: string): string =>
+  text.replace(URL_LIKE, "[redacted]").replace(KEY_LIKE, "[redacted]").replace(TOKEN_LIKE, "[redacted]");
 
 /** The API answered with a failure, answered with something the contract does not allow, or did not answer (status 0). */
 export class ApiError extends Error {
@@ -447,7 +470,10 @@ export function updateIncident(
   });
 }
 
-/** `GET /v1/alert-channels` — host and last 4 characters of each URL, never the URL. */
+/**
+ * `GET /v1/alert-channels` — host and last 4 characters of each URL, never the URL; an email channel's recipients
+ * with their status, never a token; and whether the service has SMTP settings.
+ */
 export function listAlertChannels(key: string): Promise<ListAlertChannelsResponse> {
   return call("/v1/alert-channels", ListAlertChannelsResponseSchema, { key });
 }
@@ -466,6 +492,30 @@ export function createAlertChannel(
 /** `DELETE /v1/alert-channels/:channelId` — 204; 404 for an unknown channel or one of another Organization. */
 export function deleteAlertChannel(key: string, channelId: string): Promise<void> {
   return callNoContent(`/v1/alert-channels/${encodeURIComponent(channelId)}`, { method: "DELETE", key });
+}
+
+/**
+ * `POST /v1/alert-channels/:channelId/recipients/:recipientId/resend` — 202: a new confirmation mail is on its way
+ * and the previous link no longer works. 429 when the address got its mails of the day; 409 `recipient-confirmed`.
+ */
+export function resendConfirmation(
+  key: string,
+  channelId: string,
+  recipientId: string,
+): Promise<ResendConfirmationResponse> {
+  const path = `/v1/alert-channels/${encodeURIComponent(channelId)}/recipients/${encodeURIComponent(recipientId)}/resend`;
+  return call(path, ResendConfirmationResponseSchema, { method: "POST", key });
+}
+
+/**
+ * Public `POST /v1/alert-recipients/confirm` — no key. The token of a confirmation link travels in the body only,
+ * never in the address of the request, and no error built here can carry it (see `scrub`).
+ */
+export function confirmAlertRecipient(token: string): Promise<ConfirmAlertRecipientResponse> {
+  return call("/v1/alert-recipients/confirm", ConfirmAlertRecipientResponseSchema, {
+    method: "POST",
+    body: { token },
+  });
 }
 
 /** `POST /v1/alert-channels/:channelId/test` — sends one test alert synchronously and returns its delivery. */
@@ -611,4 +661,59 @@ export function setPatchMode(key: string, appId: string, patchId: string, reques
     key,
     body: request,
   });
+}
+
+// ── Prove (slice 14) ──────────────────────────────────────────────────────────────────────────────────
+// The verification token is part of a target's instructions: it is shown to the admin on the target's page and
+// never put into a URL, an error or a log line.
+
+/** `GET /v1/targets` — the Organization's Verified Targets, without their tokens. */
+export function listTargets(key: string): Promise<ListTargetsResponse> {
+  return call("/v1/targets", ListTargetsResponseSchema, { key });
+}
+
+/** `POST /v1/targets` — 201 with the target and how to prove it; a refused host rejects with ValidationError. */
+export function createTarget(key: string, input: { host: string }): Promise<TargetResponse> {
+  return call("/v1/targets", TargetResponseSchema, { method: "POST", key, body: input });
+}
+
+/** `GET /v1/targets/:targetId` — the target and how to prove it; 404 outside the Organization. */
+export function getTarget(key: string, targetId: string): Promise<TargetResponse> {
+  return call(`/v1/targets/${encodeURIComponent(targetId)}`, TargetResponseSchema, { key });
+}
+
+/** `DELETE /v1/targets/:targetId` — 204; a target in the current scope rejects with ConflictError. */
+export function deleteTarget(key: string, targetId: string): Promise<void> {
+  return callNoContent(`/v1/targets/${encodeURIComponent(targetId)}`, { method: "DELETE", key });
+}
+
+/** `POST /v1/targets/:targetId/verify` — checks DNS, then the file; 429 after ten checks of the target in an hour. */
+export function verifyTarget(key: string, targetId: string): Promise<VerifyTargetResponse> {
+  return call(`/v1/targets/${encodeURIComponent(targetId)}/verify`, VerifyTargetResponseSchema, {
+    method: "POST",
+    key,
+  });
+}
+
+/** `GET /v1/rules-of-engagement` — every signed version, newest first. */
+export function listRulesOfEngagement(key: string): Promise<ListRulesOfEngagementResponse> {
+  return call("/v1/rules-of-engagement", ListRulesOfEngagementResponseSchema, { key });
+}
+
+/** `GET /v1/rules-of-engagement/current` — the current version, or `{ version: null }` before the first. */
+export function getCurrentRulesOfEngagement(key: string): Promise<CurrentRulesOfEngagementResponse> {
+  return call("/v1/rules-of-engagement/current", CurrentRulesOfEngagementResponseSchema, { key });
+}
+
+/** `POST /v1/rules-of-engagement` — signs a new, immutable version with the typed phrase; 201 with the version. */
+export function signRulesOfEngagement(
+  key: string,
+  request: SignRulesOfEngagementRequest,
+): Promise<RulesOfEngagementResponse> {
+  return call("/v1/rules-of-engagement", RulesOfEngagementResponseSchema, { method: "POST", key, body: request });
+}
+
+/** `POST /v1/prove/authorize` — a dry check of one test: allowed, or the rule that refuses it. Nothing is started. */
+export function checkAuthorization(key: string, request: AuthorizeRequest): Promise<AuthorizeResult> {
+  return call("/v1/prove/authorize", AuthorizeResultSchema, { method: "POST", key, body: request });
 }

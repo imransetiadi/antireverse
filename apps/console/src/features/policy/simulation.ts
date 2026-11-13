@@ -114,6 +114,10 @@ const NOT_SIMULATED: ReadonlyMap<string, MessageKey> = new Map([
   ["decoded_paths", "policy.simulate.not.decoded_paths"],
   ["device_limits", "policy.simulate.not.device_limits"],
   ["body_verification", "policy.simulate.not.body_verification"],
+  ["unrecorded_requests", "policy.simulate.not.unrecorded_requests"],
+  ["counter_eviction", "policy.simulate.not.counter_eviction"],
+  ["custom_counter_store", "policy.simulate.not.custom_counter_store"],
+  ["timing", "policy.simulate.not.timing"],
 ]);
 
 /** What a simulation leaves out, in words; a value this Console does not know is shown as it came. */

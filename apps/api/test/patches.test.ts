@@ -207,6 +207,7 @@ describe("Virtual patches", () => {
   const notifier = {
     incidentOpened: (incident: Incident, organizationId: string) => opened.push({ incident, organizationId }),
     test: async () => null,
+    confirmations: () => {},
     drain: async () => {},
   };
 

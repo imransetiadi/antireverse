@@ -43,6 +43,7 @@ describe("exposure review fixes (A7)", () => {
   const notifier: Notifier = {
     incidentOpened: (incident) => void opened.push(incident),
     test: async () => null,
+    confirmations: () => {},
     drain: async () => {},
   };
   let admin: string;

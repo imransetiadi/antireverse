@@ -82,6 +82,7 @@ describe("Findings", () => {
         holder.notifier?.incidentOpened(incident, organizationId);
       },
       test: (channelId, organizationId) => (holder.notifier as Notifier).test(channelId, organizationId),
+      confirmations: () => {},
       drain: () => (holder.notifier as Notifier).drain(),
     };
     api = await makeTestApi({ now, notifier });

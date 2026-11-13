@@ -37,6 +37,7 @@ import {
   type PolicyRuleInput,
   RATE_LIMITED_RESPONSE_BODY,
   SIMULATION_LIMITS,
+  SIMULATION_NOT_SIMULATED,
   SignedBundleSchema,
   SimulatePolicyResponseSchema,
   type SimulationResult,
@@ -53,6 +54,8 @@ const DAY_MS = 24 * 3_600_000;
 
 /** The request limit of the draft: 10 requests per 60 s per address on GET /api/search. */
 const SEARCH = { path: "/api/search", requests: 10, window_s: 60 };
+/** The gap between two failed logins, so that the replay can judge every one (see `sendRound`). */
+const LOGIN_GAP_MS = 25;
 /** Login protection of the draft: 10 failed responses per 300 s per address on POST /login. */
 const LOGIN = { path: "/login", requests: 10, window_s: 300 };
 
@@ -212,7 +215,11 @@ async function sendRound(): Promise<Round> {
   for (let i = 0; i < 5; i++) round.light.push(await send(LIGHT_SEARCHER, "GET", `${SEARCH.path}?q=${i}`));
   for (let i = 0; i < 12; i++) {
     round.logins.push(await send(GUESSER, "POST", LOGIN.path, { user: "ada", password: `guess-${i}` }));
-    await pause(10); // a failure is counted when its response has closed
+    // About 25 ms apart, in both rounds (plan 11 A9). Shield counts a failure when the response has closed; the
+    // replay cannot tell whether Shield had counted it before reading a request that arrives within 10 ms of the
+    // previous response, so such a request is could not be judged — and back-to-back logins would make the
+    // Login protection figure depend on load (2 throttles or none). 25 ms keeps every login past that margin.
+    await pause(LOGIN_GAP_MS);
   }
   for (const id of PRODUCT_IDS) round.products.push(await send(BROWSER, "GET", `/api/products/${id}`));
   for (const path of ASSETS) round.assets.push(await send(ASSET_CLIENT, "GET", path));
@@ -281,9 +288,6 @@ const promoted = (would_refuse: number, clients_affected: number, undecidable = 
   unknown_client_events: 0,
   undecidable,
 });
-
-/** What a simulation leaves out, as the API names it (plan A5). */
-const NOT_SIMULATED = ["patches", "containments", "decoded_paths", "device_limits", "body_verification"];
 
 async function organizationWithApp(name: string): Promise<{ adminKey: string; appId: string; shieldKey: string }> {
   const organization = CreateOrganizationResponseSchema.parse(
@@ -469,7 +473,7 @@ describe("slice 11 policy simulation over HTTP", () => {
     expect(estimate.totals).toEqual({ would_refuse: 82, clients_affected: 7, unknown_client_events: 0 });
     expect(estimate.events).toBe(ROUND);
     expect(estimate.truncated).toBe(false);
-    expect(estimate.not_simulated).toEqual(NOT_SIMULATED);
+    expect(estimate.not_simulated).toEqual([...SIMULATION_NOT_SIMULATED]);
     // The four `(unmatched)` requests: not judged for two Rules, refused by none.
     expect(estimate.undecidable_events).toBe(4);
 
@@ -515,7 +519,7 @@ describe("slice 11 policy simulation over HTTP", () => {
     expect(simulation.undecidable_events).toBe(10);
     expect(simulation.events).toBe(ROUND);
     expect(simulation.truncated).toBe(false);
-    expect(simulation.not_simulated).toEqual(NOT_SIMULATED);
+    expect(simulation.not_simulated).toEqual([...SIMULATION_NOT_SIMULATED]);
   });
 
   it("says what promoting one monitor Rule would refuse when an earlier monitor Rule covers its requests (F5)", async () => {

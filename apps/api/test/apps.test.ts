@@ -83,6 +83,9 @@ describe("Apps", () => {
     ["an unknown Environment", { name: "Storefront", environment: "qa" }, "environment"],
     ["an empty name", { name: "" }, "name"],
     ["a name of 81 characters", { name: "n".repeat(81) }, "name"],
+    ["a name with CR/LF", { name: "Shop\r\nBcc: x@y.z" }, "name"],
+    ["a name with a Unicode line separator", { name: "Shop\u2028X" }, "name"],
+    ["a name with a zero-width character", { name: "Shop\u200b" }, "name"],
   ])("refuses %s", async (_label, body, path) => {
     const problem = await expectProblem(await api.app.request("/v1/apps", json(body, bearer(adminA))), 400);
     expect(problem.errors?.[0]?.path).toBe(path);

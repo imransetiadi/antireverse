@@ -51,6 +51,7 @@ describe("alert channels", () => {
 
   const notifier: Notifier = {
     incidentOpened: () => {},
+    confirmations: () => {},
     drain: async () => {},
     async test(channelId, organizationId) {
       if (channelId === unknownToNotifier) return null;
@@ -179,8 +180,11 @@ describe("alert channels", () => {
   });
 
   it("refuses an invalid body with 400 naming each path", async () => {
-    const problem = await expectProblem(await create({ kind: "email", name: "", url: "not a url" }), 400);
-    expect(problem.errors?.map((error) => error.path).sort()).toEqual(["kind", "name", "url"]);
+    // An unknown kind is refused as such (the kind decides which other members apply; slice 06b added email).
+    const unknownKind = await expectProblem(await create({ kind: "pagerduty", name: "", url: "not a url" }), 400);
+    expect(unknownKind.errors?.map((error) => error.path)).toEqual(["kind"]);
+    const problem = await expectProblem(await create({ kind: "webhook", name: "", url: "not a url" }), 400);
+    expect(problem.errors?.map((error) => error.path).sort()).toEqual(["name", "url"]);
     const long = await expectProblem(
       await create({
         kind: "webhook",
@@ -305,7 +309,7 @@ describe("alert channels with private URLs allowed", () => {
         json({ kind: "webhook", name: "Local", url: "http://127.0.0.1:39901/hook" }, bearer(admin_key.key)),
       );
       expect(res.status).toBe(201);
-      expect(CreateAlertChannelResponseSchema.parse(await res.json()).channel.host).toBe("127.0.0.1");
+      expect(CreateAlertChannelResponseSchema.parse(await res.json()).channel).toMatchObject({ host: "127.0.0.1" });
     } finally {
       await api.close();
     }

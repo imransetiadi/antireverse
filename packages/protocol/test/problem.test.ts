@@ -102,6 +102,12 @@ describe("conflict reasons", () => {
       "allowlist-limit",
       "beacon-token-taken",
       "containment-not-applicable",
+      "target-in-scope",
+      "target-limit",
+      "target-duplicate",
+      "smtp-not-configured",
+      "recipient-confirmed",
+      "no-confirmed-recipients",
     ]);
     expect(Object.isFrozen(CONFLICT_REASONS)).toBe(true);
   });

@@ -1,4 +1,5 @@
 import {
+  ALERT_EMAIL_LIMITS,
   BUILD_LIMITS,
   CONTAINMENT_LIMITS,
   type ConflictReason,
@@ -7,6 +8,7 @@ import {
   type Problem,
   type ProblemError,
   SIMULATION_LIMITS,
+  TARGET_LIMITS,
 } from "@antireverse/protocol";
 import type { Context } from "hono";
 
@@ -86,6 +88,33 @@ const PROBLEMS = {
     title: "Too many requests",
     detail: `At most ${SIMULATION_LIMITS.perMinute} simulations a minute per Organization. Try again after the time in Retry-After.`,
   },
+  // Slice 14: Verified Targets.
+  "too-many-verifications": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: `At most ${TARGET_LIMITS.verifyAttemptsPerHour} verification attempts per host and ${TARGET_LIMITS.verifyAttemptsPerOrganizationPerHour} per Organization per hour. Try again after the time in Retry-After.`,
+  },
+  // Slice 06b: confirmation mails per address per UTC day (all Organizations), and the public confirmation endpoint.
+  // Neither text names an address.
+  "too-many-confirmations": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: `At most ${ALERT_EMAIL_LIMITS.confirmationMailsPerAddressPerDay} confirmation mails per address and ${ALERT_EMAIL_LIMITS.confirmationMailsPerOrganizationPerDay} in all per Organization per day. Try again after the time in Retry-After.`,
+  },
+  "too-many-email-channels": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: `At most ${ALERT_EMAIL_LIMITS.emailChannelsPerOrganizationPerDay} email channels can be created per Organization per day. Try again after the time in Retry-After.`,
+  },
+  "too-many-confirm-requests": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: "Too many confirmation requests. Try again after the time in Retry-After.",
+  },
   "too-many-attestations": {
     status: 429,
     title: "Too many requests",
@@ -112,6 +141,13 @@ export const CONFLICT_DETAILS: Readonly<Record<ConflictReason, string>> = {
   "beacon-token-taken":
     "This Build's beacon token is already registered. Harden it again with another seed or version.",
   "containment-not-applicable": "Containment does not apply to this Incident.",
+  "target-in-scope":
+    "The target is in the scope of the current Rules of Engagement. Sign a new version without it first.",
+  "target-limit": `The Organization already has ${TARGET_LIMITS.targetsPerOrganization} targets. Delete one first.`,
+  "target-duplicate": "This host is already a target of the Organization.",
+  "smtp-not-configured": "Email is not available: the service has no SMTP settings. Ask the operator to set them.",
+  "recipient-confirmed": "This recipient has already confirmed.",
+  "no-confirmed-recipients": "No recipient of this channel has confirmed yet. Alerts go to confirmed recipients only.",
 };
 
 /**

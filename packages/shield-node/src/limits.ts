@@ -18,7 +18,8 @@
 // 3. Otherwise the request counts on every matching Rule — a hit for `count: "requests"`, a slot for
 //    `count: "failures"`, which becomes a failure if the response closes with 401 or 403 (`settle`) and is released
 //    whatever the response, or if the client went away (`release`) — and the first monitor Rule over its limit
-//    marks it.
+//    marks it. A slot is held 600 s at most (D-071, `LIMIT_SLOT_HOLD_MS`): a request open longer stops counting, and
+//    its failure at close is not counted.
 // A CORS preflight (F6) is looked at, never counted, and is refused when an enforced Rule is already over.
 //
 // Keys. `ip` is the client address Shield derived for the request: a whole IPv4 address (an IPv4-mapped IPv6 address
@@ -179,10 +180,23 @@ export interface Limiter {
   unparsedAddresses(): number;
 }
 
-/** The outcome as the limiter keeps it: whether its slots were released. */
+/** The outcome as the limiter keeps it: whether its slots were released, and its place among the held ones. */
 interface Held extends LimitOutcome {
   done: boolean;
+  /** When the request was decided (the limiter's clock): its slots go `LIMIT_SLOT_HOLD_MS` later. */
+  startedAt: number;
+  /** The outcomes still holding slots, in the order they were decided: a list through the outcomes. */
+  older: Held | null;
+  newer: Held | null;
 }
+
+/**
+ * How long a request holds its failure slots at most (D-071): 600 s, the cap of the latency an Event records
+ * (`LATENCY_MAX_MS` of express.ts, pinned by a test). A request still open after that stops counting toward failure
+ * limits: its slots are released, and a 401 or 403 it closes with later is not counted (the Event records it at
+ * start + 600 s; Shield does not place a failure in the past, so it counts it at close or not at all — not at all).
+ */
+export const LIMIT_SLOT_HOLD_MS = 600_000;
 
 const NO_SLOTS: readonly (string | number)[] = Object.freeze([]);
 /** Characters of an address that could not be parsed that a key is made from, at most. */
@@ -227,6 +241,25 @@ export function createLimiter(
   /** Failure slots held, by key. An entry exists only while a request holds a slot: bounded by the requests in flight. */
   const slots = new Map<string, number>();
   let held = 0;
+  /**
+   * The outcomes holding slots, oldest decision first. Each one leaves when it is released, or when the limiter is
+   * consulted 600 s or more after its start (D-071) — no timer: the expiry is checked where slots are read, so the
+   * request path pays for the outcomes that expire and nothing else. Its length is the requests in flight.
+   * The list is in the order requests were decided, and only its head is looked at. When the wall clock steps back,
+   * requests decided after the step have earlier starts than those ahead of them, and wait for those to expire
+   * (head of line): their slots can be held past 600 s until the clock catches up — never released sooner. A request
+   * decided at a time that is not a finite number holds no slot at all (see `evaluate`), and `expire` skips past any
+   * such entry, so none pins the list.
+   */
+  let oldest: Held | null = null;
+  let newest: Held | null = null;
+
+  /** Releases the slots of every request decided `LIMIT_SLOT_HOLD_MS` or more before `now`. */
+  function expire(now: number): void {
+    while (oldest !== null && (!Number.isFinite(oldest.startedAt) || now - oldest.startedAt >= LIMIT_SLOT_HOLD_MS)) {
+      release(oldest);
+    }
+  }
   let unparsed = 0;
   /** The client part of a key: never the address or the device id itself. */
   const clientHash = (material: string): string =>
@@ -239,6 +272,7 @@ export function createLimiter(
   function evaluate(policy: AppliedPolicy, input: LimitInput, now: number): LimitOutcome | null {
     const rules = policy.limitRules;
     if (rules.length === 0) return null;
+    expire(now);
     const method = input.method;
     const preflight = input.preflight && method === "OPTIONS";
     const address = input.client.address;
@@ -319,6 +353,11 @@ export function createLimiter(
     }
     if (preflight)
       return { throttled: null, retryAfterS: 0, marked: null, failureRule, pending: NO_SLOTS, done: true } as Held;
+    // A clock that is not a usable number (NaN, ±Infinity): the request is looked at as above, but counts nothing and
+    // holds no slot — a slot that could never expire would pin the expiry list and the limit.
+    if (!Number.isFinite(now)) {
+      return { throttled: null, retryAfterS: 0, marked, failureRule, pending: NO_SLOTS, done: true } as Held;
+    }
     // Step 3: count on every matching Rule.
     let pending: (string | number)[] | null = null;
     for (let i = 0; i < matched.length; i += 3) {
@@ -348,7 +387,17 @@ export function createLimiter(
       failureRule,
       pending: pending ?? NO_SLOTS,
       done: pending === null,
+      startedAt: now,
+      older: null,
+      newer: null,
     };
+    if (pending !== null) {
+      // Decided last: newest. (A clock set back only makes this one expire later than its start says, never sooner.)
+      outcome.older = newest;
+      if (newest === null) oldest = outcome;
+      else newest.newer = outcome;
+      newest = outcome;
+    }
     return outcome;
   }
 
@@ -356,6 +405,12 @@ export function createLimiter(
     const own = outcome as Held;
     if (own.done !== false) return;
     own.done = true;
+    if (own.older === null) oldest = own.newer;
+    else own.older.newer = own.newer;
+    if (own.newer === null) newest = own.older;
+    else own.newer.older = own.older;
+    own.older = null;
+    own.newer = null;
     const pending = own.pending;
     for (let i = 0; i < pending.length; i += 3) {
       const key = pending[i] as string;
@@ -371,6 +426,9 @@ export function createLimiter(
     if (own.done !== false) return;
     // Released first: whatever the store does, the slots never stay held.
     release(own);
+    expire(now);
+    // Open 600 s or more (D-071): it stopped counting, whatever it closes with — even when nothing expired it yet.
+    if (!(now - own.startedAt < LIMIT_SLOT_HOLD_MS)) return;
     if (status !== LIMIT_FAILURE_STATUSES[0] && status !== LIMIT_FAILURE_STATUSES[1]) return;
     const pending = own.pending;
     for (let i = 0; i < pending.length; i += 3) {

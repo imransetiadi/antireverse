@@ -23,6 +23,16 @@ export const CONFLICT_REASONS = deepFreeze([
   "allowlist-limit",
   "beacon-token-taken",
   "containment-not-applicable",
+  // Slice 14 (Verified Targets): the target is in the current Rules of Engagement's scope (sign a version without it
+  // first), the Organization has the most targets allowed, or the host is already a target of the Organization.
+  "target-in-scope",
+  "target-limit",
+  "target-duplicate",
+  // Slice 06b (email alerts): the service has no SMTP settings, so email cannot be sent; a resend for a recipient
+  // that has already confirmed; a test alert to an email channel none of whose recipients has confirmed yet.
+  "smtp-not-configured",
+  "recipient-confirmed",
+  "no-confirmed-recipients",
 ] as const);
 export type ConflictReason = (typeof CONFLICT_REASONS)[number];
 

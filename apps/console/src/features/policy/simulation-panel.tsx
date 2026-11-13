@@ -248,6 +248,13 @@ export function SimulationPanel({ appId, environment, version, ruleCount }: Simu
                 <p data-testid="simulation-caption" className="caption-1 text-fg-muted">
                   {t("policy.simulate.caption")}
                 </p>
+                {/* The promise of the replay (plan 11, A11), qualified by the notes below the figures; without
+                    figures there are no notes, so no promise either. */}
+                {result.events > 0 ? (
+                  <p data-testid="simulation-promise" className="body-5 text-fg-muted">
+                    {t("policy.simulate.promise")}
+                  </p>
+                ) : null}
                 <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                   <span data-testid="simulation-period" className="code-3">
                     {t("policy.simulate.period", {

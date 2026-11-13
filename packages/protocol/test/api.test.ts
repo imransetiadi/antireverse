@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type App,
   AppResponseSchema,
+  AppSchema,
   type CreateAppRequest,
   type CreateAppRequestInput,
   CreateAppRequestSchema,
@@ -21,6 +22,7 @@ import {
   OrganizationResponseSchema,
 } from "../src/index.ts";
 import { generateKey, newId } from "../src/server.ts";
+import { SAFE_NAMES, UNSAFE_NAMES } from "./names.ts";
 
 const createdAt = "2026-11-10T08:15:30.123Z";
 const organization: Organization = { id: newId("org"), name: "Acme", created_at: createdAt };
@@ -70,6 +72,17 @@ describe("CreateAppRequestSchema", () => {
     expect(CreateAppRequestSchema.parse({ name: " Storefront " }).name).toBe("Storefront");
     expect(CreateAppRequestSchema.safeParse({ name: "" }).success).toBe(false);
     expect(CreateAppRequestSchema.safeParse({ name: "a".repeat(81) }).success).toBe(false);
+  });
+
+  it("refuses control characters, line separators, bidi overrides and zero-width space in an App name", () => {
+    for (const name of UNSAFE_NAMES) {
+      const result = CreateAppRequestSchema.safeParse({ name });
+      expect(result.success, JSON.stringify(name)).toBe(false);
+      expect(result.error?.issues.map((issue) => issue.path)).toEqual([["name"]]);
+    }
+    for (const name of SAFE_NAMES) expect(CreateAppRequestSchema.safeParse({ name }).success, name).toBe(true);
+    // A name stored before this rule is still a valid App in a response.
+    expect(AppSchema.parse({ ...app, name: "old\r\nname" }).name).toBe("old\r\nname");
   });
 });
 

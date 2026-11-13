@@ -12,14 +12,15 @@ import { t } from "@/lib/t.ts";
 const SECTION = "flex flex-col gap-3";
 const SECTION_TITLE = "heading-4";
 
-// `/settings/alerts?remove=` — the Organization's alert channels: the list with test and remove, and the
-// form that adds one. `?remove=<channel id>` opens the step that asks before a channel is removed.
+// `/settings/alerts?remove=` — the Organization's alert channels: the list with test and remove (and, for an
+// email channel, its recipients with their status and resend), and the form that adds one. `?remove=<channel id>` opens the step that asks before a channel is removed.
 export default async function AlertSettingsPage({ searchParams }: PageProps<"/settings/alerts">) {
   const { key, organization } = await requireSession();
   const { remove } = await searchParams;
   let channels: Awaited<ReturnType<typeof listAlertChannels>>["channels"];
+  let smtpConfigured: boolean;
   try {
-    ({ channels } = await listAlertChannels(key));
+    ({ channels, smtp_configured: smtpConfigured } = await listAlertChannels(key));
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
     throw error;
@@ -48,7 +49,7 @@ export default async function AlertSettingsPage({ searchParams }: PageProps<"/se
         <h2 id="alerts-add-title" className={SECTION_TITLE}>
           {t("alerts.add.title")}
         </h2>
-        <AddChannelForm />
+        <AddChannelForm smtpConfigured={smtpConfigured} />
       </section>
     </AppShell>
   );

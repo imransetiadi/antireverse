@@ -242,6 +242,12 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-064 | The Credential stuffing Incident counts only login-protection (failure-counting) limit Rules, from Events Shield stamps with that Rule; plain request limits show in the feed and open no Incident in this slice | Owner's decision 2026-11-11 after review F5; Jev 0.94 | accepted |
 | D-065 | The product is named Airverse (formerly Anti Reverse). Every human-visible name changes; npm package names (@antireverse/*), the `antireverse` command, `AR_*` settings and all wire names (`ar-*` headers, `ar-sig-v1`, token issuer and audience, id prefixes) stay, so deployed clients keep working. Renaming packages and the command is decided before the first npm release | Owner 2026-11-11; Jev 0.57 | accepted |
 | D-066 | Policy simulation replays the last 24 hours of stored Events against draft Rules in the API (route templates, conservative: what cannot be judged is counted separately), with limits replayed in time order; results are estimates; virtual patches are not simulated | Owner approved 2026-11-11; Jev 0.81, 1.0 | accepted |
+| D-067 | Slice 12 (Reverse Assessment) is built first against a stand-in AI; real assessments start only after the owner installs a provider key and sets per-assessment and monthly spend caps | Owner 2026-11-12 | accepted |
+| D-068 | Email alerts go through generic SMTP (any provider); the owner sets the SMTP settings and verifies the sender domain (SPF/DKIM) | Owner 2026-11-12 | accepted |
+| D-069 | Verified Targets prove ownership by a DNS TXT record or a well-known HTTPS file; the file fetch reaches public addresses only (every resolved address checked, no redirects, 5 s, 1 KB); Rules of Engagement are immutable signed versions; a pure authorize() check that Campaigns must call | Owner 2026-11-12; Jev 0.51 vs DNS only 0.45 | accepted |
+| D-070 | Simulation follow-ups: the two-count limit replay now (API only); Shield recording whether a body type was in `bodyVerified` later, with the next Shield change | Owner delegated to Jev 2026-11-12; Jev 0.49, owner accepted | accepted |
+| D-071 | Shield releases a failure-limit slot 600 s after a request started (matching its recorded latency cap), so a request open longer stops counting toward login protection and the policy simulation's start-of-period assumption holds | Owner 2026-11-13; Jev 0.51 vs 0.24 | accepted |
+| D-072 | Email alerts: one service SMTP account from environment settings, an in-house SMTP client (STARTTLS required, certificate validation), an `email` channel kind with 1–5 recipients who each confirm by a single-use link before receiving any alert, plain-text mail | Jev 0.94, following the owner's SMTP choice (D-068) | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -368,7 +374,7 @@ Which practice to apply when. The practices come from the references in PRD §19
 
 - Owner answers to questions 1–7 in PRD §17 (the calls C1–C7 were approved with the specification).
 - Owner confirmation of D-018 to D-026, made during slice 01.
-- Owner: whether to offer email alerts (which provider).
+- Owner: set AR_SMTP_* and the sender domain's SPF/DKIM to switch on email alerts (D-068, built in 06b); an AI provider key and spend caps before real Reverse Assessments (D-067).
 - Follow-ups from slice 11: Shield records whether a request's content type was in `bodyVerified` (exact signature judging); two-count limit replay to judge more passes.
 - The repository is on GitHub (private, imransetiadi/antireverse, branch main) since 2026-11-11; the working copy lives in the folder the app made for the session.
 - Legal review of licences and usage terms for the embedded engines before general availability.
@@ -495,6 +501,18 @@ Next step for whoever continues:
 - Flaky tests made robust under load (1,000-guess test over a 100-connection pool, beacon corpus in one VM context, leak-scan growth ratio, API database hook timeouts).
 - Next: 12 (needs an AI provider and spend decisions) or 14; follow-ups listed in §11.
 
+**2026-11-13 — slice 14, Verified Targets and Rules of Engagement; simulation follow-ups**
+
+- Done: targets proven by DNS TXT or a well-known HTTPS file through a guarded fetcher (public addresses only, pinned, no redirects, 5 s, 1 KB); daily re-check with recovery and a 3-miss rule for our own resolver failures; signed immutable Rules of Engagement with a typed phrase; `authorize` for slice 15 (fail closed, API clock, 26 h freshness); Console Prove section. Evidence: 6,765 tests; e2e HTTP 124 + browser 17.
+- Simulation follow-ups (D-070, D-071): two-count limit replay, per-instance counters (Shield stamps `instance_id`), failures at response close, in-flight slots, a seed before the period; Shield holds a failure slot at most 600 s. Four reviews; the promise is stated with its assumptions in the result and the Console.
+- Next: email alerts (06b) e2e and review, then slice 12 against a stand-in AI.
+
+**2026-11-13 — slice 06b, Email alerts over SMTP**
+
+- Done: `email` alert channels with 1–5 recipients confirmed by a single-use link (button, not on load); an in-house SMTP client (STARTTLS required, certificates checked, header and command injection impossible); caps on confirmation mails (normalised addresses, per Organization, per service) and channel creation; confirmations share the alert queue and a 4-connection pool; one name rule for App and channel names. Evidence: 6,811 tests; e2e HTTP 137 + browser 18.
+- Review: 6 findings fixed test-first; decisions D-072; plan amendments A1–A4; Jev verified 4 of 4.
+- Next: slice 12 against a stand-in AI (D-067).
+
 ## 13. Safety rules for memory
 
 1. No secrets, credentials, tokens or personal data in memory — here or in the memory server.
@@ -524,3 +542,5 @@ Next step for whoever continues:
 | 2026-11-11 | Slice 08 built; decisions D-063–D-064; abuse rules |
 | 2026-11-11 | Product renamed Airverse (display name, D-065) |
 | 2026-11-11 | Slice 11 built; decision D-066; policy simulation |
+| 2026-11-13 | Slice 14 built; decisions D-067–D-071; Verified Targets, simulation follow-ups |
+| 2026-11-13 | Slice 06b built; decision D-072; email alerts over SMTP |

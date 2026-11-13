@@ -103,3 +103,27 @@ export function Select({ id, label, help, error, mono = false, className, childr
     </FieldShell>
   );
 }
+
+type TextareaProps = Omit<ComponentProps<"textarea">, "id"> & {
+  id: string;
+  label: string;
+  help?: string | undefined;
+  error?: string | undefined;
+  /** The lines are identifiers, paths or addresses: set them in Geist Mono. */
+  mono?: boolean | undefined;
+};
+
+/** A multi-line field, one value per line, with the same label, help and error as `Input`. */
+export function Textarea({ id, label, help, error, mono = false, className, ...rest }: TextareaProps) {
+  return (
+    <FieldShell id={id} label={label} help={help} error={error}>
+      <textarea
+        id={id}
+        className={`${CONTROL} ${mono ? MONO_TYPE : TYPE} ${className ?? ""}`.trim()}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy(id, help, error)}
+        {...rest}
+      />
+    </FieldShell>
+  );
+}

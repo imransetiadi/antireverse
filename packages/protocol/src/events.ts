@@ -78,6 +78,13 @@ const DecisionSchema = z.object({
   limit_rule_id: z.string().regex(ID_PATTERNS.rul).nullable().optional(),
 });
 
+/**
+ * The random id of the Shield process that sent an Event (slice 11, amendment A9): 32 lowercase hex characters, the
+ * same id the process sends with its component inventory. Limit counters live in one Shield process, so a replay of
+ * limit Rules counts per instance id and client.
+ */
+export const SHIELD_INSTANCE_ID_PATTERN = /^[0-9a-f]{32}$/;
+
 const ActorSchema = z.object({
   /** IPv4 `a.b.c.0/24` or IPv6 `a:b:c::/48`; null when the address is unknown. */
   ip_prefix: z.string().regex(IP_PREFIX_PATTERN).nullable(),
@@ -119,6 +126,12 @@ export const ShieldEventSchema = z.object({
    * from before slice 04 sent the Event (absent means null). Never the header, the nonce or the hash.
    */
   signature: EventSignatureSchema.nullable().default(null),
+  /**
+   * The Shield process that sent the Event (amendment A9): `SHIELD_INSTANCE_ID_PATTERN`, one id per process for its
+   * lifetime. Shield sends it on every Event. A Shield from before A9 does not; absent stays absent when parsed (no
+   * default), so a reader can tell such an Event apart and never assume which process counted it.
+   */
+  instance_id: z.string().regex(SHIELD_INSTANCE_ID_PATTERN).optional(),
 });
 export type ShieldEvent = z.infer<typeof ShieldEventSchema>;
 

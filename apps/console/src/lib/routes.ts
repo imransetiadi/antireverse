@@ -1,4 +1,5 @@
 import type { Environment, IncidentStatus } from "@antireverse/protocol";
+import type { ConfirmOutcome } from "@/features/alerts/confirm-result.ts";
 import type { BlockRequest } from "@/features/containment/query.ts";
 import type { FindingQuery } from "@/features/findings/query.ts";
 
@@ -91,6 +92,11 @@ function finding(findingId: string, options: { confirm?: "ignore" | "enforce" } 
   return `/findings/${findingId}${options.confirm === undefined ? "" : `?confirm=${options.confirm}`}`;
 }
 
+/** One Verified Target. With `confirm: "remove"` it opens the step that asks before the target is removed. */
+function target(targetId: string, options: { confirm?: "remove" } = {}): string {
+  return `/prove/targets/${targetId}${options.confirm === "remove" ? "?confirm=remove" : ""}`;
+}
+
 // The Console's addresses. None of them ever carries a key, a signing secret or a channel URL.
 export const ROUTES = {
   home: "/",
@@ -114,9 +120,20 @@ export const ROUTES = {
   containment,
   alerts,
   allowlist,
+  /**
+   * Where a confirmation link ends up after "Confirm email" (slice 06b): the outcome only, never the token. Public.
+   */
+  alertConfirmDone: (result: ConfirmOutcome): string => `/alerts/confirm/done?result=${result}`,
   findings,
   appFindings,
   finding,
+  /** The Organization's Verified Targets (slice 14). */
+  targets: "/prove/targets",
+  target,
+  /** The current Rules of Engagement, their history and the dry "Check a test" form. */
+  rulesOfEngagement: "/prove/rules-of-engagement",
+  /** The form that writes and signs a new Rules of Engagement version. */
+  newRulesOfEngagement: "/prove/rules-of-engagement/new",
   /** The list proxy the live feed reads whenever its stream opens. */
   events: (appId: string): string => `/api/apps/${appId}/events`,
   /** The stream proxy the browser's EventSource connects to. */

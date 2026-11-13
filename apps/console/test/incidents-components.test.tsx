@@ -585,9 +585,12 @@ describe("IncidentDetail", () => {
   });
 });
 
+/** A webhook or Slack channel: the part of the channel union with a host and the URL's last 4 characters. */
+type UrlChannel = Extract<AlertChannel, { host: string }>;
+
 describe("ChannelList", () => {
   const slack: AlertChannel = {
-    ...EXAMPLE_ALERT_CHANNEL,
+    ...(EXAMPLE_ALERT_CHANNEL as UrlChannel),
     id: "chn_aaaaaaaaaaaaaaaaaaaaaaaa",
     kind: "slack",
     name: "Ops Slack",
@@ -624,7 +627,7 @@ describe("ChannelList", () => {
   it("says what will appear when there is no channel", () => {
     render(<ChannelList channels={[]} confirmRemoveId={undefined} />);
     expect(screen.getByTestId("channels-empty").textContent).toBe(
-      "No alert channels yet. Add a webhook or a Slack channel to be told when an Incident opens.",
+      "No alert channels yet. Add a webhook, Slack or email channel to be told when an Incident opens.",
     );
   });
 
@@ -703,12 +706,13 @@ describe("AddChannelForm", () => {
     fireEvent.change(screen.getByLabelText("URL"), { target: { value: url } });
   };
 
-  it("has labelled fields for kind (Webhook or Slack), name and URL", () => {
-    render(<AddChannelForm />);
+  it("has labelled fields for kind (Webhook, Slack or Email), name and URL", () => {
+    render(<AddChannelForm smtpConfigured />);
     const kind = screen.getByLabelText("Kind") as HTMLSelectElement;
     expect(Array.from(kind.options).map((option) => [option.value, option.textContent])).toEqual([
       ["webhook", "Webhook"],
       ["slack", "Slack"],
+      ["email", "Email"],
     ]);
     expect((screen.getByLabelText("URL") as HTMLInputElement).type).toBe("url");
     expect(screen.getByRole("button", { name: "Add channel" }).getAttribute("data-testid")).toBe("channel-add");
@@ -720,7 +724,7 @@ describe("AddChannelForm", () => {
       channel: EXAMPLE_ALERT_CHANNEL,
       signingSecret: SECRET,
     });
-    render(<AddChannelForm />);
+    render(<AddChannelForm smtpConfigured />);
     fill("webhook", "Ops webhook", FULL_URL);
     await submit(screen.getByTestId("channel-add"));
     expect(sent(actions.createAlertChannelAction)).toEqual({
@@ -741,9 +745,9 @@ describe("AddChannelForm", () => {
   });
 
   it("shows no secret for a Slack channel", async () => {
-    const slack = { ...EXAMPLE_ALERT_CHANNEL, kind: "slack" as const, name: "Ops Slack" };
+    const slack: AlertChannel = { ...(EXAMPLE_ALERT_CHANNEL as UrlChannel), kind: "slack", name: "Ops Slack" };
     vi.mocked(actions.createAlertChannelAction).mockResolvedValue({ ok: true, channel: slack });
-    render(<AddChannelForm />);
+    render(<AddChannelForm smtpConfigured />);
     fill("slack", "Ops Slack", FULL_URL);
     await submit(screen.getByTestId("channel-add"));
     expect(screen.getByTestId("channel-created").textContent).toBe("Ops Slack was added");
@@ -757,7 +761,7 @@ describe("AddChannelForm", () => {
       errors: [{ path: "url", message: "This address cannot receive alerts. Use an https:// URL on a public host." }],
       values: { kind: "slack", name: "Ops" },
     });
-    render(<AddChannelForm />);
+    render(<AddChannelForm smtpConfigured />);
     fill("slack", "Ops", FULL_URL);
     await submit(screen.getByTestId("channel-add"));
     const url = screen.getByLabelText("URL") as HTMLInputElement;
@@ -780,7 +784,7 @@ describe("AddChannelForm", () => {
       ],
       values: { kind: "webhook", name: "Ops" },
     });
-    render(<AddChannelForm />);
+    render(<AddChannelForm smtpConfigured />);
     fill("webhook", "Ops", FULL_URL);
     await submit(screen.getByTestId("channel-add"));
     expect(screen.getByTestId("error-summary").textContent).toContain(

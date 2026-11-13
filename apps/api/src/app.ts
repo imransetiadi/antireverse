@@ -11,10 +11,12 @@ import { type BeaconRecorder, createBeaconRecorder } from "./detect/beacon.ts";
 import type { PolicyPublished } from "./detect/detector.ts";
 import { createIncidentQueue, type IncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger, redacting } from "./log.ts";
-import { createNotifier, type Notifier } from "./notify/notifier.ts";
+import { type AddressHasher, createAddressHasher } from "./mail/address-key.ts";
+import { createNotifier, type EmailDeps, type Notifier } from "./notify/notifier.ts";
 import { defaultResolve, type Resolve } from "./notify/ssrf.ts";
 import { PATCH_CATALOG, type PatchCatalog } from "./patches/catalog.ts";
 import { problem } from "./problem.ts";
+import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { alertChannelRoutes } from "./routes/alert-channels.ts";
 import { allowlistRoutes } from "./routes/allowlist.ts";
 import { appRoutes } from "./routes/apps.ts";
@@ -32,6 +34,7 @@ import { inventoryRoutes } from "./routes/inventory.ts";
 import { organizationRoutes } from "./routes/organizations.ts";
 import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
+import { proveRoutes } from "./routes/prove.ts";
 import { type SimulationOptions, simulateRoutes } from "./routes/simulate.ts";
 import type { Signer } from "./signer.ts";
 
@@ -66,6 +69,17 @@ export interface AppDeps {
   /** Bound of the host lookup when an alert channel is created. Default 5,000 ms. */
   alertLookupTimeoutMs?: number;
   /**
+   * The service's SMTP account (slice 06b): the mailer and the From of every mail. Without it, email channels cannot
+   * be created and the channel list says `smtp_configured: false`. Default: none (`startApi` passes the one of the
+   * `AR_SMTP_*` settings).
+   */
+  email?: EmailDeps;
+  /**
+   * Keys the per-address count of confirmation mails. Default: a secret in memory (`startApi` passes the one of
+   * `mail-hash-key.json` beside the data directory).
+   */
+  addressHasher?: AddressHasher;
+  /**
    * Judges Clone Beacon reports after their 204. Default: a recorder on `db` and the notifier (`startApi` passes
    * the one it flushes on close).
    */
@@ -86,6 +100,11 @@ export interface AppDeps {
   patches?: PatchCatalog;
   /** The bounds of a Policy simulation (slice 11). Default: `SIMULATION_LIMITS` and the process clock; tests pass smaller ones. */
   simulation?: SimulationOptions;
+  /**
+   * The network seams of Prove (slice 14): the DNS resolver and the guarded HTTPS fetcher of the ownership checks.
+   * Default: node:dns and the guarded fetcher without its test-only option; tests pass stand-ins.
+   */
+  prove?: ProveDeps;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -133,7 +152,14 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const allowPrivateAlertUrls = deps.allowPrivateAlertUrls ?? false;
   const notifier =
     deps.notifier ??
-    createNotifier({ db: deps.db, now: deps.now, resolve, allowPrivate: allowPrivateAlertUrls, logger });
+    createNotifier({
+      db: deps.db,
+      now: deps.now,
+      resolve,
+      allowPrivate: allowPrivateAlertUrls,
+      logger,
+      email: deps.email,
+    });
   const beacon = deps.beacon ?? createBeaconRecorder({ db: deps.db, notifier, now: deps.now, logger });
   const attestation = deps.attestation ?? createAttestationKeys({ now: deps.now, logger });
   const clientAddress = deps.clientAddress ?? socketAddress;
@@ -165,7 +191,19 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Public: no key. Outside every key middleware (each route above requires its own).
   app.route("/", beaconRoutes({ recorder: beacon, clientAddress }));
   app.route("/", attestRoutes({ db: deps.db, attestation, clientAddress, now: deps.now }));
-  app.route("/", alertChannelRoutes({ ...deps, notifier, resolve, allowPrivateAlertUrls }));
+  app.route(
+    "/",
+    alertChannelRoutes({
+      ...deps,
+      notifier,
+      resolve,
+      allowPrivateAlertUrls,
+      smtpConfigured: deps.email !== undefined,
+      addressHasher: deps.addressHasher ?? createAddressHasher(),
+      ...(deps.email?.confirmationsPerDay === undefined ? {} : { confirmationsPerDay: deps.email.confirmationsPerDay }),
+    }),
+  );
+  app.route("/", proveRoutes({ db: deps.db, network: proveNetwork(deps.prove), now: deps.now }));
 
   app.notFound((c) => problem(c, "not-found"));
   app.onError((error, c) => {

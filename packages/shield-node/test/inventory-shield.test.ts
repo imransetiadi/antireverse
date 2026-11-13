@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { InventorySchema } from "@antireverse/protocol";
+import { EventBatchSchema, InventorySchema, SHIELD_INSTANCE_ID_PATTERN } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -284,5 +284,73 @@ describe("the inventory and the application", () => {
     expect(shield.stats().inventory).toBe("failed");
     expect(warnings.some((line) => /inventory/.test(line))).toBe(true);
     for (const line of warnings) for (const name of NAMES) expect(line).not.toContain(name);
+  });
+});
+
+describe("the instance id on every Event (slice 11, amendment A9)", () => {
+  async function serve(shield: Shield) {
+    const app = express();
+    app.use(shield.express());
+    app.get("/a", (_req, res) => void res.json({ ok: true }));
+    app.use((_req, res) => void res.status(404).end());
+    const server = await listen(app);
+    return server;
+  }
+
+  it("every Event carries the id the inventory sends: one per Shield for its lifetime, never logged", async () => {
+    const { shield, sent, warnings, inventories } = harness({
+      policyPublicKey: signer.publicKey,
+      inventory: true,
+      flushIntervalMs: 3_600_000,
+    });
+    const server = await serve(shield);
+    try {
+      for (const path of ["/a", "/b", "/a?x=1"]) await fetch(`${server.base}${path}`);
+      await until(() => shield.stats().inventory === "sent");
+      await shield.flush();
+      const events = sent
+        .filter((request) => request.url.endsWith("/v1/events"))
+        .flatMap((request) => EventBatchSchema.parse(JSON.parse(request.body ?? "")).events);
+      expect(events).toHaveLength(3);
+      const ids = new Set(events.map((event) => event.instance_id));
+      expect(ids.size).toBe(1);
+      const [id] = [...ids];
+      expect(id).toMatch(SHIELD_INSTANCE_ID_PATTERN);
+      const inventory = InventorySchema.parse(JSON.parse(inventories()[0]?.body ?? "{}"));
+      expect(inventory.instance_id).toBe(id);
+      // Later Events, after the inventory was sent, carry the same id.
+      await fetch(`${server.base}/a`);
+      await shield.flush();
+      const later = sent
+        .filter((request) => request.url.endsWith("/v1/events"))
+        .flatMap((request) => EventBatchSchema.parse(JSON.parse(request.body ?? "")).events);
+      expect(later.at(-1)?.instance_id).toBe(id);
+      expect(warnings.join("\n")).not.toContain(id as string);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("is set with the inventory turned off too, and differs between two Shields", async () => {
+    const one = harness({ policyPublicKey: signer.publicKey, inventory: false, flushIntervalMs: 3_600_000 });
+    const two = harness({ policyPublicKey: signer.publicKey, inventory: false, flushIntervalMs: 3_600_000 });
+    const ids: (string | undefined)[] = [];
+    for (const { shield, sent } of [one, two]) {
+      const server = await serve(shield);
+      try {
+        await fetch(`${server.base}/a`);
+        await until(() => shield.stats().buffered + shield.stats().sent > 0);
+        await shield.flush();
+        const [event] = sent
+          .filter((request) => request.url.endsWith("/v1/events"))
+          .flatMap((request) => EventBatchSchema.parse(JSON.parse(request.body ?? "")).events);
+        ids.push(event?.instance_id);
+      } finally {
+        await server.stop();
+      }
+    }
+    expect(ids[0]).toMatch(SHIELD_INSTANCE_ID_PATTERN);
+    expect(ids[1]).toMatch(SHIELD_INSTANCE_ID_PATTERN);
+    expect(ids[0]).not.toBe(ids[1]);
   });
 });

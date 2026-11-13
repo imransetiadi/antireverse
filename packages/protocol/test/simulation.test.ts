@@ -331,13 +331,18 @@ describe("SimulationResultSchema", () => {
       "decoded_paths",
       "device_limits",
       "body_verification",
+      // Plan 11 amendment A11: the promise holds for what Shield recorded, kept and timed as assumed.
+      "unrecorded_requests",
+      "counter_eviction",
+      "custom_counter_store",
+      "timing",
     ]);
     expect(Object.isFrozen(SIMULATION_NOT_SIMULATED)).toBe(true);
     expect(EXAMPLE_SIMULATION_RESULT.not_simulated).toEqual(SIMULATION_NOT_SIMULATED);
-    for (const good of [["patches"], ["patches", "canaries"], [], Array.from({ length: 8 }, (_, n) => `kind${n}`)]) {
+    for (const good of [["patches"], ["patches", "canaries"], [], Array.from({ length: 16 }, (_, n) => `kind${n}`)]) {
       expect(accepts(result({ not_simulated: good })), JSON.stringify(good)).toBe(true);
     }
-    for (const bad of [[""], ["patches", 1], Array.from({ length: 9 }, (_, n) => `kind${n}`), "patches", null]) {
+    for (const bad of [[""], ["patches", 1], Array.from({ length: 17 }, (_, n) => `kind${n}`), "patches", null]) {
       expect(accepts(result({ not_simulated: bad })), JSON.stringify(bad)).toBe(false);
     }
   });

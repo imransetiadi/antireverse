@@ -442,6 +442,18 @@ export const SIMULATION_LIMITS = deepFreeze({
  * - `body_verification`: whether Shield would accept a validly signed request with a body depends on whether its
  *   content type is listed in `bodyVerified` and on the body hook, neither of which an Event records; such a request
  *   is not judged by a signature Rule.
+ * The promise of the replay (plan 11 amendment A11): it never claims a refusal for the recorded traffic that Shield
+ * would not make, assuming Shield recorded every request, kept its counters, used its built-in counter store and
+ * ran on a steady clock. Where one of those does not hold, a claim may be wrong:
+ * - `unrecorded_requests`: requests Shield counted but never delivered as Events — a full or failed delivery queue,
+ *   a process that stopped first, or a request still open when the simulation ran (an Event is sent when the
+ *   response closes).
+ * - `counter_eviction`: Shield's counter store drops its oldest counters when it holds too many keys or hit times; a
+ *   client whose counter was dropped starts again from nothing there, while the replay keeps its count.
+ * - `custom_counter_store`: a counter store supplied by the host (shared between processes, persisted, or counting
+ *   differently) is not the one the replay models.
+ * - `timing`: the clock of Shield's host stepped or the process paused for more than 5 ms between reading the clock
+ *   and stamping an Event, or between closing a response and measuring its latency.
  */
 export const SIMULATION_NOT_SIMULATED = deepFreeze([
   "patches",
@@ -449,6 +461,10 @@ export const SIMULATION_NOT_SIMULATED = deepFreeze([
   "decoded_paths",
   "device_limits",
   "body_verification",
+  "unrecorded_requests",
+  "counter_eviction",
+  "custom_counter_store",
+  "timing",
 ] as const);
 
 /**
@@ -573,9 +589,13 @@ const SimulationRuleResultSchema = z
      * Shield's `bodyVerified` listed its type is not recorded), an OPTIONS request.
      * For a limit Rule: an Event without a client hash; of a network on the never-block list; another Rule may
      * have refused; an OPTIONS request; past a limit above 1,000 (Shield counts those approximately); past the
-     * limit only by a request at the very edge of the window; attested and past a `device` limit on its address
-     * (an Event stores no device id); or replayed after the simulation held as many request times as it may (then
-     * `truncated` is true).
+     * limit only by a request at the very edge of the window; past the limit and not naming its Shield process
+     * (`instance_id`: each process keeps its own counters); close enough to the limit that requests of the client
+     * still in flight (failure limits; Shield holds a slot 600 s at most, D-071) or earlier requests Shield may have
+     * counted but the replay could not judge (could not be judged themselves, or already refused when recorded)
+     * could put it over; a failure that closed within 5 ms of those 600 s, or at the recorded latency's cap (Shield
+     * counts it only if it closed before them); attested and under a `device` limit (an Event stores no device id);
+     * or replayed after the simulation held as many request times as it may (then `truncated` is true).
      */
     undecidable: CountSchema,
     /**
@@ -643,10 +663,10 @@ export const SimulationResultSchema = z
     /** Events that at least one Rule could not be judged against and that no Rule of the draft would refuse. */
     undecidable_events: CountSchema,
     /**
-     * What the simulation leaves out: today `SIMULATION_NOT_SIMULATED`. Any non-empty strings parse, at most 8, so
+     * What the simulation leaves out: today `SIMULATION_NOT_SIMULATED`. Any non-empty strings parse, at most 16, so
      * a value added later does not break an older client.
      */
-    not_simulated: z.array(z.string().min(1).max(64)).max(8),
+    not_simulated: z.array(z.string().min(1).max(64)).max(16),
     /** One row per draft Rule, in Policy order: the row at position n has `index` n. */
     rules: z.array(SimulationRuleResultSchema).max(POLICY_LIMITS.rulesMax),
     totals: z.object({

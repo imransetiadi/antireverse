@@ -81,6 +81,8 @@ Add alert channels under **Alerts**: a **webhook** (its signing secret is shown 
 - **Destinations are checked on every attempt:** `https` only, and an address that is loopback, private, link-local, cloud metadata or otherwise special-purpose is refused; the connection is pinned to the checked address. `AR_ALLOW_PRIVATE_ALERT_URLS=1` allows `http` and local addresses — for local development and tests only.
 - **Limits (honest):** the detector and the alert queue live in the API process, so a restart forgets partial bursts and queued alerts. Channel URLs and signing secrets are stored in the database as plain text. Email alerts are not offered until a provider is chosen.
 
+**Email alerts:** set `AR_SMTP_HOST`, `AR_SMTP_PORT` (587), `AR_SMTP_TLS` (`starttls` or `implicit`), `AR_SMTP_USER`, `AR_SMTP_PASSWORD` (or `AR_SMTP_PASSWORD_FILE`) and `AR_SMTP_FROM` (optionally `AR_SMTP_FROM_NAME`, `AR_SMTP_CONFIRMATIONS_PER_DAY`), and publish SPF and DKIM for the sender domain. Then add an Email channel in the Console; each recipient gets a confirmation link and receives alerts only after pressing Confirm.
+
 ## Guard and attestation
 
 `@antireverse/guard` is a small browser library (plain ES modules, no dependency, about 7 KB gzip). It gets a short-lived Attestation Token and lets your frontend send it with API calls:
@@ -153,6 +155,12 @@ A Rule can throttle: a limit of requests (or of failed responses, 401 and 403) p
 On the Policy page, **Simulate** replays the last 24 hours of recorded requests against your Rules (or **Simulate with this Rule** for one you are typing) and shows, per Rule, how many requests it would refuse and from how many clients. The promote confirmation shows what promoting that Rule alone would refuse. Nothing is stored or published.
 
 - **Honest limits:** an estimate from recorded traffic only. It never claims a refusal it cannot be sure of and reports the rest as "could not be judged". Virtual patches, blocks on individual clients, device limits and Shield's body checks are not simulated. Give Shield an actor key so clients can be told apart.
+
+## Verified Targets and Rules of Engagement
+
+Before Airverse may test a host, prove you own it under **Prove → Targets**: add the host, then publish the shown TXT record at `_airverse-challenge.<host>` or serve the token at `https://<host>/.well-known/airverse-verification.txt`, and press Verify. Ownership is re-checked daily. Under **Rules of Engagement**, sign what may be tested (hosts, excluded paths, intensity, UTC window, contacts) by typing the shown phrase; signed versions cannot be changed. **Check a test** shows whether a given test would be allowed.
+
+- **Honest limits:** without user accounts, "signed" means signed with the Organization's admin key; DNS and the file prove control of the name at check time only.
 
 ## Clone Beacon
 
