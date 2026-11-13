@@ -1,0 +1,19 @@
+{
+  "name": "@antireverse/prove",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@antireverse/protocol": "*",
+    "@antireverse/shield-node": "*",
+    "@babel/generator": "8.1.0",
+    "@babel/parser": "8.1.0"
+  },
+  "devDependencies": {
+    "@antireverse/harden": "*",
+    "@types/babel__generator": "7.27.0"
+  }
+}

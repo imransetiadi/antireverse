@@ -23,6 +23,10 @@ export const FAKE_DNS_FILE = process.env.E2E_FAKE_DNS_FILE;
 // The mails of the e2e API's local SMTP server (slice 06b), written by fixtures/api-fixture-patches.ts as they arrive.
 process.env.E2E_FAKE_MAIL_FILE ||= join(mkdtempSync(join(tmpdir(), "antireverse-e2e-mail-")), "mails.json");
 export const FAKE_MAIL_FILE = process.env.E2E_FAKE_MAIL_FILE;
+// The hold of the e2e API's Assessment engine (slice 12a): while this file exists, a run waits before the real engine
+// starts, so a journey can see an Assessment queued and running (fixtures/api-fixture-patches.ts). Absent: no wait.
+process.env.E2E_ASSESS_HOLD_FILE ||= join(mkdtempSync(join(tmpdir(), "antireverse-e2e-hold-")), "assess-hold");
+export const ASSESS_HOLD_FILE = process.env.E2E_ASSESS_HOLD_FILE;
 
 export default defineConfig({
   testDir: ".",
@@ -55,6 +59,7 @@ export default defineConfig({
         AR_CONSOLE_URL: CONSOLE_URL,
         E2E_FAKE_DNS_FILE: FAKE_DNS_FILE,
         E2E_FAKE_MAIL_FILE: FAKE_MAIL_FILE,
+        E2E_ASSESS_HOLD_FILE: ASSESS_HOLD_FILE,
       },
       url: `${API_URL}/healthz`,
       reuseExistingServer: false,

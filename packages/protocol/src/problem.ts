@@ -33,6 +33,8 @@ export const CONFLICT_REASONS = deepFreeze([
   "smtp-not-configured",
   "recipient-confirmed",
   "no-confirmed-recipients",
+  // Slice 12a (Reverse Assessment): an Assessment request without files for a Build that has no kept artifact.
+  "artifact-required",
 ] as const);
 export type ConflictReason = (typeof CONFLICT_REASONS)[number];
 

@@ -1,5 +1,23 @@
 // Entry "@antireverse/api": everything needed to run the API in-process (tests) or as a server (main.ts).
 export { type AppDeps, createApp } from "./app.ts";
+export {
+  type Assessor,
+  type AssessorBuildFacts,
+  type AssessorInput,
+  type AssessorLeakFinding,
+  type AssessorOutcome,
+  ENGINE_UNAVAILABLE,
+  unavailableAssessor,
+} from "./assess/assessor.ts";
+export { proveAssessor } from "./assess/prove-assessor.ts";
+export {
+  type AssessmentQueue,
+  type AssessmentRunner,
+  type AssessmentRunnerOptions,
+  createAssessmentRunner,
+  FAILURE_REASONS,
+  RUNNER_DEFAULTS,
+} from "./assess/runner.ts";
 export { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 export type { AppEnv, Principal } from "./auth/authenticate.ts";
 export { createEventBus, type EventBus } from "./bus.ts";

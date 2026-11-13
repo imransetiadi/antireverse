@@ -1,7 +1,8 @@
-import type { Build, Finding } from "@antireverse/protocol";
+import type { Assessment, Build, Finding } from "@antireverse/protocol";
 import { EnvironmentTag } from "@/components/environment-tag.tsx";
 import { Icon } from "@/components/icons.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
+import { ReverseResistance } from "@/features/assessments/reverse-resistance.tsx";
 import { formatBytes, formatDateTime, formatOverhead } from "@/lib/format.ts";
 import { t } from "@/lib/t.ts";
 import { BuildFindings } from "./build-findings.tsx";
@@ -200,14 +201,15 @@ function BuildMarkers({ build }: { build: Build }) {
 }
 
 /**
- * One Build (SCR-07, trimmed to this slice): the version, profile and Environment; the costs against their
- * budgets; the transform summary; its Findings (slice 19); the markers (leak scan, Canaries); and the artifact list. No resistance
- * score — that is a later slice.
+ * One Build (SCR-07): the version, profile and Environment; its Reverse resistance (slice 12a); the costs against
+ * their budgets; the transform summary; its Findings (slice 19); the markers (leak scan, Canaries); and the artifact
+ * list.
  */
 export function BuildDetail({
   build,
   appName,
   findings,
+  assessments,
 }: {
   build: Build;
   appName: string;
@@ -216,6 +218,11 @@ export function BuildDetail({
    * when they could not be read. Without the prop the section is left out.
    */
   findings?: readonly Finding[] | null;
+  /**
+   * Slice 12a: the Build's Reverse Assessments, newest first, null when they could not be read. Without the prop
+   * the section is left out.
+   */
+  assessments?: readonly Assessment[] | null;
 }) {
   const registered = formatDateTime(build.registered_at);
   return (
@@ -243,6 +250,8 @@ export function BuildDetail({
           {t("build.col.created.zone")}
         </span>
       </p>
+
+      {assessments === undefined ? null : <ReverseResistance assessments={assessments} />}
 
       <section aria-labelledby="build-cost-title" className={`${SECTION} max-w-xl`} data-testid="build-cost">
         <h2 id="build-cost-title" className={SECTION_TITLE}>

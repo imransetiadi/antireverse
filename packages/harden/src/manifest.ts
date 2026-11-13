@@ -40,6 +40,8 @@ export interface BuildManifestArgs {
   beacon?: ManifestBeacon;
   /** The component inventory in summary (slice 19): its length and `componentsDigest`. Omitted when absent. */
   components?: { count: number; digest: string };
+  /** The route inventory in summary (slice 12a): its length and `routesDigest`. Never the routes. Omitted when absent. */
+  routes?: { count: number; digest: string };
 }
 
 function gzipLen(code: string): number {
@@ -84,5 +86,6 @@ export function buildManifest(args: BuildManifestArgs): BuildManifest {
     ...(args.canaries ? { canaries: args.canaries.map((c) => ({ ...c })) } : {}),
     ...(args.beacon ? { beacon: { token: args.beacon.token, origins: [...args.beacon.origins] } } : {}),
     ...(args.components ? { components_digest: args.components.digest, component_count: args.components.count } : {}),
+    ...(args.routes ? { routes_digest: args.routes.digest, route_count: args.routes.count } : {}),
   };
 }

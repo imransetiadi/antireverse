@@ -1,7 +1,7 @@
 // The register client: one POST that sends the Build Manifest to the API. It sends ONLY the Manifest (no
 // source, no unprotected bundle, no seed value) and, from slice 19, the lockfile's components beside it (name,
-// version, dev — nothing else), carries the admin key in the Authorization header, never
-// logs or returns the key, and never throws into the caller — failures come back as `{ error }`.
+// version, dev — nothing else) and, from slice 12a, the route inventory (`METHOD /path` entries), carries the
+// admin key in the Authorization header, never logs or returns the key, and never throws into the caller — failures come back as `{ error }`.
 import type { Build, BuildManifest, Component, FindingsSummary } from "@antireverse/protocol";
 import { BuildResponseSchema } from "@antireverse/protocol";
 
@@ -14,6 +14,8 @@ export interface RegisterArgs {
   manifest: BuildManifest;
   /** The lockfile's components (slice 19), sent beside the Manifest. Omitted from the body when absent. */
   components?: readonly Component[];
+  /** The route inventory (slice 12a), sent beside the Manifest for W1 Map. Omitted from the body when absent. */
+  routes?: readonly string[];
 }
 
 /** `findings` is the Build's open-findings summary when the API returned one (slice 19). */
@@ -33,9 +35,11 @@ export async function registerBuild(args: RegisterArgs): Promise<RegisterResult>
     response = await fetch(url, {
       method: "POST",
       headers: { authorization: `Bearer ${args.key}`, "content-type": "application/json" },
-      body: JSON.stringify(
-        args.components ? { manifest: args.manifest, components: args.components } : { manifest: args.manifest },
-      ),
+      body: JSON.stringify({
+        manifest: args.manifest,
+        ...(args.components ? { components: args.components } : {}),
+        ...(args.routes ? { routes: args.routes } : {}),
+      }),
     });
   } catch (error) {
     return { error: `the API could not be reached (${describeError(error)})` };

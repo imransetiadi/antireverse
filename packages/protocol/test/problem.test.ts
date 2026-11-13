@@ -108,6 +108,7 @@ describe("conflict reasons", () => {
       "smtp-not-configured",
       "recipient-confirmed",
       "no-confirmed-recipients",
+      "artifact-required",
     ]);
     expect(Object.isFrozen(CONFLICT_REASONS)).toBe(true);
   });

@@ -162,6 +162,12 @@ Before Airverse may test a host, prove you own it under **Prove → Targets**: a
 
 - **Honest limits:** without user accounts, "signed" means signed with the Organization's admin key; DNS and the file prove control of the name at check time only.
 
+## Reverse Assessment
+
+Run `antireverse harden --register --routes routes.json --assess T1` to register a Build with its route inventory and queue an Assessment of the protected output; the Build page then shows **Reverse resistance**: the score or why there is none, each Objective (Map, Secrets, Replay) with its evidence and a fix suggestion, and **Assess again** once a run has finished. The artifact is kept for 30 days after the last run.
+
+- **Honest limits:** the agent is a scripted stand-in until a real model is configured, so results measure the pipeline, not real resistance. Logic and Tamper Objectives come in 12b; until then every Assessment is inconclusive. Runs are isolated in a worker thread, not a separate hosted account.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

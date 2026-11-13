@@ -53,6 +53,8 @@ export const ID_PATTERNS = {
   roe: /^roe_[0-9a-f]{24}$/,
   /** A recipient of an email alert channel (slice 06b). */
   rcp: /^rcp_[0-9a-f]{24}$/,
+  /** A Reverse Assessment (slice 12a). */
+  asm: /^asm_[0-9a-f]{24}$/,
 } as const;
 export type IdPrefix = keyof typeof ID_PATTERNS;
 

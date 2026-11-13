@@ -3,6 +3,8 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { matchedRoutes } from "hono/route";
+import { type Assessor, unavailableAssessor } from "./assess/assessor.ts";
+import { type AssessmentQueue, createAssessmentRunner } from "./assess/runner.ts";
 import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 import type { AppEnv, Principal } from "./auth/authenticate.ts";
 import type { EventBus } from "./bus.ts";
@@ -20,6 +22,7 @@ import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { alertChannelRoutes } from "./routes/alert-channels.ts";
 import { allowlistRoutes } from "./routes/allowlist.ts";
 import { appRoutes } from "./routes/apps.ts";
+import { assessmentRoutes } from "./routes/assessments.ts";
 import { attestRoutes } from "./routes/attest.ts";
 import { beaconRoutes, type ClientAddress } from "./routes/beacon.ts";
 import { buildRoutes } from "./routes/builds.ts";
@@ -105,6 +108,16 @@ export interface AppDeps {
    * Default: node:dns and the guarded fetcher without its test-only option; tests pass stand-ins.
    */
   prove?: ProveDeps;
+  /**
+   * The Reverse Assessment engine (slice 12a): states the scope of a queued Assessment and runs it. Default: an
+   * Assessor without an engine, whose runs fail saying so (`startApi` passes the engine of `packages/prove`).
+   */
+  assessor?: Assessor;
+  /**
+   * Told each queued Assessment. Default: a runner on `db` and `assessor`, never started (no restart recovery and no
+   * artifact expiry; `startApi` passes the one it starts and stops).
+   */
+  assessments?: AssessmentQueue;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -204,6 +217,9 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     }),
   );
   app.route("/", proveRoutes({ db: deps.db, network: proveNetwork(deps.prove), now: deps.now }));
+  const assessor = deps.assessor ?? unavailableAssessor();
+  const assessmentQueue = deps.assessments ?? createAssessmentRunner({ db: deps.db, assessor, now: deps.now, logger });
+  app.route("/", assessmentRoutes({ db: deps.db, assessor, queue: assessmentQueue, now: deps.now }));
 
   app.notFound((c) => problem(c, "not-found"));
   app.onError((error, c) => {

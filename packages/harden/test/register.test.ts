@@ -3,6 +3,7 @@ import {
   EXAMPLE_BUILD_MANIFEST,
   EXAMPLE_FINDINGS_SUMMARY,
   EXAMPLE_INVENTORY,
+  EXAMPLE_ROUTE_INVENTORY,
 } from "@antireverse/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuild } from "../src/register.ts";
@@ -100,5 +101,31 @@ describe("registerBuild — components and findings (slice 19)", () => {
     );
     const result = await registerBuild({ endpoint: ENDPOINT, key: KEY, appId: APP, manifest: EXAMPLE_BUILD_MANIFEST });
     expect("build" in result && result.findings).toBeUndefined();
+  });
+});
+
+describe("registerBuild — route inventory (slice 12a)", () => {
+  it("sends the routes beside the Manifest (and the components when given)", async () => {
+    let body: unknown;
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ build: EXAMPLE_BUILD }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const routes = [...EXAMPLE_ROUTE_INVENTORY];
+    const components = [...EXAMPLE_INVENTORY.components];
+    await registerBuild({ endpoint: ENDPOINT, key: KEY, appId: APP, manifest: EXAMPLE_BUILD_MANIFEST, routes });
+    expect(body).toEqual({ manifest: EXAMPLE_BUILD_MANIFEST, routes });
+    await registerBuild({
+      endpoint: ENDPOINT,
+      key: KEY,
+      appId: APP,
+      manifest: EXAMPLE_BUILD_MANIFEST,
+      components,
+      routes,
+    });
+    expect(body).toEqual({ manifest: EXAMPLE_BUILD_MANIFEST, components, routes });
   });
 });

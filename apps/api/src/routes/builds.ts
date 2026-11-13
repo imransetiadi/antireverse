@@ -8,8 +8,9 @@ import {
   type ListBuildsResponse,
   type ProblemError,
   RegisterBuildRequestSchema,
+  ROUTE_LIMITS,
 } from "@antireverse/protocol";
-import { componentsDigest } from "@antireverse/protocol/server";
+import { componentsDigest, routesDigest } from "@antireverse/protocol/server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
@@ -18,16 +19,24 @@ import { type IncidentQueue, matchInventory, type OpenedFinding } from "../expos
 import { problem } from "../problem.ts";
 import { findApp } from "../stores/apps.ts";
 import { findBeaconBuild, insertBeacon } from "../stores/beacons.ts";
-import { type BuildTarget, findBuild, insertBuild, listBuilds } from "../stores/builds.ts";
+import { type BuildTarget, findBuild, insertBuild, insertBuildRoutes, listBuilds } from "../stores/builds.ts";
 import { insertCanaries } from "../stores/canaries.ts";
 import { buildFindingsSummary } from "../stores/findings.ts";
 import { validateJson } from "../validate.ts";
 
 /**
- * Bytes of a Build registration body: the Manifest's own bound plus the component list's (slice 19). Each member is
- * then held to its own bound by `limitMembers`.
+ * Bytes of a serialised route inventory at most (slice 12a): 2,000 entries of the longest form, each quoted and
+ * separated (`"METHOD /path",`), with backslash escapes impossible (the entry grammar has no quote or backslash).
  */
-const REGISTER_BODY_BYTES_MAX = BUILD_LIMITS.manifestBytesMax + EXPOSURE_LIMITS.componentsBytesMax + 1024;
+const ROUTES_BYTES_MAX = ROUTE_LIMITS.routesMax * (ROUTE_LIMITS.methodMax + 1 + ROUTE_LIMITS.pathMax + 3) + 2;
+
+/**
+ * Bytes of a Build registration body: the Manifest's own bound plus the component list's (slice 19) and the route
+ * inventory's (slice 12a). The Manifest and the components are then held to their own bounds by `limitMembers`; the
+ * routes by their schema.
+ */
+const REGISTER_BODY_BYTES_MAX =
+  BUILD_LIMITS.manifestBytesMax + EXPOSURE_LIMITS.componentsBytesMax + ROUTES_BYTES_MAX + 1024;
 
 /**
  * Holds the Manifest to `BUILD_LIMITS.manifestBytesMax` and the component list to `EXPOSURE_LIMITS.componentsBytesMax`
@@ -92,6 +101,8 @@ export function buildRoutes(deps: {
   // From slice 19 the body may carry the lockfile's components beside the Manifest: they must match the Manifest's
   // `component_count` and `components_digest`, are stored as the Build's inventory and matched in the Build's own
   // transaction, and the 201 then carries the Build's open Findings as a summary. The list is never returned.
+  // From slice 12a it may carry the route inventory for W1 Map: held to `route_count` and `routes_digest`, stored
+  // with the Build in its transaction, never returned and never given to an Assessment's agent.
   routes.post(
     "/v1/apps/:appId/builds",
     admin,
@@ -101,7 +112,7 @@ export function buildRoutes(deps: {
     async (c) => {
       const { organizationId } = c.var.principal;
       const appId = c.req.param("appId");
-      const { manifest, components } = c.req.valid("json");
+      const { manifest, components, routes: inventory } = c.req.valid("json");
       // A malformed App id names no App: "not found", before the body is judged against it.
       if (!ID_PATTERNS.app.test(appId)) return problem(c, "not-found");
       if (manifest.app_id !== appId) {
@@ -116,6 +127,19 @@ export function buildRoutes(deps: {
           errors.push({ path: "manifest.components_digest", message: "Required when components are sent." });
         } else if (manifest.components_digest !== componentsDigest(components)) {
           errors.push({ path: "manifest.components_digest", message: "Must equal the digest of the components sent." });
+        }
+        if (errors.length > 0) return problem(c, "validation", errors);
+      }
+      // Slice 12a: the route inventory is held to the Manifest's count and digest in the same way.
+      if (inventory !== undefined) {
+        const errors: ProblemError[] = [];
+        if (manifest.route_count === undefined) {
+          errors.push({ path: "manifest.route_count", message: "Required when routes are sent." });
+        }
+        if (manifest.routes_digest === undefined) {
+          errors.push({ path: "manifest.routes_digest", message: "Required when routes are sent." });
+        } else if (manifest.routes_digest !== routesDigest(inventory)) {
+          errors.push({ path: "manifest.routes_digest", message: "Must equal the digest of the routes sent." });
         }
         if (errors.length > 0) return problem(c, "validation", errors);
       }
@@ -151,6 +175,10 @@ export function buildRoutes(deps: {
               beacon: manifest.beacon,
               createdAt: registeredAt,
             });
+          }
+          // Likewise its route inventory (slice 12a): stored for the W1 verifier only, never returned.
+          if (inventory !== undefined) {
+            await insertBuildRoutes(q, { organizationId, appId, buildId: manifest.build_id, routes: inventory });
           }
           if (components === undefined) return { build, opened: [] };
           // Likewise its inventory and Findings: a refused registration leaves neither.

@@ -1,5 +1,6 @@
 // Isomorphic: this module is safe for browsers. It must not import a Node built-in.
 import { z } from "zod";
+import { ROUTE_LIMITS, RouteInventorySchema } from "./assessment.ts";
 import { BuildBeaconSchema, ManifestBeaconSchema } from "./beacon.ts";
 import { BuildCanarySummarySchema, CANARY_LIMITS, CanarySchema, LeakScanSummarySchema } from "./canaries.ts";
 import { ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
@@ -96,24 +97,43 @@ export const BuildManifestSchema = z.object({
    */
   components_digest: Sha256Schema.optional(),
   component_count: z.int().min(0).max(EXPOSURE_LIMITS.componentsMax).optional(),
+  /**
+   * The route inventory in summary (slice 12a): `routesDigest` (server entry) of the routes sent beside the
+   * Manifest, and their number. The routes themselves never go into the Manifest or a Build response, and never
+   * to an Assessment's agent. Optional, as `leak_scan`.
+   */
+  routes_digest: Sha256Schema.optional(),
+  route_count: z.int().min(0).max(ROUTE_LIMITS.routesMax).optional(),
 });
 export type BuildManifest = z.infer<typeof BuildManifestSchema>;
 
 /**
  * Body of `POST /v1/apps/:appId/builds`: the Manifest the CLI built and, from slice 19, the lockfile's
  * components beside it (at most 5,000; at most `EXPOSURE_LIMITS.componentsBytesMax` serialised, checked by the
- * API). When both are present, the Manifest's `component_count` must equal the list's length. That
- * `components_digest` equals `componentsDigest(components)` is the API's check: hashing needs node:crypto,
- * which this isomorphic module must not import.
+ * API); from slice 12a, the route inventory for W1 Map (at most 2,000 routes). When a list and the Manifest's
+ * count are both present, they must agree. That `components_digest` equals `componentsDigest(components)` and
+ * `routes_digest` equals `routesDigest(routes)` are the API's checks: hashing needs node:crypto, which this
+ * isomorphic module must not import.
  */
 export const RegisterBuildRequestSchema = z
-  .object({ manifest: BuildManifestSchema, components: ComponentListSchema.optional() })
+  .object({
+    manifest: BuildManifestSchema,
+    components: ComponentListSchema.optional(),
+    routes: RouteInventorySchema.optional(),
+  })
   .refine(
     (request) =>
       request.components === undefined ||
       request.manifest.component_count === undefined ||
       request.manifest.component_count === request.components.length,
     { message: "Must list as many components as the Manifest's component_count.", path: ["components"] },
+  )
+  .refine(
+    (request) =>
+      request.routes === undefined ||
+      request.manifest.route_count === undefined ||
+      request.manifest.route_count === request.routes.length,
+    { message: "Must list as many routes as the Manifest's route_count.", path: ["routes"] },
   );
 export type RegisterBuildRequest = z.infer<typeof RegisterBuildRequestSchema>;
 

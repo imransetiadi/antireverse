@@ -16,11 +16,13 @@ import {
   EXAMPLE_CANARIES,
   EXAMPLE_FINDINGS_SUMMARY,
   EXAMPLE_INVENTORY,
+  EXAMPLE_ROUTE_INVENTORY,
   EXPOSURE_LIMITS,
   ListBuildsResponseSchema,
   PROFILES,
   type Profile,
   RegisterBuildRequestSchema,
+  ROUTE_LIMITS,
   type TransformSummary,
   TransformSummarySchema,
 } from "../src/index.ts";
@@ -378,5 +380,59 @@ describe("components beside the Manifest and findings on the registration respon
     expect(
       ListBuildsResponseSchema.parse({ builds: [{ ...build, components: [...components] }] }).builds[0],
     ).not.toHaveProperty("components");
+  });
+});
+
+describe("route inventory beside the Manifest (slice 12a)", () => {
+  const routes = [...EXAMPLE_ROUTE_INVENTORY];
+  const DIGEST = "b".repeat(64);
+  const withRoutes = { ...EXAMPLE_BUILD_MANIFEST, routes_digest: DIGEST, route_count: routes.length };
+
+  it("keeps a Manifest without a route digest valid, and absent stays absent", () => {
+    const parsed = BuildManifestSchema.parse(EXAMPLE_BUILD_MANIFEST);
+    expect(parsed).not.toHaveProperty("routes_digest");
+    expect(parsed).not.toHaveProperty("route_count");
+  });
+
+  it("carries the routes' digest and count in the Manifest, never the list", () => {
+    const parsed: BuildManifest = BuildManifestSchema.parse({ ...withRoutes, routes });
+    expect(parsed.routes_digest).toBe(DIGEST);
+    expect(parsed.route_count).toBe(routes.length);
+    expect(parsed).not.toHaveProperty("routes");
+    expect(accepts(manifest({ routes_digest: "B".repeat(64) }))).toBe(false);
+    expect(accepts(manifest({ routes_digest: "b".repeat(63) }))).toBe(false);
+    expect(accepts(manifest({ route_count: -1 }))).toBe(false);
+    expect(accepts(manifest({ route_count: 1.5 }))).toBe(false);
+    expect(accepts(manifest({ route_count: ROUTE_LIMITS.routesMax }))).toBe(true);
+    expect(accepts(manifest({ route_count: ROUTE_LIMITS.routesMax + 1 }))).toBe(false);
+  });
+
+  it("sends the routes beside the Manifest in the registration request, optional", () => {
+    const request = RegisterBuildRequestSchema.parse({ manifest: withRoutes, routes });
+    expect(request.routes).toEqual(routes);
+    expect(RegisterBuildRequestSchema.parse({ manifest: EXAMPLE_BUILD_MANIFEST })).not.toHaveProperty("routes");
+    expect(RegisterBuildRequestSchema.safeParse({ manifest: withRoutes, routes: ["GET /a/"] }).success).toBe(false);
+    expect(RegisterBuildRequestSchema.safeParse({ manifest: withRoutes, routes: ["GET /a", "get /a"] }).success).toBe(
+      false,
+    );
+  });
+
+  it("requires the Manifest's route_count to equal the routes sent, when both are present", () => {
+    const parse = (count: number | undefined, list: string[] | undefined) =>
+      RegisterBuildRequestSchema.safeParse({
+        manifest: count === undefined ? EXAMPLE_BUILD_MANIFEST : { ...withRoutes, route_count: count },
+        ...(list === undefined ? {} : { routes: list }),
+      });
+    expect(parse(routes.length, routes).success).toBe(true);
+    expect(parse(routes.length + 1, routes).success).toBe(false);
+    expect(parse(undefined, routes).success).toBe(true);
+    expect(parse(routes.length, undefined).success).toBe(true);
+    expect(parse(routes.length - 1, routes).error?.issues.map((issue) => issue.path)).toEqual([["routes"]]);
+  });
+
+  it("returns the count and digest with the Build, never the list", () => {
+    const build = BuildSchema.parse({ ...EXAMPLE_BUILD, ...withRoutes, routes });
+    expect(build.route_count).toBe(routes.length);
+    expect(build).not.toHaveProperty("routes");
   });
 });

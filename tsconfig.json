@@ -4,6 +4,7 @@
     { "path": "packages/protocol" },
     { "path": "packages/shield-node" },
     { "path": "packages/guard" },
+    { "path": "packages/prove" },
     { "path": "apps/api" },
     { "path": "apps/range" },
     { "path": "tests/e2e" }

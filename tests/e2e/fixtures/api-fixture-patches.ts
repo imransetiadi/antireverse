@@ -14,10 +14,17 @@
 // (apps/api/test/fake-smtp.ts, STARTTLS, its own test CA) on a free port, gives the API SMTP settings for it through
 // the real AR_SMTP_* reader, and writes every mail it receives to that JSON file ([{ from, to, data, overTls }]),
 // which the journey reads. No mail leaves 127.0.0.1.
-import { readFileSync, writeFileSync } from "node:fs";
+//
+// Reverse Assessment (slice 12a): the Assessor is the real one (`proveAssessor`, the prove engine with its stand-in
+// agent). When E2E_ASSESS_HOLD_FILE is set and that file exists, a run the runner has claimed waits (status running)
+// until the file is removed, and only then starts the engine; the journey uses it to see an Assessment queued and
+// running. Without the file nothing waits.
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
+  type Assessor,
   type ProveDeps,
+  proveAssessor,
   type Resolver,
   readConfig,
   readSmtpSettings,
@@ -76,18 +83,34 @@ async function fakeMail(file: string): Promise<{ smtp: SmtpSettings; close: () =
   return { smtp, close: () => server.close() };
 }
 
+/** The real Assessor, held before each run while `holdFile` exists (the runner's abort signal ends the wait). */
+function heldAssessor(holdFile: string): Assessor {
+  const real = proveAssessor();
+  return {
+    scope: (tier) => real.scope(tier),
+    async assess(input) {
+      while (existsSync(holdFile) && !input.signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return real.assess(input);
+    },
+  };
+}
+
 async function main(): Promise<void> {
   const config = readConfig(process.env);
   const dnsFile = process.env.E2E_FAKE_DNS_FILE;
   const prove: ProveDeps | undefined = dnsFile ? { resolver: fileResolver(dnsFile) } : undefined;
   const mailFile = process.env.E2E_FAKE_MAIL_FILE;
   const mail = mailFile ? await fakeMail(mailFile) : undefined;
+  const holdFile = process.env.E2E_ASSESS_HOLD_FILE;
   const api = await startApi({
     ...config,
     logger,
     patches: FIXTURE_PATCH_CATALOG,
     ...(prove === undefined ? {} : { prove }),
     ...(mail === undefined ? {} : { smtp: mail.smtp }),
+    ...(holdFile ? { assessor: heldAssessor(holdFile) } : {}),
   });
   logger.info(`api (fixture patch catalog ${FIXTURE_PATCH_CATALOG.version}) listening on ${api.url}`);
   let stopping = false;

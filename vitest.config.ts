@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 // Vitest 5 has no workspace file: every workspace is an inline project here.
-// Run one project with `npx vitest run --project <name>` (names: protocol, shield-node, guard, api, range, console, e2e).
+// Run one project with `npx vitest run --project <name>` (names: protocol, shield-node, guard, harden, prove, api, range, console, e2e).
 // Vitest 5 no longer excludes build output by default, so every project has an explicit include.
 const include = ["test/**/*.test.{ts,tsx}"];
 const abs = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
@@ -27,6 +27,11 @@ export default defineConfig({
       {
         extends: true,
         test: { name: "harden", root: "./packages/harden", environment: "node", include },
+      },
+      {
+        extends: true,
+        // The Reverse Assessment core: its code runner starts worker_threads workers, each call up to 5 s.
+        test: { name: "prove", root: "./packages/prove", environment: "node", include, testTimeout: 20_000 },
       },
       {
         extends: true,

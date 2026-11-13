@@ -278,6 +278,9 @@ describe("data directory", () => {
         { version: "0023_prove_review.sql" },
         { version: "0024_email_alerts.sql" },
         { version: "0025_email_caps.sql" },
+        { version: "0026_assessments.sql" },
+        { version: "0027_assessment_calls.sql" },
+        { version: "0028_artifact_expiry_lock.sql" },
       ]);
     } finally {
       await second.close();

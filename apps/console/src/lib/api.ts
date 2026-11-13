@@ -4,6 +4,9 @@ import {
   AllowlistEntryResponseSchema,
   type AppResponse,
   AppResponseSchema,
+  type AssessmentResponse,
+  AssessmentResponseSchema,
+  type AssessmentTier,
   type AuthorizeRequest,
   type AuthorizeResult,
   AuthorizeResultSchema,
@@ -22,6 +25,8 @@ import {
   type CreateAppRequestInput,
   type CreateAppResponse,
   CreateAppResponseSchema,
+  type CreateAssessmentResponse,
+  CreateAssessmentResponseSchema,
   type CreateContainmentRequest,
   type CreateOrganizationRequestInput,
   type CreateOrganizationResponse,
@@ -48,6 +53,8 @@ import {
   ListAllowlistResponseSchema,
   type ListAppsResponse,
   ListAppsResponseSchema,
+  type ListAssessmentsResponse,
+  ListAssessmentsResponseSchema,
   type ListBuildsResponse,
   ListBuildsResponseSchema,
   type ListContainmentsResponse,
@@ -307,6 +314,41 @@ export function getBuild(key: string, appId: string, buildId: string): Promise<B
   return call(`/v1/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}`, BuildResponseSchema, {
     key,
   });
+}
+
+/**
+ * `GET /v1/apps/:appId/builds/:buildId/assessments` — the Build's Reverse Assessments (slice 12a), newest first, at
+ * most `ASSESSMENT_LIMITS.listed`; 404 for an unknown Build or one of another Organization.
+ */
+export function listAssessments(key: string, appId: string, buildId: string): Promise<ListAssessmentsResponse> {
+  return call(
+    `/v1/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}/assessments`,
+    ListAssessmentsResponseSchema,
+    { key },
+  );
+}
+
+/**
+ * `POST /v1/apps/:appId/builds/:buildId/assessments` with the tier alone: the API assesses the Build's most recent
+ * kept artifact again and answers 202 with the queued Assessment, or 409 `artifact-required` when none is kept. The
+ * Console never uploads an artifact.
+ */
+export function createAssessment(
+  key: string,
+  appId: string,
+  buildId: string,
+  request: { tier: AssessmentTier },
+): Promise<CreateAssessmentResponse> {
+  return call(
+    `/v1/apps/${encodeURIComponent(appId)}/builds/${encodeURIComponent(buildId)}/assessments`,
+    CreateAssessmentResponseSchema,
+    { method: "POST", key, body: { tier: request.tier } },
+  );
+}
+
+/** `GET /v1/assessments/:id` — one Reverse Assessment; 404 for an unknown one or one of another Organization. */
+export function getAssessment(key: string, assessmentId: string): Promise<AssessmentResponse> {
+  return call(`/v1/assessments/${encodeURIComponent(assessmentId)}`, AssessmentResponseSchema, { key });
 }
 
 /** `GET /v1/signing-key` — needs no key and sends none: the public key Shield verifies a Policy with. */

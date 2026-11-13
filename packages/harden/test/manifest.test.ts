@@ -96,4 +96,22 @@ describe("buildManifest", () => {
     expect("leak_scan" in manifest).toBe(false);
     expect("canaries" in manifest).toBe(false);
   });
+
+  it("carries route_count and routes_digest when given (slice 12a), never the routes, and parses", () => {
+    const manifest = buildManifest({
+      ...BASE,
+      artifacts: [{ path: "a.mjs", code: "const a=1;" }],
+      routes: { count: 5, digest: "a".repeat(64) },
+    });
+    expect(manifest.route_count).toBe(5);
+    expect(manifest.routes_digest).toBe("a".repeat(64));
+    expect("routes" in manifest).toBe(false);
+    expect(BuildManifestSchema.parse(manifest)).toEqual(manifest);
+  });
+
+  it("omits route_count and routes_digest when no inventory is given", () => {
+    const manifest = buildManifest({ ...BASE, artifacts: [{ path: "a.mjs", code: "const a=1;" }] });
+    expect("route_count" in manifest).toBe(false);
+    expect("routes_digest" in manifest).toBe(false);
+  });
 });

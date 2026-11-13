@@ -10,6 +10,8 @@ import {
   type AlertDelivery,
   type AllowlistEntry,
   type App,
+  type Assessment,
+  type AssessmentTier,
   type AuthorizeResult,
   CONTAINMENT_LIMITS,
   CONTAINMENT_TTLS,
@@ -46,6 +48,7 @@ import {
   type RuleLimit,
   RulesOfEngagementContentSchema,
   type SimulationResult,
+  TIER_IDS,
   type VerifyResult,
 } from "@antireverse/protocol";
 import { revalidatePath } from "next/cache";
@@ -64,6 +67,7 @@ import {
   createAlertChannel,
   createAllowlistEntry,
   createApp,
+  createAssessment,
   createContainment,
   createOrganization,
   createTarget,
@@ -1632,6 +1636,49 @@ export async function checkAuthorizationAction(
     }
     return { ok: false, errors: apiErrors(error, []), values };
   }
+}
+
+// ── Reverse Assessment (slice 12a) ────────────────────────────────────────────────────────────────────
+// "Assess again" sends the tier alone: the API assesses the Build's most recent kept artifact again. The Console
+// never uploads an artifact; when none is kept any more, the person is told how to upload it again.
+
+export type AssessAgainState = null | { ok: false; errors: FieldError[] } | { ok: true; assessment: Assessment };
+
+const isTier = (value: string): value is AssessmentTier => (TIER_IDS as readonly string[]).includes(value);
+
+/** Requests a new Assessment of a Build's kept artifact at the chosen tier, then refreshes the Build page. */
+export async function assessAgainAction(_previous: AssessAgainState, formData: FormData): Promise<AssessAgainState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const appId = text(formData, "appId");
+  const buildId = text(formData, "buildId");
+  const tier = text(formData, "tier");
+  if (!ID_PATTERNS.app.test(appId) || !ID_PATTERNS.bld.test(buildId)) {
+    return failed("", t("error.assessment.stale"));
+  }
+  if (!isTier(tier)) return failed("tier", t("error.assessment.tier"));
+
+  let assessment: Assessment;
+  try {
+    ({ assessment } = await createAssessment(key, appId, buildId, { tier }));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ConflictError && error.reason === "artifact-required") {
+      // The page still offers the control: refresh it so that it reads the artifact as no longer kept.
+      revalidatePath(ROUTES.build(appId, buildId));
+      return failed("", t("error.assessment.notKept"));
+    }
+    if (error instanceof ConflictError || error instanceof NotFoundError) {
+      return failed("", t("error.assessment.stale"));
+    }
+    if (error instanceof ValidationError && error.errors.some((entry) => entry.path === "tier")) {
+      return failed("tier", t("error.assessment.tier"));
+    }
+    return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.build(appId, buildId));
+  return { ok: true, assessment };
 }
 
 /** Ends the session. */

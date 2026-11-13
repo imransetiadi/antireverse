@@ -39,7 +39,8 @@ export function limitBody(
     | "payload-too-large"
     | "attestation-payload-too-large"
     | "inventory-payload-too-large"
-    | "build-payload-too-large" = "payload-too-large",
+    | "build-payload-too-large"
+    | "assessment-payload-too-large" = "payload-too-large",
 ): MiddlewareHandler {
   return async (c, next) => {
     const raw = c.req.raw;

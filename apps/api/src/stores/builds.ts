@@ -79,3 +79,36 @@ export async function findBuild(q: Queryable, target: BuildTarget, buildId: stri
   );
   return rows[0] === undefined ? null : toBuild(rows[0]);
 }
+
+/**
+ * Stores a Build's route inventory (slice 12a) in the Build's own transaction. Read only by the Assessment runner, for
+ * the W1 verifier; never returned by a route.
+ */
+export async function insertBuildRoutes(
+  q: Queryable,
+  input: { organizationId: string; appId: string; buildId: string; routes: readonly string[] },
+): Promise<void> {
+  await q.query(
+    `INSERT INTO build_routes (organization_id, app_id, build_id, routes)
+     VALUES ($1::text, $2::text, $3::text, $4::jsonb)`,
+    [input.organizationId, input.appId, input.buildId, JSON.stringify(input.routes)],
+  );
+}
+
+/** A Build's route inventory, or null when it was registered without one. */
+export async function findBuildRoutes(q: Queryable, target: BuildTarget, buildId: string): Promise<string[] | null> {
+  const { rows } = await q.query<{ routes: string[] }>(
+    `SELECT routes FROM build_routes WHERE ${OF_TARGET} AND build_id = $3::text`,
+    [target.organizationId, target.appId, buildId],
+  );
+  return rows[0]?.routes ?? null;
+}
+
+/** A Build's Manifest as stored, Canary values and beacon token included: for the Assessment runner only. */
+export async function findManifest(q: Queryable, target: BuildTarget, buildId: string): Promise<BuildManifest | null> {
+  const { rows } = await q.query<{ manifest: BuildManifest }>(
+    `SELECT manifest FROM builds WHERE ${OF_TARGET} AND build_id = $3::text`,
+    [target.organizationId, target.appId, buildId],
+  );
+  return rows[0]?.manifest ?? null;
+}

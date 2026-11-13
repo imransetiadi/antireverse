@@ -46,6 +46,9 @@
 // targets can be added, verified (the outcome follows the host's first label, see stub-prove.mjs) and removed
 // (409 while in the current scope), versions signed with the exact phrase, and tests checked by authorize.
 // Verification tokens are never logged.
+// Slice 12a: every App's Builds carry Reverse Assessments (stub-assessments.mjs, checked by a test against the
+// protocol): the newest an inconclusive stand-in run and a failed one, the next two scored runs, the oldest a running
+// one. `POST …/builds/:buildId/assessments` needs the tier and the artifact's files and queues a stand-in run.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -56,6 +59,7 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import http from "node:http";
 import { createAlertStore } from "./stub-alerts.mjs";
+import { createAssessmentStore } from "./stub-assessments.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
 
@@ -92,6 +96,8 @@ const simulations = new Map();
 const SIMULATIONS_PER_MINUTE = 6;
 /** @type {Map<string, ReturnType<typeof createProveStore>>} Organization id → its Prove state (slice 14) */
 const proveStores = new Map();
+/** Reverse Assessments of every Organization (slice 12a): stub-assessments.mjs. */
+const assessments = createAssessmentStore();
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1285,6 +1291,7 @@ const server = http.createServer(async (req, res) => {
     events.set(app.id, []);
     seedPolicies(app.id);
     seedBuilds(app);
+    assessments.seed(organization.id, builds.get(app.id) ?? []);
     seedFindings(organization.id, adminKeyIds.get(bearer) ?? newId("key"), app);
     if (!incidents.has(organization.id)) seedIncidents(organization.id, app);
     return json(res, 201, { app: publicApp(app), shield_key: { ...newKey(`ark_${TAGS[environment]}_`), environment } });
@@ -1603,6 +1610,21 @@ const server = http.createServer(async (req, res) => {
     if (token === null) return problem(res, 404, "Not Found");
     const consoleUrl = process.env.AR_CONSOLE_URL ?? "http://127.0.0.1:39200";
     return json(res, 200, { url: `${consoleUrl}/alerts/confirm?token=${token}` });
+  }
+
+  // Reverse Assessments (slice 12a): of a Build of the Organization's App, and one by its id.
+  if (/^\/v1\/(?:assessments\/[^/]+|apps\/[^/]+\/builds\/[^/]+\/assessments)$/.test(path)) {
+    const answer = assessments.handle(
+      organization.id,
+      req.method,
+      path,
+      req.method === "POST" ? await readBody(req) : undefined,
+      (appId, buildId) =>
+        ownApps.some((candidate) => candidate.id === appId)
+          ? ((builds.get(appId) ?? []).find((candidate) => candidate.build_id === buildId) ?? null)
+          : null,
+    );
+    if (answer) return send(res, answer);
   }
 
   // The Builds of an App (contract P4): the list newest first, and one Build by its id.

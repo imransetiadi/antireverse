@@ -1,6 +1,7 @@
 // Entry "@antireverse/protocol": constants, zod schemas and inferred types. Safe for browsers.
 // Identifier, key and bundle functions need node:crypto and live in "@antireverse/protocol/server".
 export * from "./api.ts";
+export * from "./assessment.ts";
 export * from "./attestation.ts";
 export * from "./beacon.ts";
 export * from "./build.ts";

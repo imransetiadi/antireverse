@@ -3,6 +3,9 @@ import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { serve } from "@hono/node-server";
 import { type AppDeps, createApp } from "./app.ts";
+import type { Assessor } from "./assess/assessor.ts";
+import { proveAssessor } from "./assess/prove-assessor.ts";
+import { type AssessmentRunner, type AssessmentRunnerOptions, createAssessmentRunner } from "./assess/runner.ts";
 import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 import { createEventBus, type EventBus } from "./bus.ts";
 import { DEFAULT_HOST } from "./config.ts";
@@ -92,6 +95,10 @@ export interface StartApiOptions {
   prove?: ProveDeps;
   /** Settings of the daily re-check of Verified Targets (timer, jitter, concurrency). Default: `RECHECK_DEFAULTS`. */
   recheck?: Omit<RecheckOptions, "db" | "network" | "now" | "logger">;
+  /** The Reverse Assessment engine (slice 12a). Default: `packages/prove` with its stand-in agent (D-067). */
+  assessor?: Assessor;
+  /** Settings of the Assessment runner (concurrency, tier budgets, grace, expiry interval). Default: `RUNNER_DEFAULTS`. */
+  assessments?: Omit<AssessmentRunnerOptions, "db" | "assessor" | "now" | "logger">;
 }
 
 export interface RunningApi extends Listening {
@@ -108,6 +115,8 @@ export interface RunningApi extends Listening {
    * Organization's verified targets and current signed Rules of Engagement against the request.
    */
   authorize: Authorize;
+  /** The Assessment runner (slice 12a): started with the server, stopped on close. */
+  assessments: AssessmentRunner;
   /**
    * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
    * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
@@ -196,6 +205,10 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   if (options.heartbeatMs !== undefined) deps.heartbeatMs = options.heartbeatMs;
   if (options.now !== undefined) deps.now = options.now;
   if (options.patches !== undefined) deps.patches = options.patches;
+  const assessor = options.assessor ?? proveAssessor();
+  const assessments = createAssessmentRunner({ ...options.assessments, db, assessor, now: options.now, logger });
+  deps.assessor = assessor;
+  deps.assessments = assessments;
   const app = createApp(deps);
 
   let listening: Listening;
@@ -213,6 +226,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const stopDetector = started.start();
   const recheck = createRecheckJob({ ...options.recheck, db, network, now: options.now, logger });
   const stopRecheck = recheck.start();
+  // Fails the Assessments a previous process left running, then takes the queued ones.
+  await assessments.start();
 
   let closing: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
@@ -233,6 +248,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     // queue alerts. 5. The alert queue drains (bounded wait), then the database closes.
     stopDetector();
     stopRecheck();
+    // Running Assessments are aborted and recorded as failed (interrupted) while the database is still open.
+    await assessments.stop();
     await recheck.flush();
     await started.flush();
     await beacon.flush();
@@ -250,6 +267,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     attestation,
     notifier,
     authorize: createAuthorize({ db, now: options.now }),
+    assessments,
     close() {
       closing ??= stop();
       return closing;

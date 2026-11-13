@@ -21,6 +21,7 @@ describe("newId", () => {
     expect(newId("tgt")).toMatch(/^tgt_[0-9a-f]{24}$/);
     expect(newId("roe")).toMatch(/^roe_[0-9a-f]{24}$/);
     expect(newId("rcp")).toMatch(/^rcp_[0-9a-f]{24}$/);
+    expect(newId("asm")).toMatch(/^asm_[0-9a-f]{24}$/);
   });
 
   it("returns an identifier that matches the pattern of its prefix and of no other", () => {
@@ -41,6 +42,7 @@ describe("newId", () => {
       "tgt",
       "roe",
       "rcp",
+      "asm",
     ];
     expect(Object.keys(ID_PATTERNS).sort()).toEqual([...prefixes].sort());
     for (const prefix of prefixes) {

@@ -5,7 +5,8 @@
 // Safety properties enforced here:
 //   - The admin key is read ONLY from the named environment variable (`--key-env`), never from an argument,
 //     and is never printed.
-//   - Local-first: nothing but the Manifest leaves the machine, and only when `--register` is passed.
+//   - Local-first: nothing but the Manifest (with the components and routes beside it) leaves the machine, and only
+//     when `--register` is passed; the protected output files leave it only with `--assess`.
 //   - The run exits non-zero on any failure: a parse error, an equivalence failure, a budget that even
 //     mangle-only cannot satisfy, Canaries (with the Clone Beacon, when on) that fit no file's budget, or a
 //     register error.
@@ -19,11 +20,19 @@
 //     names, versions and the dev flag are sent, beside the Manifest, and only with --register; package names
 //     are never printed (counts only), except the findings summary's items. `--fail-on <level>` needs
 //     --register and exits 4 when the registered Build has open findings at or above the level.
+//   - Route inventory (slice 12a): `--routes <file>` is read and validated before any work (exit 2, naming an entry
+//     by position, never by value). The routes are sent beside the Manifest only with --register (the Manifest
+//     carries their count and digest); they are never written into the output and never printed beyond a count.
+//   - Reverse Assessment (slice 12a): `--assess <T1|T2|T3>` needs --register and is validated with it. The
+//     protected output files (exactly the Manifest's artifacts) are uploaded only after a successful registration.
+//     Output over the 25 MB / 1,000-file limits is registered and written as usual, and the upload is skipped (never
+//     sent) with the reason. A skipped or failed upload exits 1 but the Build stays registered (and --out is written).
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  type AssessmentTier,
   BEACON_LIMITS,
   type Canary,
   type Component,
@@ -36,8 +45,10 @@ import {
   type ManifestBeacon,
   PROFILES,
   type Profile,
+  TIER_IDS,
 } from "@antireverse/protocol";
-import { componentsDigest, deriveBeaconToken, newId, seedId } from "@antireverse/protocol/server";
+import { componentsDigest, deriveBeaconToken, newId, routesDigest, seedId } from "@antireverse/protocol/server";
+import { type AssessmentFile, assessmentUploadProblem, consoleBuildUrl, requestAssessment } from "./assess.ts";
 import { beaconEndpointUrl } from "./beacon.ts";
 import { readComponents } from "./components.ts";
 import { type BundleLeakScan, hardenBundle } from "./engine.ts";
@@ -46,6 +57,7 @@ import { DEFAULT_ALLOWLIST_PATH, type LeakFinding, loadAllowlist } from "./leaks
 import { buildManifest } from "./manifest.ts";
 import { applyIntegrity } from "./passes/integrity.ts";
 import { registerBuild } from "./register.ts";
+import { readRoutes } from "./routes.ts";
 
 /** The I/O surface, injected so the CLI is testable without spawning a process. */
 export interface CliIo {
@@ -65,6 +77,9 @@ export const EXIT_FINDINGS = 4;
 /** The `--fail-on` levels, lowest first. `unknown` severity is not a level and never counts towards one. */
 const FAIL_ON_LEVELS = ["low", "medium", "high", "critical"] as const;
 type FailOnLevel = (typeof FAIL_ON_LEVELS)[number];
+
+/** The Console the `--assess` link points to when `AR_CONSOLE_URL` is not set (as the API's alert links). */
+const DEFAULT_CONSOLE_URL = "http://127.0.0.1:3000";
 
 /** The default lockfile, relative to the working directory. */
 const DEFAULT_LOCKFILE = "package-lock.json";
@@ -103,7 +118,8 @@ Clone Beacon (needs --register):
                        local; repeat for up to ${BEACON_LIMITS.originsMax}. A copy of the bundle running on any other public origin
                        reports it once (navigator.sendBeacon to <endpoint>/v1/beacon). Planted with the Canaries.
 
-Register the Build (sends ONLY the Manifest — no source, no bundle, no seed — and the lockfile's components):
+Register the Build (sends ONLY the Manifest — no source, no bundle, no seed — and, beside it, the lockfile's
+components and the --routes inventory):
   --register --endpoint <url> --key-env <VAR> --app <appId> --environment <env> --build-version <v>
   The admin key is read only from the environment variable named by --key-env; it is never printed.
 
@@ -113,6 +129,17 @@ Component inventory (known-vulnerability findings):
   --fail-on <level>    With --register: exit 4 when the Build has open findings at or above
                        <${FAIL_ON_LEVELS.join("|")}>, or when the API returns no findings summary;
                        each one is listed with its fix version. Unknown severity is reported, never counted.
+
+Route inventory (Reverse Assessment, W1 Map):
+  --routes <file>      JSON array of "METHOD /path" (":param" segments), at most 2,000. Sent beside the Manifest
+                       with --register (the Manifest carries only their count and digest); never written to --out,
+                       never printed beyond a count, never shown to the assessing agent.
+
+Reverse Assessment (needs --register):
+  --assess <${TIER_IDS.join("|")}>  After registration, upload the protected output files (at most 25 MB and 1,000 files)
+                       and request an Assessment at that tier. Prints the Assessment id and the Console link
+                       (AR_CONSOLE_URL, default ${DEFAULT_CONSOLE_URL}). Output over the limits is registered and written but not uploaded. A skipped or failed request exits 1;
+                       the Build stays registered.
 
 Exit codes: 0 ok · 1 failure · 2 usage or input error · 3 leak scan · 4 findings at or above --fail-on.
 `;
@@ -138,6 +165,10 @@ interface Flags {
   lockfile?: string | null | undefined;
   /** `--fail-on`: absent = no gate; `null` = the flag was given without a value. */
   failOn?: string | null | undefined;
+  /** `--routes`: absent = no inventory; `null` = the flag was given without a value. */
+  routes?: string | null | undefined;
+  /** `--assess`: absent = no Assessment; `null` = the flag was given without a value. */
+  assess?: string | null | undefined;
 }
 
 function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
@@ -196,6 +227,12 @@ function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
         break;
       case "--fail-on":
         flags.failOn = args[++i] ?? null;
+        break;
+      case "--routes":
+        flags.routes = args[++i] ?? null;
+        break;
+      case "--assess":
+        flags.assess = args[++i] ?? null;
         break;
       default:
         if (arg && !arg.startsWith("--") && dir === undefined) dir = arg;
@@ -361,6 +398,20 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     failOn = flags.failOn as FailOnLevel;
   }
 
+  // The Assessment tier (slice 12a), validated with the --register arguments, before any work.
+  let assessTier: AssessmentTier | undefined;
+  if (flags.assess !== undefined) {
+    if (!flags.register) {
+      io.stderr("harden: --assess needs --register (only a registered Build can be assessed)\n");
+      return 2;
+    }
+    if (flags.assess === null || !(TIER_IDS as readonly string[]).includes(flags.assess)) {
+      io.stderr(`harden: --assess must be one of ${TIER_IDS.join(", ")}\n`);
+      return 2;
+    }
+    assessTier = flags.assess as AssessmentTier;
+  }
+
   // The Clone Beacon's origins (slice 10), validated with the --register arguments, before any work.
   let beaconOrigins: string[] | undefined;
   if (flags.origins.length > 0) {
@@ -401,6 +452,22 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     // Build instead. Only a lockfile that truly lists no dependencies sends [].
     if (read.components.length === 0 && read.skipped > 0) allSkipped = read.skipped;
     else inventory = read;
+  }
+
+  // The route inventory (slice 12a), read before any work: an unreadable or invalid file is an input error (exit 2).
+  // The message names an entry by position only — a route is never printed.
+  let routes: string[] | null = null;
+  if (flags.routes !== undefined) {
+    if (flags.routes === null || flags.routes === "") {
+      io.stderr("harden: --routes needs a path\n");
+      return 2;
+    }
+    const read = readRoutes(resolve(cwd, flags.routes));
+    if ("error" in read) {
+      io.stderr(`harden: --routes ${flags.routes} ${read.error}\n`);
+      return 2;
+    }
+    routes = read.routes;
   }
 
   let sources: Record<string, string>;
@@ -524,6 +591,9 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
 
   const transform = { ...result.transform, integrity };
 
+  // The Assessment's upload is exactly the Manifest's artifacts.
+  const assessFiles: AssessmentFile[] = Object.entries(protectedFiles).map(([path, code]) => ({ path, code }));
+
   // Register (sends only the Manifest and, beside it, the components).
   let registered: { build_id: string } | { error: string } | undefined;
   let findings: FindingsSummary | null = null;
@@ -536,7 +606,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       version: flags.buildVersion as string,
       profile,
       seed,
-      artifacts: Object.entries(protectedFiles).map(([path, code]) => ({ path, code })),
+      artifacts: assessFiles,
       originals: sources,
       transform,
       equivalence,
@@ -549,6 +619,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       ...(inventory
         ? { components: { count: inventory.components.length, digest: componentsDigest(inventory.components) } }
         : {}),
+      ...(routes ? { routes: { count: routes.length, digest: routesDigest(routes) } } : {}),
     });
     const reg = await registerBuild({
       endpoint: flags.endpoint as string,
@@ -556,6 +627,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       appId: flags.app as string,
       manifest,
       ...(inventory ? { components: inventory.components } : {}),
+      ...(routes ? { routes } : {}),
     });
     if ("error" in reg) {
       io.stderr(`harden: register failed: ${reg.error}\n`);
@@ -563,6 +635,38 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     }
     registered = { build_id: reg.build.build_id };
     findings = reg.findings ?? null;
+  }
+
+  // The Assessment (slice 12a), requested only after a successful registration. Output over the upload limits
+  // (25 MB / 1,000 files) does not block hardening (Jev: register_then_refuse, 0.77): the Build is registered and
+  // written as usual and the upload is skipped. Neither a skip nor a failure undoes the registration: the files are
+  // still written and the run then exits 1.
+  let assessment: AssessmentReport | undefined;
+  const uploadProblem = assessTier ? assessmentUploadProblem(assessFiles) : null;
+  if (assessTier && registered && "build_id" in registered && uploadProblem !== null) {
+    assessment = { error: uploadProblem, skipped: true };
+  } else if (assessTier && registered && "build_id" in registered) {
+    const requested = await requestAssessment({
+      endpoint: flags.endpoint as string,
+      key: registerKey as string,
+      appId: flags.app as string,
+      buildId: registered.build_id,
+      tier: assessTier,
+      files: assessFiles,
+    });
+    assessment =
+      "error" in requested
+        ? { error: requested.error }
+        : {
+            id: requested.assessment.id,
+            status: requested.assessment.status,
+            tier: requested.assessment.tier,
+            url: consoleBuildUrl(
+              io.env.AR_CONSOLE_URL || DEFAULT_CONSOLE_URL,
+              flags.app as string,
+              registered.build_id,
+            ),
+          };
   }
 
   // The findings gate is decided after a successful register; the files are still written (the Build is
@@ -606,7 +710,14 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     allSkipped,
     findings,
     gate,
+    routes,
+    assessment,
   });
+  if (assessment && "error" in assessment) {
+    const buildId = (registered as { build_id: string }).build_id;
+    const what = assessment.skipped ? "assessment skipped" : "assessment request failed";
+    io.stderr(`harden: ${what}: ${assessment.error}; the Build stays registered (${buildId})\n`);
+  }
   // Fail closed (Jev: fail_closed_unknown_excluded, 0.94): a gate that could not be evaluated fails too.
   if (gate?.noSummary) {
     io.stderr(`harden: findings gate could not be evaluated: ${NO_SUMMARY}\n`);
@@ -616,8 +727,17 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     io.stderr(`harden: findings gate failed: ${gateCount(gate)} at or above ${gate.level}\n`);
     return EXIT_FINDINGS;
   }
+  if (assessment && "error" in assessment) return 1;
   return 0;
 }
+
+/**
+ * The Assessment as the report shows it: id, status, tier and the Console link; or why there is none — the request's
+ * error, or (`skipped`) the upload limit the output exceeds, in which case nothing was sent.
+ */
+type AssessmentReport =
+  | { id: string; status: string; tier: AssessmentTier; url: string }
+  | { error: string; skipped?: boolean };
 
 interface GateResult {
   level: FailOnLevel;
@@ -782,6 +902,9 @@ interface ReportInput {
   allSkipped: number | null;
   findings: FindingsSummary | null;
   gate: GateResult | null;
+  /** The route inventory (never printed: only its count). */
+  routes: string[] | null;
+  assessment: AssessmentReport | undefined;
 }
 
 function emitReport(io: CliIo, input: ReportInput): void {
@@ -808,6 +931,16 @@ function emitReport(io: CliIo, input: ReportInput): void {
           : null,
       findings: input.findings,
       gate: gateReport(input.gate),
+      // Count only: the routes themselves are never printed.
+      routes: input.routes ? { count: input.routes.length } : null,
+      ...(input.assessment
+        ? {
+            assessment:
+              "error" in input.assessment
+                ? { error: input.assessment.error }
+                : { id: input.assessment.id, status: input.assessment.status },
+          }
+        : {}),
     };
     io.stdout(`${JSON.stringify(report, null, 2)}\n`);
     return;
@@ -832,10 +965,12 @@ function emitReport(io: CliIo, input: ReportInput): void {
     lines.push(`✓ Clone Beacon: on (${n} origin${n === 1 ? "" : "s"}) in ${input.plantedIn}`);
   }
   lines.push(...inventoryLines(input));
+  lines.push(...routeLines(input));
   if (input.registered) {
     lines.push("build_id" in input.registered ? `  registered: ${input.registered.build_id}` : `  register error`);
   }
   lines.push(...findingsLines(input));
+  lines.push(...assessmentLines(input));
   io.stdout(`${lines.join("\n")}\n`);
 }
 
@@ -852,6 +987,23 @@ function inventoryLines(input: ReportInput): string[] {
   const lines = [`✓ ${n} component${n === 1 ? "" : "s"} in inventory (${input.inventory.skipped} skipped)`];
   if (!input.flags.register) lines.push(`  ${n} component${n === 1 ? "" : "s"} read (not sent: pass --register)`);
   return lines;
+}
+
+/** Count only — never a route. */
+function routeLines(input: ReportInput): string[] {
+  if (input.routes === null) return [];
+  const n = input.routes.length;
+  const noun = `route${n === 1 ? "" : "s"}`;
+  return input.flags.register ? [`✓ ${n} ${noun} in inventory`] : [`  ${n} ${noun} read (not sent: pass --register)`];
+}
+
+function assessmentLines(input: ReportInput): string[] {
+  const assessment = input.assessment;
+  if (assessment === undefined) return [];
+  if ("error" in assessment) {
+    return [`✗ ${assessment.skipped ? "assessment skipped" : "assessment request failed"}: ${assessment.error}`];
+  }
+  return [`✓ assessment ${assessment.id} ${assessment.status} (${assessment.tier})`, `  Console: ${assessment.url}`];
 }
 
 /** The findings summary's counts and, with --fail-on, the gate and the items at or above its level. */

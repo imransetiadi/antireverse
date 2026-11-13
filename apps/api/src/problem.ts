@@ -1,5 +1,6 @@
 import {
   ALERT_EMAIL_LIMITS,
+  ASSESSMENT_LIMITS,
   BUILD_LIMITS,
   CONTAINMENT_LIMITS,
   type ConflictReason,
@@ -73,6 +74,13 @@ const PROBLEMS = {
     type: "payload-too-large",
     title: "Payload too large",
     detail: `The Manifest may be at most ${BUILD_LIMITS.manifestBytesMax} bytes and the component list at most ${EXPOSURE_LIMITS.componentsBytesMax} bytes.`,
+  },
+  // Slice 12a: an Assessment request carries the protected artifact as base64.
+  "assessment-payload-too-large": {
+    status: 413,
+    type: "payload-too-large",
+    title: "Payload too large",
+    detail: `The artifact may be at most ${ASSESSMENT_LIMITS.artifactBytesMax} bytes decoded, in at most ${ASSESSMENT_LIMITS.filesMax} files.`,
   },
   // Slice 19 review (A7, M4): a Shield key sends at most 5 inventories at once, then 1 per minute.
   "too-many-inventories": {
@@ -148,6 +156,8 @@ export const CONFLICT_DETAILS: Readonly<Record<ConflictReason, string>> = {
   "smtp-not-configured": "Email is not available: the service has no SMTP settings. Ask the operator to set them.",
   "recipient-confirmed": "This recipient has already confirmed.",
   "no-confirmed-recipients": "No recipient of this channel has confirmed yet. Alerts go to confirmed recipients only.",
+  "artifact-required":
+    "No artifact of this Build is kept any more. Send the protected artifact's files with the request.",
 };
 
 /**
