@@ -1,5 +1,6 @@
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import {
+  AUDIT_REASON_HEADER,
   type BundlePayload,
   BundlePayloadSchema,
   type CreateAppRequestInput,
@@ -90,6 +91,14 @@ export function bearer(key: string): Record<string, string> {
   return { authorization: `Bearer ${key}` };
 }
 
+/** The reason the tests give for a change (slice 18a): sensitive routes refuse one without a reason. */
+export const TEST_REASON = "Test change";
+
+/** `headers` with a reason (`X-Airverse-Reason`), as a sensitive change needs. */
+export function withReason(headers: Record<string, string> = {}): Record<string, string> {
+  return { ...headers, [AUDIT_REASON_HEADER]: TEST_REASON };
+}
+
 export function json(body: unknown, headers: Record<string, string> = {}): RequestInit {
   return { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) };
 }
@@ -112,7 +121,8 @@ export async function publishPolicy(
   environment: Environment,
   rules: unknown[],
 ): Promise<Policy> {
-  const res = await api.app.request(policyPath(appId, environment), put({ rules }, bearer(adminKey)));
+  // With a reason: a publish that enforces a Rule needs one (slice 18a).
+  const res = await api.app.request(policyPath(appId, environment), put({ rules }, withReason(bearer(adminKey))));
   expect(res.status).toBe(201);
   return PolicyResponseSchema.parse(await res.json()).policy;
 }

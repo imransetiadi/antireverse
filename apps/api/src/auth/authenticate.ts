@@ -13,8 +13,11 @@ export type Principal =
 
 export type PrincipalOf<K extends KeyKind> = Extract<Principal, { kind: K }>;
 
-/** The Hono environment of the API: an authenticated route has its principal in `c.var.principal`. */
-export type AppEnv = { Variables: { principal: Principal } };
+/**
+ * The Hono environment of the API: an authenticated route has its principal in `c.var.principal`. Every request has
+ * an id (`requestId`, slice 18a); a mutating request may carry a validated reason (`reason`, `X-Airverse-Reason`).
+ */
+export type AppEnv = { Variables: { principal: Principal; requestId: string; reason?: string | undefined } };
 
 const BEARER = /^Bearer (\S+)$/i;
 

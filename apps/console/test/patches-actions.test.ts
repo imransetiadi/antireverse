@@ -2,6 +2,7 @@
 import { EXAMPLE_FINDING, EXAMPLE_VIRTUAL_PATCH } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dropReason } from "./helpers/reason.ts";
 
 // The patch mode action (slice 20), exercised through its interface with the API client, the session, the cache
 // and the navigation replaced by fakes.
@@ -42,8 +43,19 @@ function form(fields: Record<string, string>): FormData {
   for (const [name, value] of Object.entries(fields)) data.append(name, value);
   return data;
 }
+/** Slice 18a: enforcing carries a reason. */
+const REASON = "Exploit attempts seen; monitor showed no false positives";
 const modeForm = (overrides: Record<string, string> = {}) =>
-  form({ appId, environment: "production", patchId, findingId, mode: "enforce", confirm: patchId, ...overrides });
+  form({
+    appId,
+    environment: "production",
+    patchId,
+    findingId,
+    mode: "enforce",
+    confirm: patchId,
+    reason: REASON,
+    ...overrides,
+  });
 
 beforeEach(() => {
   vi.mocked(api.setPatchMode).mockReset();
@@ -56,17 +68,23 @@ beforeEach(() => {
 describe("setPatchModeAction", () => {
   it("enforces with the typed patch id as the confirmation, then goes back to the Finding", async () => {
     await expect(setPatchModeAction(null, modeForm())).rejects.toThrow(`REDIRECT ${PAGE}`);
-    expect(api.setPatchMode).toHaveBeenCalledWith(admin.key, appId, patchId, {
-      environment: "production",
-      mode: "enforce",
-      confirm: patchId,
-    });
+    expect(api.setPatchMode).toHaveBeenCalledWith(
+      admin.key,
+      appId,
+      patchId,
+      {
+        environment: "production",
+        mode: "enforce",
+        confirm: patchId,
+      },
+      { reason: REASON },
+    );
     expect(revalidatePath).toHaveBeenCalledWith(PAGE);
     expect(revalidatePath).toHaveBeenCalledWith(`/apps/${appId}/policy`);
   });
 
   it("goes back to monitor at once, without a confirmation", async () => {
-    await expect(setPatchModeAction(null, modeForm({ mode: "monitor", confirm: "" }))).rejects.toThrow(
+    await expect(setPatchModeAction(null, modeForm({ mode: "monitor", confirm: "", reason: "" }))).rejects.toThrow(
       `REDIRECT ${PAGE}`,
     );
     expect(api.setPatchMode).toHaveBeenCalledWith(admin.key, appId, patchId, {
@@ -77,7 +95,7 @@ describe("setPatchModeAction", () => {
 
   it("refuses to enforce unless the patch id was typed exactly, and never calls the API", async () => {
     for (const confirm of ["", ` ${patchId}`, patchId.toUpperCase(), "vp_other_patch"]) {
-      expect(await setPatchModeAction(null, modeForm({ confirm }))).toEqual({
+      expect(dropReason(await setPatchModeAction(null, modeForm({ confirm })))).toEqual({
         ok: false,
         errors: [{ path: "confirm", message: MISMATCH }],
       });
@@ -94,28 +112,34 @@ describe("setPatchModeAction", () => {
       { mode: "block" },
     ];
     for (const overrides of malformed) {
-      expect(await setPatchModeAction(null, modeForm(overrides))).toEqual({
+      expect(dropReason(await setPatchModeAction(null, modeForm(overrides)))).toEqual({
         ok: false,
         errors: [{ path: "", message: STALE }],
       });
     }
     expect(api.setPatchMode).not.toHaveBeenCalled();
     vi.mocked(api.setPatchMode).mockRejectedValueOnce(new api.NotFoundError("404"));
-    expect(await setPatchModeAction(null, modeForm())).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
+    expect(dropReason(await setPatchModeAction(null, modeForm()))).toEqual({
+      ok: false,
+      errors: [{ path: "", message: STALE }],
+    });
     vi.mocked(api.setPatchMode).mockRejectedValueOnce(new api.ConflictError("409"));
-    expect(await setPatchModeAction(null, modeForm())).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
+    expect(dropReason(await setPatchModeAction(null, modeForm()))).toEqual({
+      ok: false,
+      errors: [{ path: "", message: STALE }],
+    });
   });
 
   it("puts a refused confirmation next to its field and an unreachable API in the summary", async () => {
     vi.mocked(api.setPatchMode).mockRejectedValueOnce(
       new api.ValidationError("400", [{ path: "confirm", message: "must equal the patch id" }]),
     );
-    expect(await setPatchModeAction(null, modeForm())).toEqual({
+    expect(dropReason(await setPatchModeAction(null, modeForm()))).toEqual({
       ok: false,
       errors: [{ path: "confirm", message: MISMATCH }],
     });
     vi.mocked(api.setPatchMode).mockRejectedValueOnce(new api.ApiError("failed: unreachable", 0));
-    expect(await setPatchModeAction(null, modeForm())).toEqual({
+    expect(dropReason(await setPatchModeAction(null, modeForm()))).toEqual({
       ok: false,
       errors: [{ path: "", message: API_DOWN }],
     });

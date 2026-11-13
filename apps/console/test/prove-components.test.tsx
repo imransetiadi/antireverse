@@ -90,7 +90,11 @@ const sent = (action: unknown): Record<string, string[]> => {
   if (!data) throw new Error("the action was not called");
   return fieldsOf(data);
 };
+/** Slice 18a: the reason a sensitive confirmation requires, typed (when still empty) before it is sent. */
+const REASON = "Reviewed with the on-call team";
 const submit = async (control: HTMLElement): Promise<void> => {
+  const reason = control.closest("form")?.querySelector<HTMLInputElement>('input[name="reason"]');
+  if (reason?.required && reason.value === "") fireEvent.change(reason, { target: { value: REASON } });
   await act(async () => {
     fireEvent.click(control);
   });
@@ -310,7 +314,11 @@ describe("one target", () => {
     );
     expect(within(dialog).getByTestId("confirm-cancel").getAttribute("href")).toBe(`/prove/targets/${staging.id}`);
     await submit(within(dialog).getByTestId("confirm-submit"));
-    expect(sent(actions.deleteTargetAction)).toEqual({ targetId: [staging.id], confirm: [staging.id] });
+    expect(sent(actions.deleteTargetAction)).toEqual({
+      targetId: [staging.id],
+      confirm: [staging.id],
+      reason: [REASON],
+    });
   });
 
   it("offers Remove as a link to the confirmation, or explains why a target in scope cannot be removed", () => {
@@ -460,6 +468,7 @@ describe("write and sign a version", () => {
     );
     await submit(screen.getByRole("button", { name: "Sign version" }));
     expect(sent(actions.signRulesOfEngagementAction)).toEqual({
+      reason: [""],
       scope: [shop.id],
       exclusions: ["/admin"],
       intensity: ["safe-active"],

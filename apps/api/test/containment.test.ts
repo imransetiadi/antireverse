@@ -33,6 +33,7 @@ import {
   makeTestApi,
   shieldEvent,
   type TestApi,
+  withReason,
 } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-10T12:00:00.000Z");
@@ -165,7 +166,7 @@ describe("Containment", () => {
   }
 
   function contain(t: Tenant, incidentId: string, body: unknown, key = t.adminKey): Promise<Response> {
-    return request(`/v1/incidents/${incidentId}/containments`, json(body, bearer(key)));
+    return request(`/v1/incidents/${incidentId}/containments`, json(body, withReason(bearer(key))));
   }
 
   async function contained(t: Tenant, incidentId: string, body: unknown, status = 201): Promise<Containment> {

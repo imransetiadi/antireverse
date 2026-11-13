@@ -64,6 +64,11 @@ export interface StartApiOptions {
    * the first start and rotated daily; without a data directory, a set in memory that is gone on close.
    */
   attestation?: AttestationKeys;
+  /**
+   * Signs the audit chain heads (slice 18a). Default: the key of `audit-key.json` beside the data directory, created
+   * on the first start; without a data directory, a key in memory. A key of its own: never the Policy signing key.
+   */
+  auditSigner?: Signer;
   logger?: Logger;
   heartbeatMs?: number;
   now?: () => Date;
@@ -128,6 +133,8 @@ export interface RunningApi extends Listening {
 export const SIGNING_KEY_FILE = "signing-key.json";
 /** The file name of the attestation key set: beside the data directory too, a separate file and key purpose. */
 export const ATTESTATION_KEY_FILE = "attestation-keys.json";
+/** The file name of the audit key (slice 18a): beside the others, a separate file and key purpose. */
+export const AUDIT_KEY_FILE = "audit-key.json";
 /** The file name of the secret that keys the per-address count of confirmation mails (slice 06b), beside the others. */
 export const ADDRESS_KEY_FILE = "mail-hash-key.json";
 
@@ -149,12 +156,16 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   if (smtp !== null && options.email === undefined) logger.info(`email alerts on: ${smtpSummary(smtp)}`);
   const db = await openDb(dataDir === undefined ? {} : { dataDir });
   let signer: Signer;
+  let auditSigner: Signer;
   let attestation: AttestationKeys;
   let addressHasher: AddressHasher;
   try {
     // After the database: its lock makes this process the only one that can create or rewrite the key files.
     signer =
       options.signer ?? createSigner(dataDir === undefined ? {} : { file: join(dirname(dataDir), SIGNING_KEY_FILE) });
+    auditSigner =
+      options.auditSigner ??
+      createSigner(dataDir === undefined ? {} : { file: join(dirname(dataDir), AUDIT_KEY_FILE) });
     attestation =
       options.attestation ??
       createAttestationKeys({
@@ -190,6 +201,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     bus,
     onPolicyPublished: (policy) => detector?.policyPublished(policy),
     signer,
+    auditSigner,
     attestation,
     shutdown: shutdown.signal,
     notifier,

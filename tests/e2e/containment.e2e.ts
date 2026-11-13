@@ -62,6 +62,8 @@ async function enforceAdminRule(page: Page): Promise<void> {
   await row.getByTestId("rule-promote").click();
   const dialog = page.getByTestId("policy-confirm");
   await expect(dialog).toBeVisible();
+  // Slice 18a: a sensitive change carries a reason.
+  await dialog.getByTestId("confirm-reason").fill("Admin area must not be reachable");
   await dialog.getByTestId("confirm-submit").click();
   await expect(row).toHaveAttribute("data-mode", "enforce");
 }
@@ -132,6 +134,7 @@ test("an Actor blocked from the Incident is enforced by Shield within 30 s, list
     await expect(dialog.getByTestId("confirm-question")).toHaveText(
       /^Blocks 1 Actor \(iph_[^)]+\) in development of shop-web for 1 hour, until (?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} UTC\.$/,
     );
+    await dialog.getByTestId("confirm-reason").fill("Probing the admin area");
     await dialog.getByTestId("confirm-submit").click();
     const blockedAt = Date.now();
     const block = page.getByTestId("block-row");

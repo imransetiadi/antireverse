@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/page-header.tsx";
 import { patchesOrNull } from "@/features/patches/load.ts";
 import { PolicyPatches } from "@/features/patches/policy-patches.tsx";
 import { AddRuleForm } from "@/features/policy/add-rule-form.tsx";
-import { newlyBroad } from "@/features/policy/broad.ts";
+import { newlyBroad, newlyEnforced } from "@/features/policy/broad.ts";
 import { EnvironmentSwitch } from "@/features/policy/environment-switch.tsx";
 import { PolicyKeySnippet } from "@/features/policy/policy-key-snippet.tsx";
 import { confirmationFrom, environmentFrom } from "@/features/policy/query.ts";
@@ -48,16 +48,25 @@ async function load(key: string, appId: string, environment: ReturnType<typeof e
 }
 
 /**
- * True when rolling back to `version` would enforce a broad pattern that is not enforced now: the
- * confirmation step then asks for the typed Environment. The Server Action decides the same way again.
+ * What rolling back to `version` would do: `broad` when it would enforce a broad pattern that is not enforced now
+ * (the confirmation step then asks for the typed Environment), `promotes` when it would enforce any Rule that is not
+ * enforced now (slice 18a: the reason is then required). The Server Action decides the same way again.
  */
-async function rollbackIsBroad(key: string, current: Policy, environment: Environment, version: number) {
+async function rollbackEffect(
+  key: string,
+  current: Policy,
+  environment: Environment,
+  version: number,
+): Promise<{ broad: boolean; promotes: boolean }> {
   try {
     const { policy } = await getPolicyVersion(key, current.app_id, environment, version);
-    return newlyBroad(current.rules, policy.rules).length > 0;
+    return {
+      broad: newlyBroad(current.rules, policy.rules).length > 0,
+      promotes: newlyEnforced(current.rules, policy.rules).length > 0,
+    };
   } catch (error) {
     // Gone since the list was read: the action will say that the Policy changed.
-    if (error instanceof NotFoundError) return false;
+    if (error instanceof NotFoundError) return { broad: false, promotes: false };
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
     throw error;
   }
@@ -81,10 +90,10 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
     loadSetupDone(key, appId),
   ]);
   const confirmation = confirmationFrom(query, policy, versions);
-  const confirmBroad =
+  const rollback =
     confirmation.rollback === undefined
-      ? false
-      : await rollbackIsBroad(key, policy, environment, confirmation.rollback);
+      ? { broad: false, promotes: false }
+      : await rollbackEffect(key, policy, environment, confirmation.rollback);
   // A new version, another Environment, or a confirmation step that opens or closes starts the client
   // components afresh: no refusal of an earlier change stays on the screen.
   const revision = `${environment}:${policy.version}`;
@@ -156,7 +165,8 @@ export default async function PolicyPage({ params, searchParams }: PageProps<"/a
           currentVersion={policy.version}
           versions={versions}
           confirmVersion={confirmation.rollback}
-          confirmBroad={confirmBroad}
+          confirmBroad={rollback.broad}
+          confirmPromotes={rollback.promotes}
         />
       </section>
 

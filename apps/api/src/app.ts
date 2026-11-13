@@ -6,6 +6,7 @@ import { matchedRoutes } from "hono/route";
 import { type Assessor, unavailableAssessor } from "./assess/assessor.ts";
 import { type AssessmentQueue, createAssessmentRunner } from "./assess/runner.ts";
 import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
+import { auditRequest } from "./audit.ts";
 import type { AppEnv, Principal } from "./auth/authenticate.ts";
 import type { EventBus } from "./bus.ts";
 import type { Db } from "./db/db.ts";
@@ -24,6 +25,7 @@ import { allowlistRoutes } from "./routes/allowlist.ts";
 import { appRoutes } from "./routes/apps.ts";
 import { assessmentRoutes } from "./routes/assessments.ts";
 import { attestRoutes } from "./routes/attest.ts";
+import { auditRoutes } from "./routes/audit.ts";
 import { beaconRoutes, type ClientAddress } from "./routes/beacon.ts";
 import { buildRoutes } from "./routes/builds.ts";
 import { bundleRoutes } from "./routes/bundle.ts";
@@ -39,7 +41,7 @@ import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
 import { proveRoutes } from "./routes/prove.ts";
 import { type SimulationOptions, simulateRoutes } from "./routes/simulate.ts";
-import type { Signer } from "./signer.ts";
+import { createSigner, type Signer } from "./signer.ts";
 
 export interface AppDeps {
   db: Db;
@@ -118,6 +120,13 @@ export interface AppDeps {
    * artifact expiry; `startApi` passes the one it starts and stops).
    */
   assessments?: AssessmentQueue;
+  /**
+   * The audit key (slice 18a review F3): signs the chain heads of verification and export. Never the Policy key.
+   * Default: a new key in memory (`startApi` passes the one of `audit-key.json`).
+   */
+  auditSigner?: Signer;
+  /** Audit verifications and exports per Organization per minute, together. Default `AUDIT_READS_PER_MINUTE`. */
+  auditReadsPerMinute?: number;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -160,6 +169,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     c.header("Cache-Control", "no-store");
     await next();
   });
+  // Slice 18a: a request id for every request, and the reason header of a mutating one checked before any route.
+  app.use("*", auditRequest());
 
   const resolve = deps.resolve ?? defaultResolve;
   const allowPrivateAlertUrls = deps.allowPrivateAlertUrls ?? false;
@@ -220,6 +231,15 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const assessor = deps.assessor ?? unavailableAssessor();
   const assessmentQueue = deps.assessments ?? createAssessmentRunner({ db: deps.db, assessor, now: deps.now, logger });
   app.route("/", assessmentRoutes({ db: deps.db, assessor, queue: assessmentQueue, now: deps.now }));
+  app.route(
+    "/",
+    auditRoutes({
+      db: deps.db,
+      signer: deps.auditSigner ?? createSigner(),
+      now: deps.now,
+      readsPerMinute: deps.auditReadsPerMinute,
+    }),
+  );
 
   app.notFound((c) => problem(c, "not-found"));
   app.onError((error, c) => {

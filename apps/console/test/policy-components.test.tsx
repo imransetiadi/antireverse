@@ -71,7 +71,11 @@ const sent = (action: unknown): Record<string, string[]> => {
   if (!data) throw new Error("the action was not called");
   return fieldsOf(data);
 };
+/** Slice 18a: the reason a sensitive confirmation requires, typed (when still empty) before it is sent. */
+const REASON = "Reviewed with the on-call team";
 const submit = async (control: HTMLElement): Promise<void> => {
+  const reason = control.closest("form")?.querySelector<HTMLInputElement>('input[name="reason"]');
+  if (reason?.required && reason.value === "") fireEvent.change(reason, { target: { value: REASON } });
   await act(async () => {
     fireEvent.click(control);
   });
@@ -212,6 +216,7 @@ describe("RuleList", () => {
       expect(within(dialog).queryByLabelText("Type production to confirm")).toBeNull();
       await submit(within(dialog).getByRole("button", { name: "Promote to enforce" }));
       expect(sent(actions.setRuleModeAction)).toEqual({
+        reason: [REASON],
         appId: [appId],
         environment: ["production"],
         ruleId: [login.id],
@@ -292,6 +297,7 @@ describe("RuleList", () => {
     await submit(confirm);
     expect(actions.setRuleModeAction).toHaveBeenCalledTimes(1);
     expect(sent(actions.setRuleModeAction)).toEqual({
+      reason: [REASON],
       appId: [appId],
       environment: ["production"],
       ruleId: [monitored.id],
@@ -436,6 +442,7 @@ describe("stronger confirmation of a broad pattern", () => {
     fireEvent.change(typed, { target: { value: "production" } });
     await submit(within(dialog).getByTestId("confirm-submit"));
     expect(sent(actions.setRuleModeAction)).toEqual({
+      reason: [REASON],
       appId: [appId],
       environment: ["production"],
       ruleId: [broad.id],
@@ -508,6 +515,7 @@ describe("stronger confirmation of a broad pattern", () => {
     fireEvent.change(typed, { target: { value: "staging" } });
     await submit(within(dialog).getByTestId("confirm-submit"));
     expect(sent(actions.rollbackPolicyAction)).toEqual({
+      reason: [""],
       appId: [appId],
       environment: ["staging"],
       version: ["2"],
@@ -602,6 +610,7 @@ describe("VersionHistory", () => {
     await submit(confirm);
     expect(actions.rollbackPolicyAction).toHaveBeenCalledTimes(1);
     expect(sent(actions.rollbackPolicyAction)).toEqual({
+      reason: [""],
       appId: [appId],
       environment: ["production"],
       version: ["1"],

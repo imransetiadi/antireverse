@@ -11,6 +11,7 @@ import {
 } from "@antireverse/protocol";
 import { Hono } from "hono";
 import { z } from "zod";
+import { audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -96,13 +97,24 @@ export function incidentRoutes(deps: {
       const incidentId = c.req.param("incidentId");
       const { status } = c.req.valid("json");
       if (!ID_PATTERNS.inc.test(incidentId)) return problem(c, "not-found");
+      const actor = auditActor(c);
       const result = await db.tx<{ incident: Incident } | "not-found" | "conflict">({ organizationId }, async (q) => {
         // Locked: a Detection joining the Incident and this change never interleave.
         const incident = await findIncident(q, incidentId, true);
         if (incident === null) return "not-found";
         if (!TRANSITIONS[incident.status].includes(status)) return "conflict";
-        const updated = await setIncidentStatus(q, incidentId, status, now());
-        return updated === null ? "not-found" : { incident: updated };
+        const at = now();
+        const updated = await setIncidentStatus(q, incidentId, status, at);
+        if (updated === null) return "not-found";
+        // TRANSITIONS allows no other target status: open is never a destination.
+        await audit(q, actor, {
+          action: status === "resolved" ? "incident.resolve" : "incident.acknowledge",
+          appId: incident.app_id,
+          target: { kind: "incident", id: incidentId },
+          summary: `Changed the ${incident.rule} Incident ${incidentId} from ${incident.status} to ${status}.`,
+          at,
+        });
+        return { incident: updated };
       });
       if (result === "not-found" || result === "conflict") return problem(c, result);
       return c.json(result);

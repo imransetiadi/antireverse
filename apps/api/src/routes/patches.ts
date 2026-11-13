@@ -10,6 +10,7 @@ import {
 } from "@antireverse/protocol";
 import { Hono } from "hono";
 import { z } from "zod";
+import { audit, auditActor, reasonMissing } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
@@ -88,11 +89,24 @@ export function patchRoutes(deps: { db: Db; patches: PatchCatalog; now?: (() => 
         return problem(c, "not-found");
       }
       if (mode === "enforce" && confirm !== patchId) return problem(c, "validation", CONFIRM_MISMATCH);
+      // Slice 18a: promoting a virtual patch to enforce needs a reason.
+      if (mode === "enforce") {
+        const missing = reasonMissing(c);
+        if (missing !== null) return missing;
+      }
+      const actor = auditActor(c);
       const at = now();
       const item = await db.tx({ organizationId }, async (q) => {
         // Another Organization's App is invisible to this transaction: "not found" like any other.
         if ((await findApp(q, appId)) === null) return null;
         await setPatchMode(q, { organizationId, appId, environment, patchId, mode, by: keyId, at });
+        await audit(q, actor, {
+          action: mode === "enforce" ? "patch.promote" : "patch.demote",
+          appId,
+          target: { kind: "patch", id: patchId },
+          summary: `Set the virtual patch ${patchId} to ${mode} in ${environment}.`,
+          at,
+        });
         return (await items(q, catalog, { appId, environment }, at)).find((candidate) => candidate.id === patchId);
       });
       if (item === null || item === undefined) return problem(c, "not-found");

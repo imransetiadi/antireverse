@@ -13,6 +13,7 @@ import {
 } from "@antireverse/protocol";
 import { componentsDigest, logicDigest, routesDigest } from "@antireverse/protocol/server";
 import { Hono, type MiddlewareHandler } from "hono";
+import { audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
@@ -126,6 +127,7 @@ export function buildRoutes(deps: {
       const { organizationId } = c.var.principal;
       const appId = c.req.param("appId");
       const { manifest, components, routes: inventory, logic } = c.req.valid("json");
+      const actor = auditActor(c);
       // A malformed App id names no App: "not found", before the body is judged against it.
       if (!ID_PATTERNS.app.test(appId)) return problem(c, "not-found");
       if (manifest.app_id !== appId) {
@@ -210,6 +212,23 @@ export function buildRoutes(deps: {
           if (logic !== undefined) {
             await insertBuildLogic(q, { organizationId, appId, buildId: manifest.build_id, logic });
           }
+          const parts = [
+            `version ${manifest.version}`,
+            manifest.environment,
+            `${manifest.artifacts.length} artifacts`,
+            ...(manifest.canaries === undefined ? [] : [`${manifest.canaries.length} Canaries`]),
+            ...(manifest.beacon === undefined ? [] : ["a Clone Beacon"]),
+            ...(components === undefined ? [] : [`${components.length} components`]),
+            ...(inventory === undefined ? [] : [`${inventory.length} routes`]),
+            ...(logic === undefined ? [] : [`${logic.functions.length} logic functions`]),
+          ];
+          await audit(q, actor, {
+            action: "build.register",
+            appId,
+            target: { kind: "build", id: manifest.build_id },
+            summary: `Registered the Build ${manifest.build_id} (${parts.join(", ")}).`,
+            at: registeredAt,
+          });
           if (components === undefined) return { build, opened: [] };
           // Likewise its inventory and Findings: a refused registration leaves neither.
           const matched = await matchInventory(q, {

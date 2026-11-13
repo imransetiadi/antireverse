@@ -75,6 +75,8 @@ test("a Login protection Rule added and promoted in the Console throttles failed
   );
   // Nothing is enforced before the confirmation.
   await expect(row).toHaveAttribute("data-mode", "monitor");
+  // Slice 18a: promoting is a sensitive change, recorded in the audit log with its reason.
+  await dialog.getByTestId("confirm-reason").fill("Credential stuffing on /login");
   await dialog.getByTestId("confirm-submit").click();
   await expect(page.getByTestId("policy-confirm")).toHaveCount(0);
   await expect(row).toHaveAttribute("data-mode", "enforce");

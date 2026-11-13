@@ -167,6 +167,8 @@ test("a Finding's virtual patch: monitor with hits, enforce through the typed co
     await expect(confirm.getByTestId("confirm-typed-label")).toContainText(PATCH);
     expect((await patchOf(adminKey, appId))?.mode).toBe("monitor");
     await confirm.getByTestId("confirm-typed").fill(PATCH);
+    // Slice 18a: enforcing a virtual patch is a sensitive change, recorded with its reason.
+    await confirm.getByTestId("confirm-reason").fill("Exploit attempts in monitor; no false positives");
     await confirm.getByTestId("confirm-submit").click();
 
     // 3. The chip shows Enforce; the API ships it enforced; Shield refuses the exploit, a benign request passes.

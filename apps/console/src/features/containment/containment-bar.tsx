@@ -4,7 +4,7 @@ import { CONTAINMENT_DEFAULT_TTL, CONTAINMENT_TTLS, type Incident } from "@antir
 import { useActionState, useId } from "react";
 import { createContainmentAction } from "@/app/actions.ts";
 import { Button } from "@/components/button.tsx";
-import { ConfirmPanel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
+import { ConfirmPanel, REASON_FIELD_ID, reasonLabel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
 import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
 import { Select } from "@/components/input.tsx";
 import { ROUTES } from "@/lib/routes.ts";
@@ -59,7 +59,13 @@ export function ContainmentBar({ incident, appName, actors, block, expiry }: Con
 
   return (
     <div data-testid="containment-bar" className="flex flex-col gap-3 rounded-card border border-border bg-surface p-3">
-      <ErrorSummary errors={errors} fields={{ typedPrefix: { id: TYPED_FIELD_ID, label: typedLabel } }} />
+      <ErrorSummary
+        errors={errors}
+        fields={{
+          typedPrefix: { id: TYPED_FIELD_ID, label: typedLabel },
+          reason: { id: REASON_FIELD_ID, label: reasonLabel(true) },
+        }}
+      />
       <p className="body-5 text-fg-muted">{t("containment.scope", where)}</p>
       <form method="get" action={ROUTES.incident(incident.id)} className="flex flex-wrap items-end gap-2">
         {ordered.length > 0 ? (
@@ -148,6 +154,8 @@ export function ContainmentBar({ incident, appName, actors, block, expiry }: Con
           cancelHref={ROUTES.incident(incident.id)}
           action={formAction}
           busy={pending}
+          // Slice 18a: a block is a sensitive change, recorded with its reason.
+          reason={{ required: true, error: fieldError(errors, "reason"), value: state?.reason }}
           typed={
             step.kind === "prefix"
               ? {

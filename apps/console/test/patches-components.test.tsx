@@ -61,7 +61,11 @@ const sent = (action: unknown): Record<string, string[]> => {
   if (!data) throw new Error("the action was not called");
   return fieldsOf(data);
 };
+/** Slice 18a: the reason a sensitive confirmation requires, typed (when still empty) before it is sent. */
+const REASON = "Reviewed with the on-call team";
 const submit = async (control: HTMLElement): Promise<void> => {
+  const reason = control.closest("form")?.querySelector<HTMLInputElement>('input[name="reason"]');
+  if (reason?.required && reason.value === "") fireEvent.change(reason, { target: { value: REASON } });
   await act(async () => {
     fireEvent.click(control);
   });
@@ -191,6 +195,7 @@ describe("FindingDetail — Virtual patch", () => {
     fireEvent.change(step.getByTestId("confirm-typed"), { target: { value: PATCH.id } });
     await submit(step.getByTestId("confirm-submit"));
     expect(sent(actions.setPatchModeAction)).toEqual({
+      reason: [REASON],
       appId: [EXAMPLE_FINDING.app_id],
       environment: [EXAMPLE_FINDING.environment],
       patchId: [PATCH.id],

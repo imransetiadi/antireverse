@@ -79,7 +79,11 @@ const sent = (action: unknown): Record<string, string[]> => {
   if (!data) throw new Error("the action was not called");
   return fieldsOf(data);
 };
+/** Slice 18a: the reason a sensitive confirmation requires, typed (when still empty) before it is sent. */
+const REASON = "Reviewed with the on-call team";
 const submit = async (control: HTMLElement): Promise<void> => {
+  const reason = control.closest("form")?.querySelector<HTMLInputElement>('input[name="reason"]');
+  if (reason?.required && reason.value === "") fireEvent.change(reason, { target: { value: REASON } });
   await act(async () => {
     fireEvent.click(control);
   });
@@ -280,6 +284,7 @@ describe("containment bar", () => {
     expect(confirm.textContent).toBe("Block actor");
     await submit(confirm);
     expect(sent(actions.createContainmentAction)).toEqual({
+      reason: [REASON],
       incidentId: [incidentId],
       environment: ["production"],
       kind: ["actor"],
@@ -316,6 +321,7 @@ describe("containment bar", () => {
     expect(confirm.textContent).toBe("Block network");
     await submit(confirm);
     expect(sent(actions.createContainmentAction)).toEqual({
+      reason: [REASON],
       incidentId: [incidentId],
       environment: ["production"],
       kind: ["prefix"],
@@ -648,6 +654,8 @@ describe("navigation", () => {
     ).toEqual([
       ["Alerts", "/settings/alerts"],
       ["Never block", "/settings/allowlist"],
+      // Slice 18a.
+      ["Audit log", "/settings/audit"],
     ]);
     expect(screen.getByTestId("nav-allowlist").getAttribute("aria-current")).toBe("page");
   });

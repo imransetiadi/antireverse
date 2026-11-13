@@ -1,6 +1,7 @@
 import {
   ALERT_EMAIL_LIMITS,
   ASSESSMENT_LIMITS,
+  type AuditReasonErrorCode,
   BUILD_LIMITS,
   CONTAINMENT_LIMITS,
   type ConflictReason,
@@ -49,6 +50,13 @@ const PROBLEMS = {
     detail: `At most ${LIMITS.streamsPerOrganization} live streams can be open per Organization.`,
   },
   internal: { status: 500, title: "Internal server error" },
+  // Slice 18a: a sensitive change (a Rule or virtual patch promoted to enforce, a containment, signing Rules of
+  // Engagement, deleting a target) needs a reason in the X-Airverse-Reason header.
+  "reason-required": {
+    status: 400,
+    title: "Reason required",
+    detail: "This change needs a reason. Send it as: X-Airverse-Reason: <1 to 500 characters>.",
+  },
   // The public attestation endpoints (slice 03). One text for an unknown App and for any bad nonce: the answer
   // never says which it was.
   "attestation-refused": {
@@ -123,6 +131,13 @@ const PROBLEMS = {
     title: "Too many requests",
     detail: "Too many confirmation requests. Try again after the time in Retry-After.",
   },
+  // Slice 18a review (F2): verification and export read a whole chain.
+  "too-many-audit-reads": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: "Too many audit verifications and exports for this Organization. Try again after the time in Retry-After.",
+  },
   "too-many-attestations": {
     status: 429,
     title: "Too many requests",
@@ -162,9 +177,16 @@ export const CONFLICT_DETAILS: Readonly<Record<ConflictReason, string>> = {
 
 /**
  * An `application/problem+json` response of the given kind. `errors` lists the invalid values of a 400. A
- * `conflict` may name its reason, whose fixed text replaces the generic one.
+ * `conflict` may name its reason, whose fixed text replaces the generic one. A `validation` problem that refuses the
+ * reason header carries its `code` (slice 18a, `AUDIT_REASON_ERROR_CODES`).
  */
-export function problem(c: Context, kind: ProblemKind, errors?: ProblemError[], reason?: ConflictReason): Response {
+export function problem(
+  c: Context,
+  kind: ProblemKind,
+  errors?: ProblemError[],
+  reason?: ConflictReason,
+  code?: AuditReasonErrorCode,
+): Response {
   const definition: {
     status: (typeof PROBLEMS)[ProblemKind]["status"];
     title: string;
@@ -180,6 +202,7 @@ export function problem(c: Context, kind: ProblemKind, errors?: ProblemError[], 
     ...(detail === undefined ? {} : { detail }),
     ...(errors === undefined ? {} : { errors }),
     ...(named === undefined ? {} : { reason: named }),
+    ...(kind === "validation" && code !== undefined ? { code } : {}),
   };
   if (kind === "unauthorized") c.header("WWW-Authenticate", "Bearer");
   if (kind === "method-not-allowed") c.header("Allow", "GET");

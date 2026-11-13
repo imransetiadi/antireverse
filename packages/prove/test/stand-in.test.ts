@@ -114,16 +114,26 @@ describe("StandInAgent", () => {
   });
 
   it("scans adversarial text in linear time (its patterns cannot be made to backtrack for long)", async () => {
-    const hostile = {
-      "a.js": "x".repeat(300_000),
-      "b.js": `token = "${"y".repeat(200_000)}`,
-      "c.js": `fetch("/api/${"z".repeat(200_000)}`,
-      "d.js": `"/api/${"q".repeat(200_000)}`,
-      "e.js": `http://${"a.".repeat(100_000)}`,
+    // Growth, not a wall-clock budget, so a loaded machine cannot fail it: linear scanning makes 4× the input
+    // cost about 4× the time, quadratic backtracking about 16×. A generous absolute cap still catches the
+    // catastrophic case (85 s before the patterns were bounded).
+    const hostile = (n: number) => ({
+      "a.js": "x".repeat(3 * n),
+      "b.js": `token = "${"y".repeat(2 * n)}`,
+      "c.js": `fetch("/api/${"z".repeat(2 * n)}`,
+      "d.js": `"/api/${"q".repeat(2 * n)}`,
+      "e.js": `http://${"a.".repeat(n)}`,
+    });
+    const time = async (n: number) => {
+      const started = performance.now();
+      await runStandIn(hostile(n));
+      return performance.now() - started;
     };
-    const started = Date.now();
-    await runStandIn(hostile);
-    expect(Date.now() - started).toBeLessThan(1_000);
+    await time(10_000); // warm-up
+    const small = Math.max(await time(50_000), 5);
+    const large = await time(200_000);
+    expect(large / small).toBeLessThan(10);
+    expect(large).toBeLessThan(10_000);
   });
 
   it("is deterministic", async () => {

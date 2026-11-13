@@ -16,6 +16,7 @@ import {
 import { generateSigningSecret, newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import { createWindowLimiter } from "../attestation/limiter.ts";
+import { audit, auditActor, quoted } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
@@ -154,6 +155,7 @@ export function alertChannelRoutes(deps: {
   routes.post("/v1/alert-channels", admin, limitBody(), validateJson(CreateAlertChannelRequestSchema), async (c) => {
     const { organizationId } = c.var.principal;
     const request = c.req.valid("json");
+    const actor = auditActor(c);
 
     if (request.kind === "email") {
       if (!smtpConfigured) return problem(c, "conflict", undefined, "smtp-not-configured");
@@ -194,6 +196,13 @@ export function alertChannelRoutes(deps: {
           const issued = await issueToken(q, organizationId, recipient);
           if (issued.kind === "sent") mails.push(issued.mail);
         }
+        // The addresses stay out of the entry: it counts them.
+        await audit(q, actor, {
+          action: "alert_channel.create",
+          target: { kind: "alert_channel", id },
+          summary: `Created the email alert channel ${quoted(request.name)} with ${recipients.length} recipients.`,
+          at: now(),
+        });
         const channel = await findChannel(q, id);
         return channel === null ? "conflict" : { channel, mails };
       });
@@ -222,7 +231,24 @@ export function alertChannelRoutes(deps: {
       // Serialises creations per Organization, so that the limit holds under concurrent requests.
       await lockOrganization(q, organizationId);
       if ((await countChannels(q)) >= INCIDENT_LIMITS.channelsMax) return null;
-      return insertChannel(q, { id: newId("chn"), organizationId, kind, name, url, signingSecret, createdAt: now() });
+      const at = now();
+      const created = await insertChannel(q, {
+        id: newId("chn"),
+        organizationId,
+        kind,
+        name,
+        url,
+        signingSecret,
+        createdAt: at,
+      });
+      // The URL and the signing secret stay out of the entry: a URL can itself be a secret.
+      await audit(q, actor, {
+        action: "alert_channel.create",
+        target: { kind: "alert_channel", id: created.id },
+        summary: `Created the ${kind} alert channel ${quoted(name)}.`,
+        at,
+      });
+      return created;
     });
     if (channel === null) return problem(c, "conflict");
     const body: CreateAlertChannelResponse =
@@ -233,28 +259,52 @@ export function alertChannelRoutes(deps: {
   routes.delete("/v1/alert-channels/:channelId", admin, async (c) => {
     const { organizationId } = c.var.principal;
     const channelId = c.req.param("channelId");
+    const actor = auditActor(c);
     const deleted = ID_PATTERNS.chn.test(channelId)
-      ? await db.tx({ organizationId }, (q) => deleteChannel(q, channelId))
+      ? await db.tx({ organizationId }, async (q) => {
+          const channel = await findChannel(q, channelId);
+          if (channel === null || !(await deleteChannel(q, channelId))) return false;
+          await audit(q, actor, {
+            action: "alert_channel.delete",
+            target: { kind: "alert_channel", id: channelId },
+            summary: `Deleted the ${channel.kind} alert channel ${quoted(channel.name)}.`,
+            at: now(),
+          });
+          return true;
+        })
       : false;
     if (!deleted) return problem(c, "not-found");
     return c.body(null, 204);
   });
 
   // Sends one test alert, synchronously, one attempt. Needs no body. An email channel's goes to its confirmed
-  // recipients only, so it needs SMTP settings and at least one of them.
+  // recipients only, so it needs SMTP settings and at least one of them. The audit entry is written before the send,
+  // in the transaction that checks the channel: the alert leaves the service whatever its outcome.
   routes.post("/v1/alert-channels/:channelId/test", admin, async (c) => {
     const { organizationId } = c.var.principal;
     const channelId = c.req.param("channelId");
-    const channel = ID_PATTERNS.chn.test(channelId)
-      ? await db.tx({ organizationId }, (q) => findChannel(q, channelId))
-      : null;
-    if (channel === null) return problem(c, "not-found");
-    if (channel.kind === "email") {
-      if (!smtpConfigured) return problem(c, "conflict", undefined, "smtp-not-configured");
-      if (!channel.recipients.some((recipient) => recipient.status === "confirmed")) {
-        return problem(c, "conflict", undefined, "no-confirmed-recipients");
-      }
-    }
+    const actor = auditActor(c);
+    const checked = ID_PATTERNS.chn.test(channelId)
+      ? await db.tx({ organizationId }, async (q) => {
+          const channel = await findChannel(q, channelId);
+          if (channel === null) return "not-found" as const;
+          if (channel.kind === "email") {
+            if (!smtpConfigured) return "smtp-not-configured" as const;
+            if (!channel.recipients.some((recipient) => recipient.status === "confirmed")) {
+              return "no-confirmed-recipients" as const;
+            }
+          }
+          await audit(q, actor, {
+            action: "alert_channel.test",
+            target: { kind: "alert_channel", id: channelId },
+            summary: `Sent a test alert to the ${channel.kind} alert channel ${quoted(channel.name)}.`,
+            at: now(),
+          });
+          return "ok" as const;
+        })
+      : ("not-found" as const);
+    if (checked === "not-found") return problem(c, "not-found");
+    if (checked !== "ok") return problem(c, "conflict", undefined, checked);
     const delivery = await notifier.test(channelId, organizationId);
     // Deleted in the meantime.
     if (delivery === null) return problem(c, "not-found");
@@ -268,6 +318,7 @@ export function alertChannelRoutes(deps: {
     const channelId = c.req.param("channelId");
     const recipientId = c.req.param("recipientId");
     if (!ID_PATTERNS.chn.test(channelId) || !ID_PATTERNS.rcp.test(recipientId)) return problem(c, "not-found");
+    const actor = auditActor(c);
     const result = await db.tx({ organizationId }, async (q) => {
       const recipient = await findRecipient(q, channelId, recipientId);
       if (recipient === null) return { kind: "not-found" as const };
@@ -275,6 +326,13 @@ export function alertChannelRoutes(deps: {
       if (!smtpConfigured) return { kind: "no-smtp" as const };
       const issued = await issueToken(q, organizationId, recipient);
       if (issued.kind === "refused") return { kind: "limited" as const };
+      // Recorded whether the mail went out or was silently held (review F6): the entry says the same either way.
+      await audit(q, actor, {
+        action: "alert_recipient.resend",
+        target: { kind: "alert_recipient", id: recipientId },
+        summary: `Asked for a new confirmation mail to the recipient ${recipientId} of the channel ${channelId}.`,
+        at: now(),
+      });
       // Silent: answered as sent, nothing goes out, the recipient stays pending with its earlier link (review F6).
       return { kind: "sent" as const, recipient, mail: issued.kind === "sent" ? issued.mail : null };
     });

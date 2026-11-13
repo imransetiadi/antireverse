@@ -18,6 +18,7 @@ import {
 } from "@antireverse/protocol";
 import { generateVerificationToken, newId, rulesOfEngagementSha256 } from "@antireverse/protocol/server";
 import { Hono } from "hono";
+import { audit, auditActor, reasonMissing } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -68,6 +69,7 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
     const { organizationId } = c.var.principal;
     const { host } = c.req.valid("json");
     const token = generateVerificationToken();
+    const actor = auditActor(c);
     let result: Target | "target-duplicate" | "target-limit";
     try {
       result = await db.tx({ organizationId }, async (q) => {
@@ -75,7 +77,15 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
         await lockOrganization(q, organizationId);
         if (await hostTaken(q, host)) return "target-duplicate";
         if ((await countTargets(q)) >= TARGET_LIMITS.targetsPerOrganization) return "target-limit";
-        return insertTarget(q, { organizationId, id: newId("tgt"), host, token, createdAt: now() });
+        const created = await insertTarget(q, { organizationId, id: newId("tgt"), host, token, createdAt: now() });
+        // The verification token stays out of the entry.
+        await audit(q, actor, {
+          action: "target.create",
+          target: { kind: "target", id: created.id },
+          summary: `Added the target ${host}, pending verification.`,
+          at: now(),
+        });
+        return created;
       });
     } catch (error) {
       if ((error as { code?: unknown }).code !== UNIQUE_VIOLATION) throw error;
@@ -106,12 +116,23 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
     const { organizationId } = c.var.principal;
     const targetId = c.req.param("targetId");
     if (!ID_PATTERNS.tgt.test(targetId)) return problem(c, "not-found");
+    // Slice 18a: deleting a target needs a reason.
+    const missing = reasonMissing(c);
+    if (missing !== null) return missing;
+    const actor = auditActor(c);
     const outcome = await db.tx({ organizationId }, async (q) => {
       // The same lock as signing: a version signed meanwhile is seen here, and a delete is seen by signing.
       await lockOrganization(q, organizationId);
-      if ((await findTarget(q, targetId)) === null) return "not-found" as const;
+      const found = await findTarget(q, targetId);
+      if (found === null) return "not-found" as const;
       if ((await currentVersion(q))?.scope.includes(targetId) === true) return "target-in-scope" as const;
       await deleteTarget(q, targetId);
+      await audit(q, actor, {
+        action: "target.delete",
+        target: { kind: "target", id: targetId },
+        summary: `Deleted the target ${found.target.host} (${found.target.status}).`,
+        at: now(),
+      });
       return "deleted" as const;
     });
     if (outcome === "not-found") return problem(c, "not-found");
@@ -126,6 +147,7 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
     const { organizationId } = c.var.principal;
     const targetId = c.req.param("targetId");
     if (!ID_PATTERNS.tgt.test(targetId)) return problem(c, "not-found");
+    const actor = auditActor(c);
     const taken = await db.tx({ organizationId }, async (q) => {
       const found = await findTarget(q, targetId);
       if (found === null) return null;
@@ -149,7 +171,19 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
       const target = await recordCheck(q, targetId, checked.outcome, at, {
         guard: { lastCheckedAt: taken.lastCheckedAt },
       });
-      if (target !== null) return target;
+      if (target !== null) {
+        // The check's outcome changes the target: its entry is written with it. A refused attempt (429) changes
+        // nothing but the attempt count, and writes none.
+        await audit(q, actor, {
+          action: "target.verify",
+          target: { kind: "target", id: targetId },
+          summary: `Checked the ownership of ${target.host}: ${
+            checked.outcome.verified ? `verified by ${checked.outcome.method}` : "not verified"
+          }.`,
+          at,
+        });
+        return target;
+      }
       // Deleted while it was being checked, or a newer check was recorded meanwhile.
       return (await findTarget(q, targetId)) === null ? ("not-found" as const) : ("conflict" as const);
     });
@@ -188,6 +222,10 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
         window: body.window,
         contacts: body.contacts,
       };
+      // Slice 18a: signing needs a reason.
+      const missing = reasonMissing(c);
+      if (missing !== null) return missing;
+      const actor = auditActor(c);
       const contentSha256 = rulesOfEngagementSha256(content);
       const signedAt = now();
       const outcome = await db.tx({ organizationId }, async (q) => {
@@ -200,16 +238,22 @@ export function proveRoutes(deps: { db: Db; network: ProveNetwork; now?: (() => 
           }
         }
         if (errors.length > 0) return { errors };
-        return {
-          version: await insertVersion(q, {
-            organizationId,
-            id: newId("roe"),
-            content,
-            signedBy: keyId,
-            signedAt,
-            contentSha256,
-          }),
-        };
+        const version = await insertVersion(q, {
+          organizationId,
+          id: newId("roe"),
+          content,
+          signedBy: keyId,
+          signedAt,
+          contentSha256,
+        });
+        // The contacts (email addresses) stay out of the entry: it counts them.
+        await audit(q, actor, {
+          action: "rules_of_engagement.sign",
+          target: { kind: "rules_of_engagement", id: version.id },
+          summary: `Signed Rules of Engagement for ${content.scope.length} targets at ${content.intensity} intensity, ${content.exclusions.length} exclusions, ${content.contacts.length} contacts (content ${contentSha256.slice(0, 12)}).`,
+          at: signedAt,
+        });
+        return { version };
       });
       if ("errors" in outcome) return problem(c, "validation", outcome.errors);
       return c.json({ version: outcome.version } satisfies RulesOfEngagementResponse, 201);

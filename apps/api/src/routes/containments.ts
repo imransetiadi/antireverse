@@ -14,6 +14,7 @@ import {
 import { newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import { z } from "zod";
+import { audit, auditActor, reasonMissing } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -72,6 +73,10 @@ export function containmentRoutes(deps: {
       const incidentId = c.req.param("incidentId");
       const request = c.req.valid("json");
       if (!ID_PATTERNS.inc.test(incidentId)) return problem(c, "not-found");
+      // Slice 18a: a block needs a reason.
+      const missing = reasonMissing(c);
+      if (missing !== null) return missing;
+      const actor = auditActor(c);
 
       const at = now();
       const outcome = await db.tx<Outcome>({ organizationId }, async (q) => {
@@ -126,6 +131,15 @@ export function containmentRoutes(deps: {
           expiresAt: new Date(at.getTime() + request.ttl_s * 1_000),
           createdBy: keyId,
         });
+        await audit(q, actor, {
+          action: "containment.create",
+          appId: incident.app_id,
+          target: { kind: "containment", id: containment.id },
+          summary: `Blocked ${
+            target.kind === "actor" ? `the Actor ${target.ip_hash}` : `the network ${target.ip_prefix}`
+          } in ${incident.environment} for ${request.ttl_s} s, from the Incident ${incident.id}.`,
+          at,
+        });
         return { kind: "created", containment };
       });
 
@@ -150,12 +164,22 @@ export function containmentRoutes(deps: {
     const { organizationId, keyId } = c.var.principal;
     const containmentId = c.req.param("containmentId");
     if (!ID_PATTERNS.cnt.test(containmentId)) return problem(c, "not-found");
+    const actor = auditActor(c);
     const at = now();
     const result = await db.tx<Containment | "not-found" | "ended">({ organizationId }, async (q) => {
       const found = await findContainment(q, containmentId, at, true);
       if (found === null) return "not-found";
       if (found.status !== "active") return "ended";
-      return (await liftContainment(q, containmentId, keyId, at)) ?? "ended";
+      const lifted = await liftContainment(q, containmentId, keyId, at);
+      if (lifted === null) return "ended";
+      await audit(q, actor, {
+        action: "containment.lift",
+        appId: lifted.app_id,
+        target: { kind: "containment", id: containmentId },
+        summary: `Lifted the block ${containmentId} in ${lifted.environment} before its expiry.`,
+        at,
+      });
+      return lifted;
     });
     if (result === "not-found") return problem(c, "not-found");
     if (result === "ended") return problem(c, "conflict", undefined, "containment-ended");

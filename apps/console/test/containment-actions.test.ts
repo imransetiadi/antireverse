@@ -7,6 +7,7 @@ import {
 } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dropReason } from "./helpers/reason.ts";
 
 // The containment and never-block actions, exercised through their interface with the API client, the
 // session, the cache and the navigation replaced by fakes.
@@ -97,6 +98,7 @@ beforeEach(() => {
   vi.mocked(revalidatePath).mockReset();
 });
 
+const REASON = "Credential stuffing from this network";
 const blockActor = (extra: Record<string, string> = {}) =>
   form({
     incidentId,
@@ -105,6 +107,8 @@ const blockActor = (extra: Record<string, string> = {}) =>
     ipHash: HASH,
     ttl: "3600",
     confirm: HASH,
+    // Slice 18a: a block carries a reason.
+    reason: REASON,
     ...extra,
   });
 const blockNetwork = (extra: Record<string, string> = {}) =>
@@ -115,6 +119,7 @@ const blockNetwork = (extra: Record<string, string> = {}) =>
     ttl: "900",
     confirm: PREFIX,
     typedPrefix: PREFIX,
+    reason: REASON,
     ...extra,
   });
 
@@ -122,10 +127,15 @@ describe("createContainmentAction", () => {
   it("blocks the Actor named in the confirmation and goes back to the Incident", async () => {
     vi.mocked(api.createContainment).mockResolvedValue({ containment: EXAMPLE_CONTAINMENT });
     await expect(createContainmentAction(null, blockActor())).rejects.toThrow(`REDIRECT ${PAGE}`);
-    expect(api.createContainment).toHaveBeenCalledWith(admin.key, incidentId, {
-      target: { kind: "actor", ip_hash: HASH },
-      ttl_s: 3600,
-    });
+    expect(api.createContainment).toHaveBeenCalledWith(
+      admin.key,
+      incidentId,
+      {
+        target: { kind: "actor", ip_hash: HASH },
+        ttl_s: 3600,
+      },
+      { reason: REASON },
+    );
     expect(revalidatePath).toHaveBeenCalledWith(PAGE);
     expect(revalidatePath).toHaveBeenCalledWith("/incidents");
     expect(revalidatePath).toHaveBeenCalledWith(`/apps/${EXAMPLE_CONTAINMENT.app_id}/containment`);
@@ -133,7 +143,7 @@ describe("createContainmentAction", () => {
 
   it("refuses an Actor block without the confirmation, or confirmed for another Actor; the API is never called", async () => {
     for (const confirm of ["", "yes", "iph_00000000000000000000000000000000"]) {
-      expect(await createContainmentAction(null, blockActor({ confirm }))).toEqual({
+      expect(dropReason(await createContainmentAction(null, blockActor({ confirm })))).toEqual({
         ok: false,
         errors: [{ path: "confirm", message: CONFIRM_REQUIRED }],
       });
@@ -146,22 +156,27 @@ describe("createContainmentAction", () => {
       containment: { ...EXAMPLE_CONTAINMENT, target: { kind: "prefix", ip_prefix: PREFIX } },
     });
     await expect(createContainmentAction(null, blockNetwork())).rejects.toThrow(`REDIRECT ${PAGE}`);
-    expect(api.createContainment).toHaveBeenCalledWith(admin.key, incidentId, {
-      target: { kind: "prefix" },
-      ttl_s: 900,
-      confirm_prefix: PREFIX,
-    });
+    expect(api.createContainment).toHaveBeenCalledWith(
+      admin.key,
+      incidentId,
+      {
+        target: { kind: "prefix" },
+        ttl_s: 900,
+        confirm_prefix: PREFIX,
+      },
+      { reason: REASON },
+    );
   });
 
   it("refuses a mistyped, padded, partial or missing prefix — the API is never called", async () => {
     for (const typedPrefix of ["203.0.113.0/23", ` ${PREFIX}`, `${PREFIX} `, "203.0.113.0", "", "203.0.113.0/24x"]) {
-      expect(await createContainmentAction(null, blockNetwork({ typedPrefix }))).toEqual({
+      expect(dropReason(await createContainmentAction(null, blockNetwork({ typedPrefix })))).toEqual({
         ok: false,
         errors: [{ path: "typedPrefix", message: TYPED_MISMATCH }],
       });
     }
     const withoutTyped = form({ incidentId, environment: "development", kind: "prefix", ttl: "900", confirm: PREFIX });
-    expect(await createContainmentAction(null, withoutTyped)).toEqual({
+    expect(dropReason(await createContainmentAction(null, withoutTyped))).toEqual({
       ok: false,
       errors: [{ path: "typedPrefix", message: TYPED_MISMATCH }],
     });
@@ -179,14 +194,16 @@ describe("createContainmentAction", () => {
       { ipHash: "203.0.113.7", confirm: "203.0.113.7" },
     ];
     for (const fields of forms) {
-      expect(await createContainmentAction(null, blockActor(fields))).toEqual({
+      expect(dropReason(await createContainmentAction(null, blockActor(fields)))).toEqual({
         ok: false,
         errors: [{ path: "", message: STALE }],
       });
     }
     // A network confirmation that is not an Event prefix (a full address) is refused too.
     expect(
-      await createContainmentAction(null, blockNetwork({ confirm: "203.0.113.7", typedPrefix: "203.0.113.7" })),
+      dropReason(
+        await createContainmentAction(null, blockNetwork({ confirm: "203.0.113.7", typedPrefix: "203.0.113.7" })),
+      ),
     ).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
     expect(api.createContainment).not.toHaveBeenCalled();
   });
@@ -203,7 +220,10 @@ describe("createContainmentAction", () => {
     "explains a 409 with reason %s from the reason alone, calling the API once",
     async (reason, message, build) => {
       vi.mocked(api.createContainment).mockRejectedValueOnce(new api.ConflictError("409", reason));
-      expect(await createContainmentAction(null, build())).toEqual({ ok: false, errors: [{ path: "", message }] });
+      expect(dropReason(await createContainmentAction(null, build()))).toEqual({
+        ok: false,
+        errors: [{ path: "", message }],
+      });
       expect(api.createContainment).toHaveBeenCalledTimes(1);
       // Nothing is read again to guess the cause.
       expect(api.getIncident).not.toHaveBeenCalled();
@@ -215,7 +235,7 @@ describe("createContainmentAction", () => {
 
   it("names the Incident's Environment in the cap message", async () => {
     vi.mocked(api.createContainment).mockRejectedValueOnce(new api.ConflictError("409", "containment-limit"));
-    expect(await createContainmentAction(null, blockActor({ environment: "production" }))).toEqual({
+    expect(dropReason(await createContainmentAction(null, blockActor({ environment: "production" })))).toEqual({
       ok: false,
       errors: [{ path: "", message: "This App already has 150 active blocks in production. Lift one first." }],
     });
@@ -227,7 +247,7 @@ describe("createContainmentAction", () => {
       new api.ValidationError("400", [{ path: "target.ip_hash", message: "Not in this Incident" }]),
     ]) {
       vi.mocked(api.createContainment).mockRejectedValueOnce(error);
-      expect(await createContainmentAction(null, blockActor())).toEqual({
+      expect(dropReason(await createContainmentAction(null, blockActor()))).toEqual({
         ok: false,
         errors: [{ path: "", message: STALE }],
       });
@@ -236,7 +256,7 @@ describe("createContainmentAction", () => {
 
   it("says the API did not answer, and signs out on 401", async () => {
     vi.mocked(api.createContainment).mockRejectedValueOnce(new api.ApiError("down", 0));
-    expect(await createContainmentAction(null, blockActor())).toEqual({
+    expect(dropReason(await createContainmentAction(null, blockActor()))).toEqual({
       ok: false,
       errors: [{ path: "", message: API_DOWN }],
     });

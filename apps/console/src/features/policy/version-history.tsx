@@ -4,7 +4,7 @@ import type { Environment, PolicyVersionSummary } from "@antireverse/protocol";
 import { useActionState } from "react";
 import { rollbackPolicyAction } from "@/app/actions.ts";
 import { ButtonLink } from "@/components/button.tsx";
-import { ConfirmPanel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
+import { ConfirmPanel, REASON_FIELD_ID, reasonLabel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
 import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
 import { formatDateTime } from "@/lib/format.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -32,6 +32,11 @@ interface VersionHistoryProps {
   confirmVersion?: number | undefined;
   /** True when the version to confirm brings back a broad Enforce Rule: the stronger confirmation is asked. */
   confirmBroad?: boolean | undefined;
+  /**
+   * True when the version to confirm enforces a Rule that is not enforced now (slice 18a): the reason is then
+   * required. It is offered, optional, for every other rollback.
+   */
+  confirmPromotes?: boolean | undefined;
 }
 
 /**
@@ -46,6 +51,7 @@ export function VersionHistory({
   versions,
   confirmVersion,
   confirmBroad = false,
+  confirmPromotes = false,
 }: VersionHistoryProps) {
   const [state, action] = useActionState(rollbackPolicyAction, null);
   const errors = state?.errors ?? NO_ERRORS;
@@ -55,7 +61,10 @@ export function VersionHistory({
     <div className="flex flex-col gap-3">
       <ErrorSummary
         errors={errors}
-        fields={{ typedEnvironment: { id: TYPED_FIELD_ID, label: t("policy.confirm.typed", { environment }) } }}
+        fields={{
+          typedEnvironment: { id: TYPED_FIELD_ID, label: t("policy.confirm.typed", { environment }) },
+          reason: { id: REASON_FIELD_ID, label: reasonLabel(confirmPromotes) },
+        }}
       />
       {versions.length === 0 ? (
         <p className="text-fg-muted">{t("policy.history.none")}</p>
@@ -135,6 +144,11 @@ export function VersionHistory({
                           confirmLabel={t("policy.rollback")}
                           cancelHref={ROUTES.policy(appId, environment)}
                           action={action}
+                          reason={{
+                            required: confirmPromotes,
+                            error: fieldError(errors, "reason"),
+                            value: state?.reason,
+                          }}
                           typed={
                             confirmBroad
                               ? {

@@ -4,7 +4,7 @@ import type { Finding, PatchSummary } from "@antireverse/protocol";
 import { type ReactNode, useActionState } from "react";
 import { setPatchModeAction } from "@/app/actions.ts";
 import { ButtonLink } from "@/components/button.tsx";
-import { ConfirmPanel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
+import { ConfirmPanel, REASON_FIELD_ID, reasonLabel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
 import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
 import { SubmitButton } from "@/components/submit-button.tsx";
 import { formatDateTime } from "@/lib/format.ts";
@@ -106,7 +106,13 @@ function PatchActions({ finding, appName, patch, confirmEnforce }: FindingPatchP
 
   return (
     <div className="flex flex-col gap-3">
-      <ErrorSummary errors={errors} fields={{ confirm: { id: TYPED_FIELD_ID, label: typedLabel } }} />
+      <ErrorSummary
+        errors={errors}
+        fields={{
+          confirm: { id: TYPED_FIELD_ID, label: typedLabel },
+          reason: { id: REASON_FIELD_ID, label: reasonLabel(true) },
+        }}
+      />
       <ConfirmPanel
         testId="patch-confirm"
         question={t("patch.confirm.enforce", { patch: patch.title, app: appName, environment: finding.environment })}
@@ -116,6 +122,8 @@ function PatchActions({ finding, appName, patch, confirmEnforce }: FindingPatchP
         cancelHref={ROUTES.finding(finding.id)}
         action={formAction}
         busy={pending}
+        // Slice 18a: enforcing a patch is a sensitive change, recorded with its reason.
+        reason={{ required: true, error: fieldError(errors, "reason"), value: state?.reason }}
         // The typed confirmation: the patch id, sent as `confirm`.
         typed={{
           warning: t("patch.confirm.warning"),

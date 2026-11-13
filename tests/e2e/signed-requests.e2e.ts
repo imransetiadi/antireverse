@@ -107,10 +107,12 @@ function serveShop(shield: Shield, appId: string, orders: unknown[]): Promise<ht
   return new Promise((resolve) => server.listen(PAGE_PORT, "127.0.0.1", () => resolve(server)));
 }
 
-async function confirm(page: Page, question: RegExp): Promise<void> {
+/** `reason`: the reason a sensitive change requires (slice 18a); typed into the step when given. */
+async function confirm(page: Page, question: RegExp, reason?: string): Promise<void> {
   const dialog = page.getByTestId("policy-confirm");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByTestId("confirm-question")).toHaveText(question);
+  if (reason !== undefined) await dialog.getByTestId("confirm-reason").fill(reason);
   await dialog.getByTestId("confirm-submit").click();
   await expect(page.getByTestId("policy-confirm")).toHaveCount(0);
 }
@@ -153,7 +155,11 @@ test("Guard's signed request passes an enforced requirement; the same request re
 
   // 2. Promoted to Enforce with the confirmation naming Environment and pattern (version 2).
   await row.getByTestId("rule-promote").click();
-  await confirm(page, /^Promote to enforce in development\? Requests matching \/api\/orders will be blocked\.$/);
+  await confirm(
+    page,
+    /^Promote to enforce in development\? Requests matching \/api\/orders will be blocked\.$/,
+    "Orders must be signed",
+  );
   await expect(row).toHaveAttribute("data-mode", "enforce");
   await expect(row).toHaveAttribute("data-requires", "signature");
   await expect(page.getByTestId("policy-version")).toHaveText("Version 2");

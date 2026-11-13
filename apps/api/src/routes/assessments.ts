@@ -13,6 +13,7 @@ import { newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import type { Assessor } from "../assess/assessor.ts";
 import type { AssessmentQueue } from "../assess/runner.ts";
+import { audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -94,6 +95,7 @@ export function assessmentRoutes(deps: {
       const { tier, files } = c.req.valid("json");
       if (!ID_PATTERNS.app.test(appId) || !ID_PATTERNS.bld.test(buildId)) return problem(c, "not-found");
       const target = { organizationId, appId };
+      const actor = auditActor(c);
 
       const result = await db.tx({ organizationId }, async (q) => {
         if ((await findApp(q, appId)) === null) return "not-found" as const;
@@ -111,7 +113,7 @@ export function assessmentRoutes(deps: {
           artifactId = newArtifactId();
           await insertArtifact(q, { ...target, id: artifactId, buildId, files: proof.files, createdAt: at });
         }
-        return insertAssessment(q, {
+        const assessment = await insertAssessment(q, {
           ...target,
           id: newId("asm"),
           buildId,
@@ -121,6 +123,16 @@ export function assessmentRoutes(deps: {
           artifactId,
           createdAt: at,
         });
+        await audit(q, actor, {
+          action: "assessment.create",
+          appId,
+          target: { kind: "assessment", id: assessment.id },
+          summary: `Requested a ${tier} Reverse Assessment of the Build ${buildId} (${
+            files === undefined ? "its kept artifact" : `${files.length} files sent`
+          }).`,
+          at,
+        });
+        return assessment;
       });
       if (result === "not-found") return problem(c, "not-found");
       if (result === "artifact-required") return problem(c, "conflict", undefined, "artifact-required");

@@ -41,6 +41,7 @@ import {
   makeTestApi,
   shieldEvent,
   type TestApi,
+  withReason,
 } from "./helpers.ts";
 
 const ACTOR = `iph_${"a".repeat(32)}`;
@@ -247,7 +248,9 @@ describe("Virtual patches", () => {
   }
 
   function setMode(adminKey: string, appId: string, patchId: string, body: unknown) {
-    return Promise.resolve(api.app.request(`/v1/apps/${appId}/patches/${patchId}/mode`, json(body, bearer(adminKey))));
+    return Promise.resolve(
+      api.app.request(`/v1/apps/${appId}/patches/${patchId}/mode`, json(body, withReason(bearer(adminKey)))),
+    );
   }
 
   async function findings(adminKey: string): Promise<Finding[]> {
@@ -472,18 +475,18 @@ describe("Virtual patches", () => {
 
     const actor = await api.app.request(
       `/v1/incidents/${range?.id}/containments`,
-      json({ target: { kind: "actor", ip_hash: ACTOR }, ttl_s: 900 }, bearer(adminA)),
+      json({ target: { kind: "actor", ip_hash: ACTOR }, ttl_s: 900 }, withReason(bearer(adminA))),
     );
     expect(actor.status).toBe(201);
     const unknown = await api.app.request(
       `/v1/incidents/${range?.id}/containments`,
-      json({ target: { kind: "actor", ip_hash: `iph_${"9".repeat(32)}` }, ttl_s: 900 }, bearer(adminA)),
+      json({ target: { kind: "actor", ip_hash: `iph_${"9".repeat(32)}` }, ttl_s: 900 }, withReason(bearer(adminA))),
     );
     expect((await expectProblem(unknown, 409)).reason).toBe("actor-unknown");
     // No single network: the Incident is grouped by advisory, so a prefix block does not apply.
     const prefix = await api.app.request(
       `/v1/incidents/${range?.id}/containments`,
-      json({ target: { kind: "prefix" }, ttl_s: 900, confirm_prefix: "203.0.113.0/24" }, bearer(adminA)),
+      json({ target: { kind: "prefix" }, ttl_s: 900, confirm_prefix: "203.0.113.0/24" }, withReason(bearer(adminA))),
     );
     expect((await expectProblem(prefix, 409)).reason).toBe("containment-not-applicable");
   });

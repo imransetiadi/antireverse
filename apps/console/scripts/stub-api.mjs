@@ -54,10 +54,16 @@
 // the protocol): Shield at the first streamed Event, Guard at the first one with a valid attestation, Harden at the
 // earliest seeded Build — so Harden is done at once, and Shield and Guard as soon as the App's stream is open.
 // Without `environment` it answers for the App's Environment.
+// Slice 18a: every change made with an admin key (and the Organization signup) writes one audit entry, hash-chained
+// per Organization (stub-audit.mjs, checked by a test against the protocol); `GET /v1/audit`, `/v1/audit/verify` and
+// `/v1/audit/export` answer as the API, and `GET /v1/audit/public-key` is public. The `X-Airverse-Reason` header is
+// decoded and checked on every change and required (400 reason-required) on the sensitive ones: a publish or rollback
+// that enforces a Rule anew, enforcing a virtual patch, a block, signing Rules of Engagement, removing a target.
+// `POST /__stub/audit-tamper?seq=N` (with the admin key) alters entry N without rehashing it, to see a broken chain.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
-//   PORT=39201 node apps/console/scripts/stub-api.mjs
+//   PORT=39201 npx tsx apps/console/scripts/stub-api.mjs   (tsx: the audit log reads the TypeScript protocol)
 //   AR_API_URL=http://127.0.0.1:39201 PORT=39200 npm run dev -w @antireverse/console
 //
 // `POST /__stub/outage?ms=6000` simulates an API restart. It never logs a key.
@@ -65,6 +71,7 @@ import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import http from "node:http";
 import { createAlertStore } from "./stub-alerts.mjs";
 import { createAssessmentStore } from "./stub-assessments.mjs";
+import { auditOf, createAuditStore, promotedRules } from "./stub-audit.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
@@ -106,6 +113,8 @@ const proveStores = new Map();
 const assessments = createAssessmentStore();
 /** When each set-up step of each App Environment was first done (slice 16): stub-setup.mjs. */
 const setups = createSetupStore();
+/** The audit log of every Organization (slice 18a): stub-audit.mjs. */
+const audits = createAuditStore();
 
 // The signing key of contract P2: a real Ed25519 key pair, of which only the public half is ever served.
 const publicKeyRaw = Buffer.from(generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x, "base64url");
@@ -1209,10 +1218,49 @@ async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    // Kept on the request for the audit entry the change writes (slice 18a).
+    req.auditBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return req.auditBody;
   } catch {
     return undefined;
   }
+}
+
+/** Writes an answer of the audit store: a problem document with its own type, NDJSON, or JSON (slice 18a). */
+function sendAudit(res, answer) {
+  if (answer.status >= 400) return json(res, answer.status, answer.body, "application/problem+json");
+  if (answer.contentType) {
+    res.writeHead(answer.status, { "content-type": answer.contentType });
+    return res.end(answer.body);
+  }
+  return json(res, answer.status, answer.body);
+}
+
+const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Records the audit entry of a change once its 2xx answer is written: the response body is captured as it is sent,
+ * the request body was kept by `readBody`. `rulesBefore` are the Policy's Rules before a publish or rollback.
+ */
+function auditWhenDone(req, res, organizationId, keyId, reason, path, rulesBefore) {
+  const end = res.end.bind(res);
+  let sent;
+  res.end = (chunk, ...rest) => {
+    if (typeof chunk === "string" || Buffer.isBuffer(chunk)) sent = chunk.toString();
+    return end(chunk, ...rest);
+  };
+  res.on("finish", () => {
+    if (res.statusCode < 200 || res.statusCode >= 300) return;
+    let response;
+    try {
+      response = sent === undefined ? undefined : JSON.parse(sent);
+    } catch {
+      response = undefined;
+    }
+    const change = auditOf(req.method, path, req.auditBody, response, rulesBefore);
+    if (change === null || change.target.id === undefined) return;
+    audits.record(organizationId, { keyId, reason, ...change });
+  });
 }
 
 function validName(body) {
@@ -1231,6 +1279,8 @@ const server = http.createServer(async (req, res) => {
 
   // Needs no key: the public key Shield verifies a Policy with.
   if (req.method === "GET" && path === "/v1/signing-key") return json(res, 200, signingKey);
+  // Needs no key either (slice 18a): the public half of the audit key that signs chain heads.
+  if (req.method === "GET" && path === "/v1/audit/public-key") return json(res, 200, audits.publicKey());
 
   // Simulates a restart that keeps its data: every stream ends and connections are refused for `ms`.
   //   curl -X POST 'http://127.0.0.1:39201/__stub/outage?ms=6000'
@@ -1256,6 +1306,12 @@ const server = http.createServer(async (req, res) => {
     apps.set(organization.id, []);
     proveStores.set(organization.id, createProveStore({ keyId: adminKeyIds.get(adminKey.key) }));
     alerts.seed(organization.id);
+    audits.record(organization.id, {
+      keyId: adminKeyIds.get(adminKey.key),
+      action: "organization.create",
+      target: { kind: "organization", id: organization.id },
+      summary: "Created the organization and its first admin key.",
+    });
     return json(res, 201, { organization, admin_key: adminKey });
   }
 
@@ -1269,6 +1325,43 @@ const server = http.createServer(async (req, res) => {
   const organization = bearer ? organizations.get(bearer) : undefined;
   if (!organization) return problem(res, 401, "Unauthorized");
   const ownApps = apps.get(organization.id) ?? [];
+
+  // Slice 18a: the reason of a change, checked on every change; the audit log; the entry each change writes.
+  let reason;
+  if (MUTATING.has(req.method)) {
+    const read = audits.parseReason(req.headers["x-airverse-reason"]);
+    if (read.error) return sendAudit(res, read.error);
+    reason = read.reason;
+  }
+  if (path.startsWith("/v1/audit")) {
+    const answer = audits.handle(organization.id, req.method, path, url.searchParams);
+    if (answer) return sendAudit(res, answer);
+  }
+  const tamperMatch = req.method === "POST" && path === "/__stub/audit-tamper";
+  if (tamperMatch) {
+    audits.tamper(organization.id, Number(url.searchParams.get("seq")), { summary: "Altered after it was recorded." });
+    return json(res, 200, { tampered: Number(url.searchParams.get("seq")) });
+  }
+  if (MUTATING.has(req.method)) {
+    const policyPath = /^\/v1\/apps\/([^/]+)\/policies\/([^/]+)/.exec(path);
+    const before = policyPath ? currentPolicy(policyPath[1], policyPath[2]).rules : [];
+    auditWhenDone(req, res, organization.id, adminKeyIds.get(bearer) ?? newId("key"), reason, path, before);
+  }
+  /** True when a publish of `rules` would promote a Rule (stub-audit.mjs, as the API decides): it then needs a reason. */
+  const promotes = (appId, environment, rules) =>
+    promotedRules(
+      currentPolicy(appId, environment).rules,
+      rules.map((rule) => ({ ...rule, id: rule.id ?? "new" })),
+    ).length > 0;
+
+  // Sensitive changes of Prove need a reason: signing Rules of Engagement and removing a target.
+  if (
+    reason === undefined &&
+    ((req.method === "POST" && path === "/v1/rules-of-engagement") ||
+      (req.method === "DELETE" && /^\/v1\/targets\/[^/]+$/.test(path)))
+  ) {
+    return sendAudit(res, audits.reasonRequired());
+  }
 
   // Prove (slice 14): targets, Rules of Engagement and the dry authorization check.
   if (path.startsWith("/v1/targets") || path.startsWith("/v1/rules-of-engagement") || path === "/v1/prove/authorize") {
@@ -1352,6 +1445,9 @@ const server = http.createServer(async (req, res) => {
       if (checked.errors) return problem(res, 400, "Bad Request", { errors: checked.errors });
       const broad = broadErrors(checked.rules, body?.allow_broad);
       if (broad.length > 0) return problem(res, 400, "Bad Request", { errors: broad });
+      if (reason === undefined && promotes(appId, environment, checked.rules)) {
+        return sendAudit(res, audits.reasonRequired());
+      }
       return json(res, 201, { policy: publish(appId, environment, checked.rules) });
     }
 
@@ -1384,6 +1480,9 @@ const server = http.createServer(async (req, res) => {
       if (!earlier) return problem(res, 404, "Not Found");
       const broad = broadErrors(earlier.rules, body?.allow_broad);
       if (broad.length > 0) return problem(res, 400, "Bad Request", { errors: broad });
+      if (reason === undefined && promotes(appId, environment, earlier.rules)) {
+        return sendAudit(res, audits.reasonRequired());
+      }
       return json(res, 201, { policy: publish(appId, environment, earlier.rules) });
     }
 
@@ -1498,6 +1597,7 @@ const server = http.createServer(async (req, res) => {
     const entry = (incidents.get(organization.id) ?? []).find((one) => one.incident.id === createMatch[1]);
     if (!entry) return problem(res, 404, "Not Found");
     const body = await readBody(req);
+    if (reason === undefined) return sendAudit(res, audits.reasonRequired());
     const { incident } = entry;
     const ttl = body?.ttl_s;
     if (![900, 3600, 86400].includes(ttl)) {
@@ -1674,6 +1774,7 @@ const server = http.createServer(async (req, res) => {
         errors.push({ path: "confirm", message: "Must equal the patch id" });
       }
       if (errors.length > 0) return problem(res, 400, "Bad Request", { errors });
+      if (body.mode === "enforce" && reason === undefined) return sendAudit(res, audits.reasonRequired());
       patchModes.set(`${app.id}/${body.environment}/${entry.id}`, body.mode);
       const patch = patchesFor(organization.id, app.id, body.environment).find((one) => one.id === entry.id);
       return json(res, 200, { patch });

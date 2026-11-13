@@ -48,6 +48,7 @@ import {
   type TestApi,
   tick,
   uuidv7,
+  withReason,
 } from "./helpers.ts";
 
 // Slice 08: the `credential-stuffing` rule as it judges an Event of a Shield from before plan amendment A7, which does
@@ -759,7 +760,7 @@ describe("publish hook: the Detector learns a new Policy version at once", () =>
     await publishPolicy(api, adminA, appId, "development", []);
     const rolledBack = await api.app.request(
       `/v1/apps/${appId}/policies/development/rollback`,
-      json({ version: 2 }, bearer(adminA)),
+      json({ version: 2 }, withReason(bearer(adminA))),
     );
     expect(rolledBack.status).toBe(201);
     expect(published.at(-1)).toEqual({ organizationId: orgA, appId, environment: "development", version: 4 });
@@ -791,17 +792,26 @@ describe("publish hook: the Detector learns a new Policy version at once", () =>
     const before = published.length;
     for (const res of [
       // Refused by validation, by the guardrail, as a conflict, and for another Organization's App.
-      await api.app.request(`/v1/apps/${appId}/policies/development`, put({ rules: [{ name: "x" }] }, bearer(adminA))),
       await api.app.request(
         `/v1/apps/${appId}/policies/development`,
-        put({ rules: [{ ...loginLimit, path: "/**", mode: "enforce" }] }, bearer(adminA)),
+        put({ rules: [{ name: "x" }] }, withReason(bearer(adminA))),
       ),
       await api.app.request(
         `/v1/apps/${appId}/policies/development`,
-        put({ rules: [loginLimit], expected_version: 3 }, bearer(adminA)),
+        put({ rules: [{ ...loginLimit, path: "/**", mode: "enforce" }] }, withReason(bearer(adminA))),
       ),
-      await api.app.request(`/v1/apps/${appId}/policies/development`, put({ rules: [loginLimit] }, bearer(adminB))),
-      await api.app.request(`/v1/apps/${appId}/policies/development/rollback`, json({ version: 9 }, bearer(adminA))),
+      await api.app.request(
+        `/v1/apps/${appId}/policies/development`,
+        put({ rules: [loginLimit], expected_version: 3 }, withReason(bearer(adminA))),
+      ),
+      await api.app.request(
+        `/v1/apps/${appId}/policies/development`,
+        put({ rules: [loginLimit] }, withReason(bearer(adminB))),
+      ),
+      await api.app.request(
+        `/v1/apps/${appId}/policies/development/rollback`,
+        json({ version: 9 }, withReason(bearer(adminA))),
+      ),
     ]) {
       expect(res.status).toBeGreaterThanOrEqual(400);
     }
@@ -972,7 +982,7 @@ describe("Credential stuffing Incident", () => {
 
     // Containment as for a Blocked burst: an Actor of the evidence, never an address that was not counted.
     const contain = (body: unknown, admin = adminA) =>
-      api.app.request(`/v1/incidents/${incident.id}/containments`, json(body, bearer(admin)));
+      api.app.request(`/v1/incidents/${incident.id}/containments`, json(body, withReason(bearer(admin))));
     const actor = (address: string) => ({ target: { kind: "actor", ip_hash: actorHash(key, address) }, ttl_s: 3_600 });
     for (const address of ["203.0.113.20", "203.0.113.23", "203.0.113.25", "203.0.113.28", "203.0.113.99"]) {
       const refused = await expectProblem(await contain(actor(address)), 409);
@@ -1227,7 +1237,10 @@ describe("Credential stuffing Incident", () => {
       const refused = await expectProblem(
         await api.app.request(
           `/v1/incidents/${incident.id}/containments`,
-          json({ target: { kind: "actor", ip_hash: actorHash(key, address) }, ttl_s: 3_600 }, bearer(adminA)),
+          json(
+            { target: { kind: "actor", ip_hash: actorHash(key, address) }, ttl_s: 3_600 },
+            withReason(bearer(adminA)),
+          ),
         ),
         409,
       );

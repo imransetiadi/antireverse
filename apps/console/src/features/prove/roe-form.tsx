@@ -1,6 +1,13 @@
 "use client";
 
-import { confirmationPhrase, INTENSITIES, type Intensity, type Target, WEEKDAYS } from "@antireverse/protocol";
+import {
+  AUDIT_LIMITS,
+  confirmationPhrase,
+  INTENSITIES,
+  type Intensity,
+  type Target,
+  WEEKDAYS,
+} from "@antireverse/protocol";
 import { useActionState, useState } from "react";
 import { type RulesOfEngagementFormValues, signRulesOfEngagementAction } from "@/app/actions.ts";
 import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
@@ -19,6 +26,7 @@ const IDS = {
   to: "roe-to",
   contacts: "roe-contacts",
   confirm: "roe-confirm",
+  reason: "roe-reason",
 } as const;
 
 const EMPTY: RulesOfEngagementFormValues = {
@@ -73,7 +81,7 @@ interface FieldsProps {
 }
 
 // Mounted anew after every refusal (see `key` below), so that the refilled values are its starting state.
-function RoeFields({ targets, values, errors }: FieldsProps) {
+function RoeFields({ targets, values, errors, reason }: FieldsProps & { reason: string }) {
   const [intensity, setIntensity] = useState<Intensity>(isIntensity(values.intensity) ? values.intensity : "passive");
   const [allDay, setAllDay] = useState(values.allDay);
   const error = (path: string) => fieldError(errors, path);
@@ -264,6 +272,21 @@ function RoeFields({ targets, values, errors }: FieldsProps) {
             mono
           />
         </div>
+        {/* Slice 18a: signing is a sensitive change, recorded in the audit log with its reason. */}
+        <div className="max-w-xl">
+          <Input
+            id={IDS.reason}
+            name="reason"
+            label={t("reason.label")}
+            help={t("reason.help")}
+            error={error("reason")}
+            maxLength={AUDIT_LIMITS.reasonMax}
+            autoComplete="off"
+            aria-required="true"
+            defaultValue={reason}
+            data-testid="roe-reason"
+          />
+        </div>
         <div>
           <SubmitButton pendingLabel={t("roe.form.submitting")} data-testid="roe-sign">
             {t("roe.form.submit")}
@@ -292,12 +315,19 @@ export function RoeForm({ targets }: { targets: readonly Target[] }) {
     to: { id: IDS.to, label: t("roe.form.to") },
     contacts: { id: IDS.contacts, label: t("roe.contacts") },
     confirm: { id: IDS.confirm, label: t("roe.form.confirm") },
+    reason: { id: IDS.reason, label: t("reason.label") },
   };
 
   return (
     <form action={formAction} noValidate className="flex max-w-2xl flex-col gap-6">
       <ErrorSummary errors={errors} fields={fields} />
-      <RoeFields key={roundOf(state)} targets={targets} values={values} errors={errors} />
+      <RoeFields
+        key={roundOf(state)}
+        targets={targets}
+        values={values}
+        errors={errors}
+        reason={state && !state.ok ? (state.reason ?? "") : ""}
+      />
     </form>
   );
 }

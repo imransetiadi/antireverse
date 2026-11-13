@@ -1,5 +1,6 @@
 "use client";
 
+import { AUDIT_LIMITS } from "@antireverse/protocol";
 import { type ReactNode, useEffect, useId, useRef } from "react";
 import { t } from "@/lib/t.ts";
 import { ButtonLink } from "./button.tsx";
@@ -47,10 +48,22 @@ interface ConfirmPanelProps {
   pendingLabel?: string | undefined;
   /** `data-testid` of the step. Default: `policy-confirm`. */
   testId?: string | undefined;
+  /**
+   * The reason of the change (slice 18a), recorded in the audit log: a one-line field named `reason`. `required` for a
+   * sensitive change — the browser then holds the submit back while it is empty, and the Server Action checks it
+   * again — optional otherwise. No field without this prop.
+   */
+  reason?: { required: boolean; error?: string | undefined; value?: string | undefined } | undefined;
 }
 
 /** The id of the typed Environment field. One confirmation step is open at a time. */
 export const TYPED_FIELD_ID = "confirm-typed";
+
+/** The id of the reason field (slice 18a). One confirmation step is open at a time. */
+export const REASON_FIELD_ID = "confirm-reason";
+
+/** The visible label of the reason field: the summary of errors names the field with it. */
+export const reasonLabel = (required: boolean): string => t(required ? "reason.label" : "reason.label.optional");
 
 /** `value` as a `pattern` that matches exactly that text (the attribute is compiled with the `v` flag). */
 const exactly = (value: string): string => value.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
@@ -73,6 +86,7 @@ export function ConfirmPanel({
   note,
   pendingLabel,
   testId = "policy-confirm",
+  reason,
 }: ConfirmPanelProps) {
   const ref = useRef<HTMLDivElement>(null);
   const questionId = useId();
@@ -118,6 +132,25 @@ export function ConfirmPanel({
       </p>
       <form action={action} className="flex flex-wrap items-end gap-2">
         {children}
+        {reason ? (
+          <div className="w-full max-w-xl" data-testid="confirm-reason-field">
+            <Input
+              id={REASON_FIELD_ID}
+              name="reason"
+              type="text"
+              label={reasonLabel(reason.required)}
+              help={t("reason.help")}
+              error={reason.error}
+              required={reason.required}
+              aria-required={reason.required ? "true" : undefined}
+              maxLength={AUDIT_LIMITS.reasonMax}
+              autoComplete="off"
+              // The reason as typed before a refusal: the step shows it again (React resets the form after an action).
+              defaultValue={reason.value ?? ""}
+              data-testid="confirm-reason"
+            />
+          </div>
+        ) : null}
         {typed ? (
           <div className="w-full max-w-xs" data-testid="confirm-typed-field">
             <Input

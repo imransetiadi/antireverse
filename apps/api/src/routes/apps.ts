@@ -10,6 +10,7 @@ import {
 import { generateKey, newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
 import { z } from "zod";
+import { audit, auditActor, quoted } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -22,8 +23,9 @@ import { validateJson, validateQuery } from "../validate.ts";
 /** `?environment=`: optional; without it, the set-up is of the Environment of the App's first Shield key. */
 const SetupQuerySchema = z.object({ environment: z.enum(ENVIRONMENTS).optional() });
 
-export function appRoutes(deps: { db: Db }): Hono<AppEnv> {
+export function appRoutes(deps: { db: Db; now?: (() => Date) | undefined }): Hono<AppEnv> {
   const { db } = deps;
+  const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
   const admin = requireKey(db, "admin");
 
@@ -33,15 +35,24 @@ export function appRoutes(deps: { db: Db }): Hono<AppEnv> {
     const { name, environment } = c.req.valid("json");
     const appId = newId("app");
     const shieldKey = generateKey("shield", environment);
+    const keyId = newId("key");
+    const actor = auditActor(c);
     const app = await db.tx({ organizationId }, async (q) => {
       const created = await insertApp(q, { id: appId, organizationId, name });
       await insertKey(q, {
-        id: newId("key"),
+        id: keyId,
         organizationId,
         kind: "shield",
         appId,
         environment,
         generated: shieldKey,
+      });
+      await audit(q, actor, {
+        action: "app.create",
+        appId,
+        target: { kind: "app", id: appId },
+        summary: `Created the App ${quoted(name)} and its ${environment} Shield key ${keyId}.`,
+        at: now(),
       });
       return created;
     });

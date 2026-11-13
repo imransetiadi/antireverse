@@ -17,7 +17,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { readConfig } from "../src/config.ts";
 import { type RunningApi, startApi } from "../src/server.ts";
 import { createSigner } from "../src/signer.ts";
-import { bearer, captureLogger, json, put, sseReader, verifySignature, within } from "./helpers.ts";
+import { bearer, captureLogger, json, put, sseReader, verifySignature, within, withReason } from "./helpers.ts";
 
 describe("configuration", () => {
   it("defaults to 127.0.0.1:8787 and the package's own data directory", () => {
@@ -122,7 +122,7 @@ describe("server", () => {
     );
     const policyUrl = `/v1/apps/${app.app.id}/policies/development`;
     const rules = [{ name: "Admin area", path: "/api/admin/**", mode: "enforce" }];
-    const published = await fetch(`${first.url}${policyUrl}`, put({ rules }, bearer(admin_key.key)));
+    const published = await fetch(`${first.url}${policyUrl}`, put({ rules }, withReason(bearer(admin_key.key))));
     expect(published.status).toBe(201);
     const { policy } = PolicyResponseSchema.parse(await published.json());
     const firstBundle = await fetch(`${first.url}/v1/policy-bundle`, { headers: bearer(app.shield_key.key) });
@@ -224,7 +224,7 @@ describe("server", () => {
         );
         const rules = [{ name: "Admin area", path: "/api/admin/**" }];
         const url = `${api.url}/v1/apps/${app.app.id}/policies/development`;
-        expect((await fetch(url, put({ rules }, bearer(admin_key.key)))).status).toBe(201);
+        expect((await fetch(url, put({ rules }, withReason(bearer(admin_key.key))))).status).toBe(201);
         const res = await fetch(`${api.url}/v1/policy-bundle`, { headers: bearer(app.shield_key.key) });
         const signed = SignedBundleSchema.parse(await res.json());
         expect(verifySignature(api.signer.publicKey, signed.bundle, signed.signature)).toBe(true);

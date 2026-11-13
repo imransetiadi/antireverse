@@ -12,6 +12,11 @@ import {
   type App,
   type Assessment,
   type AssessmentTier,
+  AUDIT_LIMITS,
+  AUDIT_REASON_HEADER,
+  type AuditEntry,
+  type AuditReasonErrorCode,
+  AuditReasonSchema,
   type AuthorizeResult,
   CONTAINMENT_LIMITS,
   CONTAINMENT_TTLS,
@@ -24,6 +29,7 @@ import {
   ENVIRONMENTS,
   type Environment,
   EXPOSURE_LIMITS,
+  holdsSecretShape,
   ID_PATTERNS,
   INCIDENT_LIMITS,
   INTENSITIES,
@@ -54,9 +60,10 @@ import {
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { confirmRecipientToken } from "@/features/alerts/confirm.ts";
+import { auditFilterFrom, auditQueryFrom } from "@/features/audit/query.ts";
 import { suggestCidr } from "@/features/containment/format.ts";
 import { untilFromDate } from "@/features/findings/format.ts";
-import { isBroadEnforce, newlyBroad } from "@/features/policy/broad.ts";
+import { isBroadEnforce, newlyBroad, newlyEnforced } from "@/features/policy/broad.ts";
 import { LIMIT_FIELDS, type LimitDraft, wholeNumber } from "@/features/policy/limit.ts";
 import { RULE_METHODS } from "@/features/policy/methods.ts";
 import { ruleFingerprint } from "@/features/policy/simulation.ts";
@@ -79,10 +86,12 @@ import {
   getPolicyVersion,
   ignoreFinding,
   liftContainment,
+  listAudit,
   NotFoundError,
   type PatchModeRequest,
   publishPolicy,
   RateLimitedError,
+  ReasonRequiredError,
   reopenFinding,
   resendConfirmation,
   rollbackPolicy,
@@ -93,6 +102,7 @@ import {
   UnauthorizedError,
   updateIncident,
   ValidationError,
+  verifyAudit,
   verifyTarget,
 } from "@/lib/api.ts";
 import { ROUTES } from "@/lib/routes.ts";
@@ -155,6 +165,70 @@ function apiErrors(error: unknown, fields: readonly string[]): FieldError[] {
   }
   throw error;
 }
+
+// ── The reason of a change (slice 18a) ────────────────────────────────────────────────────────────────
+// A sensitive change (a Rule or a virtual patch promoted to enforce, a block, signing Rules of Engagement, removing a
+// target) carries a reason, typed in its confirmation step as the field `reason`. It is checked here as the API checks
+// it — trimmed, 1 to 500 characters, one line without control characters — before anything is sent, then forwarded
+// to the API client, which sends it as the percent-encoded `X-Airverse-Reason` header. The API alone decides.
+
+/** The path the API names when it refuses the reason header itself. */
+const REASON_HEADER_PATH = `headers.${AUDIT_REASON_HEADER.toLowerCase()}`;
+
+const reasonError = (key: MessageKey): { error: FieldError } => ({ error: { path: "reason", message: t(key) } });
+
+/**
+ * The reason of the form: `{ reason }` (undefined when none was typed and none is required), or the error to show
+ * below the field.
+ */
+function reasonFrom(formData: FormData, required: boolean): { reason: string | undefined } | { error: FieldError } {
+  const value = formData.get("reason");
+  const reason = typeof value === "string" ? value.trim() : "";
+  if (reason.length === 0) return required ? reasonError("error.reason.required") : { reason: undefined };
+  if (reason.length > AUDIT_LIMITS.reasonMax) return reasonError("error.reason.long");
+  if (!AuditReasonSchema.safeParse(reason).success) return reasonError("error.reason.invalid");
+  // The protocol's check, the one the API applies: a reason is stored as given, so a secret in it is refused.
+  if (holdsSecretShape(reason)) return reasonError("error.reason.secret");
+  return { reason };
+}
+
+/**
+ * The state of a refused sensitive change, with the reason as typed (trimmed) when there was one, so that the
+ * confirmation step shows it again instead of an empty field.
+ */
+function keptReason<S extends { ok: false } | null>(state: S, formData: FormData): S {
+  const reason = text(formData, "reason");
+  return state !== null && reason.length > 0 ? { ...state, reason } : state;
+}
+
+/** The Console's words for each kind of refused reason the API names (`AUDIT_REASON_ERROR_CODES`). */
+const REASON_REFUSAL: Readonly<Record<AuditReasonErrorCode, MessageKey>> = {
+  "reason-not-ascii": "error.reason.refused",
+  "reason-bad-encoding": "error.reason.refused",
+  "reason-empty": "error.reason.required",
+  "reason-too-long": "error.reason.long",
+  "reason-unsafe-characters": "error.reason.invalid",
+  "reason-holds-secret": "error.reason.secret",
+};
+
+/**
+ * What to say when the API refused a change for its reason: missing (`reason-required`), or refused by its `code`
+ * (the API's own words are never matched or shown). A refusal on the header without a code is a generic refusal.
+ */
+function reasonRefusal(error: unknown): FieldError[] | null {
+  if (error instanceof ReasonRequiredError) return [{ path: "reason", message: t("error.reason.required") }];
+  if (error instanceof ValidationError) {
+    const aboutReason = error.code !== undefined || error.errors.some((entry) => entry.path === REASON_HEADER_PATH);
+    if (!aboutReason) return null;
+    return [
+      { path: "reason", message: t(error.code === undefined ? "error.reason.refused" : REASON_REFUSAL[error.code]) },
+    ];
+  }
+  return null;
+}
+
+/** The reason as the API client's option: nothing at all without one. */
+const withReason = (reason: string | undefined): { reason?: string } => (reason === undefined ? {} : { reason });
 
 /** Creates an Organization, signs its first admin key in, and returns that key to be shown once. */
 export async function createOrganizationAction(
@@ -249,7 +323,8 @@ export type PublishRuleState = null | {
   };
 };
 
-export type PolicyChangeState = null | { ok: false; errors: FieldError[] };
+/** `reason`: the reason as typed, given back with a refusal of a sensitive change (slice 18a). */
+export type PolicyChangeState = null | { ok: false; errors: FieldError[]; reason?: string };
 
 interface PolicyTarget {
   appId: string;
@@ -386,6 +461,7 @@ async function changePolicy(
   shown: number,
   change: (rules: PolicyRule[]) => Change,
   fields: readonly string[] = [],
+  reason?: string,
 ): Promise<FieldError[] | null> {
   let index: number | undefined;
   let sent: readonly PolicyRuleInput[] = [];
@@ -397,13 +473,17 @@ async function changePolicy(
     if (Array.isArray(next)) return next;
     index = next.index;
     sent = next.rules;
-    const options = acknowledgement(policy.rules, next.rules, next.broadConfirmed === true);
-    if (options) await publishPolicy(key, target.appId, target.environment, next.rules, shown, options);
-    else await publishPolicy(key, target.appId, target.environment, next.rules, shown);
+    const options = {
+      ...acknowledgement(policy.rules, next.rules, next.broadConfirmed === true),
+      ...withReason(reason),
+    };
+    if (Object.keys(options).length > 0) {
+      await publishPolicy(key, target.appId, target.environment, next.rules, shown, options);
+    } else await publishPolicy(key, target.appId, target.environment, next.rules, shown);
     return null;
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
-    return policyErrors(error, index === undefined ? undefined : { index, fields }, sent);
+    return reasonRefusal(error) ?? policyErrors(error, index === undefined ? undefined : { index, fields }, sent);
   }
 }
 
@@ -609,7 +689,11 @@ export async function simulatePolicyAction(_previous: SimulationState, formData:
  * refused unless the form carries the confirmation — and, for a broad pattern, the typed Environment.
  * Going back to Monitor needs none.
  */
-export async function setRuleModeAction(_previous: PolicyChangeState, formData: FormData): Promise<PolicyChangeState> {
+export async function setRuleModeAction(previous: PolicyChangeState, formData: FormData): Promise<PolicyChangeState> {
+  return keptReason(await setRuleMode(previous, formData), formData);
+}
+
+async function setRuleMode(_previous: PolicyChangeState, formData: FormData): Promise<PolicyChangeState> {
   const key = await readSession();
   if (!key) redirect(ROUTES.home);
 
@@ -619,23 +703,33 @@ export async function setRuleModeAction(_previous: PolicyChangeState, formData: 
   const mode = text(formData, "mode");
   if (!target || shown === null || !ID_PATTERNS.rul.test(ruleId) || !isMode(mode)) return stale();
   if (mode === "enforce" && !confirmed(formData, target)) return failed("confirm", t("policy.confirm.required"));
+  // Promoting to Enforce is a sensitive change: it carries a reason. Back to Monitor needs none.
+  const read = reasonFrom(formData, mode === "enforce");
+  if ("error" in read) return { ok: false, errors: [read.error] };
 
-  const errors = await changePolicy(key, target, shown, (rules) => {
-    const index = rules.findIndex((rule) => rule.id === ruleId);
-    const rule = rules[index];
-    if (!rule) return staleErrors();
-    if (rule.mode === mode) return "unchanged";
-    let broadConfirmed = false;
-    if (mode === "enforce") {
-      if (rule.path === BLOCKS_EVERYTHING) return [{ path: "mode", message: guardrail(rule) }];
-      if (isBroadPattern(rule.path)) {
-        const typed = typedError(formData, target);
-        if (typed) return [typed];
-        broadConfirmed = true;
+  const errors = await changePolicy(
+    key,
+    target,
+    shown,
+    (rules) => {
+      const index = rules.findIndex((rule) => rule.id === ruleId);
+      const rule = rules[index];
+      if (!rule) return staleErrors();
+      if (rule.mode === mode) return "unchanged";
+      let broadConfirmed = false;
+      if (mode === "enforce") {
+        if (rule.path === BLOCKS_EVERYTHING) return [{ path: "mode", message: guardrail(rule) }];
+        if (isBroadPattern(rule.path)) {
+          const typed = typedError(formData, target);
+          if (typed) return [typed];
+          broadConfirmed = true;
+        }
       }
-    }
-    return { rules: rules.map((other) => (other === rule ? { ...rule, mode } : other)), index, broadConfirmed };
-  });
+      return { rules: rules.map((other) => (other === rule ? { ...rule, mode } : other)), index, broadConfirmed };
+    },
+    [],
+    read.reason,
+  );
   if (errors) return { ok: false, errors };
   published(target);
 }
@@ -664,9 +758,13 @@ export async function removeRuleAction(_previous: PolicyChangeState, formData: F
  * is not enforced now, the typed Environment.
  */
 export async function rollbackPolicyAction(
-  _previous: PolicyChangeState,
+  previous: PolicyChangeState,
   formData: FormData,
 ): Promise<PolicyChangeState> {
+  return keptReason(await rollbackPolicyChange(previous, formData), formData);
+}
+
+async function rollbackPolicyChange(_previous: PolicyChangeState, formData: FormData): Promise<PolicyChangeState> {
   const key = await readSession();
   if (!key) redirect(ROUTES.home);
 
@@ -675,6 +773,9 @@ export async function rollbackPolicyAction(
   const version = text(formData, "version");
   if (!target || shown === null || !VERSION.test(version)) return stale();
   if (!confirmed(formData, target)) return failed("confirm", t("policy.confirm.required"));
+  // A reason is always accepted; it is required once the earlier version is known to enforce a Rule anew.
+  const read = reasonFrom(formData, false);
+  if ("error" in read) return { ok: false, errors: [read.error] };
 
   let sent: readonly PolicyRule[] = [];
   try {
@@ -687,12 +788,16 @@ export async function rollbackPolicyAction(
       const typed = typedError(formData, target);
       if (typed) return { ok: false, errors: [typed] };
     }
-    const options = acknowledgement(current.rules, earlier.rules, confirmedNow);
-    if (options) await rollbackPolicy(key, target.appId, target.environment, Number(version), shown, options);
-    else await rollbackPolicy(key, target.appId, target.environment, Number(version), shown);
+    if (read.reason === undefined && newlyEnforced(current.rules, earlier.rules).length > 0) {
+      return { ok: false, errors: [reasonError("error.reason.required").error] };
+    }
+    const options = { ...acknowledgement(current.rules, earlier.rules, confirmedNow), ...withReason(read.reason) };
+    if (Object.keys(options).length > 0) {
+      await rollbackPolicy(key, target.appId, target.environment, Number(version), shown, options);
+    } else await rollbackPolicy(key, target.appId, target.environment, Number(version), shown);
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
-    return { ok: false, errors: policyErrors(error, undefined, sent) };
+    return { ok: false, errors: reasonRefusal(error) ?? policyErrors(error, undefined, sent) };
   }
   published(target);
 }
@@ -997,7 +1102,7 @@ export async function confirmRecipientAction(formData: FormData): Promise<never>
 // form also carries the Environment the question named, for the cap message. Lifting is confirmed the same
 // way, by the block's id.
 
-export type ContainmentChangeState = null | { ok: false; errors: FieldError[] };
+export type ContainmentChangeState = null | { ok: false; errors: FieldError[]; reason?: string };
 
 const containmentStale = (): { ok: false; errors: FieldError[] } => failed("", t("error.containment.stale"));
 const containmentEnded = (): { ok: false; errors: FieldError[] } => failed("", t("error.containment.ended"));
@@ -1026,6 +1131,13 @@ function containmentConflict(error: ConflictError, environment: Environment): st
 
 /** Blocks one Actor of an Incident, or its network, for 15 minutes, 1 hour or 24 hours — with the confirmation. */
 export async function createContainmentAction(
+  previous: ContainmentChangeState,
+  formData: FormData,
+): Promise<ContainmentChangeState> {
+  return keptReason(await createContainmentChange(previous, formData), formData);
+}
+
+async function createContainmentChange(
   _previous: ContainmentChangeState,
   formData: FormData,
 ): Promise<ContainmentChangeState> {
@@ -1057,14 +1169,18 @@ export async function createContainmentAction(
   } else {
     return containmentStale();
   }
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
 
   let appId: string;
   try {
     ({
       containment: { app_id: appId },
-    } = await createContainment(key, incidentId, request));
+    } = await createContainment(key, incidentId, request, withReason(read.reason)));
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
     if (error instanceof ConflictError) return failed("", containmentConflict(error, environment));
     // The Incident is gone, or the Actor or the network is no longer the Incident's.
     if (error instanceof NotFoundError || error instanceof ValidationError) return containmentStale();
@@ -1200,14 +1316,18 @@ export async function reopenFindingAction(
 // Enforcing a patch is refused unless the form carries the patch id, typed by the person exactly as the
 // question named it; the API checks it again. Going back to monitor reduces enforcement and needs none.
 
-export type PatchModeState = null | { ok: false; errors: FieldError[] };
+export type PatchModeState = null | { ok: false; errors: FieldError[]; reason?: string };
 
 const patchStale = (): { ok: false; errors: FieldError[] } => failed("", t("error.patch.stale"));
 const patchMismatch = (patchId: string): { ok: false; errors: FieldError[] } =>
   failed("confirm", t("patch.confirm.mismatch", { patch: patchId }));
 
 /** Sets the mode of a virtual patch in one App and Environment, from the Finding page, then goes back to it. */
-export async function setPatchModeAction(_previous: PatchModeState, formData: FormData): Promise<PatchModeState> {
+export async function setPatchModeAction(previous: PatchModeState, formData: FormData): Promise<PatchModeState> {
+  return keptReason(await setPatchModeChange(previous, formData), formData);
+}
+
+async function setPatchModeChange(_previous: PatchModeState, formData: FormData): Promise<PatchModeState> {
   const key = await readSession();
   if (!key) redirect(ROUTES.home);
 
@@ -1231,11 +1351,17 @@ export async function setPatchModeAction(_previous: PatchModeState, formData: Fo
     if (formData.get("confirm") !== patchId) return patchMismatch(patchId);
     request.confirm = patchId;
   }
+  // Enforcing is a sensitive change: it carries a reason. Back to monitor needs none.
+  const read = reasonFrom(formData, mode === "enforce");
+  if ("error" in read) return { ok: false, errors: [read.error] };
 
   try {
-    await setPatchMode(key, appId, patchId, request);
+    if (read.reason === undefined) await setPatchMode(key, appId, patchId, request);
+    else await setPatchMode(key, appId, patchId, request, { reason: read.reason });
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
     if (error instanceof ConflictError || error instanceof NotFoundError) return patchStale();
     if (error instanceof ValidationError && error.errors.some((entry) => entry.path === "confirm")) {
       return patchMismatch(patchId);
@@ -1343,7 +1469,7 @@ export type CreateTargetState = null | { ok: false; errors: FieldError[]; values
 
 export type VerifyTargetState = null | { ok: true; result: VerifyResult } | { ok: false; message: string };
 
-export type TargetChangeState = null | { ok: false; errors: FieldError[] };
+export type TargetChangeState = null | { ok: false; errors: FieldError[]; reason?: string };
 
 /** Adds a host and opens its page, which shows how to prove it. */
 export async function createTargetAction(_previous: CreateTargetState, formData: FormData): Promise<CreateTargetState> {
@@ -1417,18 +1543,26 @@ export async function verifyTargetAction(_previous: VerifyTargetState, formData:
 }
 
 /** Removes a target. Refused unless the form carries the confirmation: the id of the target named in the question. */
-export async function deleteTargetAction(_previous: TargetChangeState, formData: FormData): Promise<TargetChangeState> {
+export async function deleteTargetAction(previous: TargetChangeState, formData: FormData): Promise<TargetChangeState> {
+  return keptReason(await deleteTargetChange(previous, formData), formData);
+}
+
+async function deleteTargetChange(_previous: TargetChangeState, formData: FormData): Promise<TargetChangeState> {
   const key = await readSession();
   if (!key) redirect(ROUTES.home);
 
   const targetId = text(formData, "targetId");
   if (!ID_PATTERNS.tgt.test(targetId)) return failed("", t("error.target.gone"));
   if (text(formData, "confirm") !== targetId) return failed("confirm", t("target.confirm.required"));
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
 
   try {
-    await deleteTarget(key, targetId);
+    await deleteTarget(key, targetId, withReason(read.reason));
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
     // The reason alone decides the message; without a known one it is never guessed.
     if (error instanceof ConflictError) {
       return failed("", t(error.reason === "target-in-scope" ? "error.target.inScope" : "error.target.conflict"));
@@ -1456,10 +1590,12 @@ export type SignRulesOfEngagementState = null | {
   ok: false;
   errors: FieldError[];
   values: RulesOfEngagementFormValues;
+  /** The reason as typed (slice 18a); the phrase is never given back. */
+  reason?: string;
 };
 
 /** The fields of the form, in the order their errors are listed. */
-const ROE_FIELDS = ["scope", "exclusions", "intensity", "days", "from", "to", "contacts", "confirm"] as const;
+const ROE_FIELDS = ["scope", "exclusions", "intensity", "days", "from", "to", "contacts", "confirm", "reason"] as const;
 type RoeField = (typeof ROE_FIELDS)[number];
 
 const ROE_FIELD_ERROR: Record<RoeField, MessageKey> = {
@@ -1471,6 +1607,7 @@ const ROE_FIELD_ERROR: Record<RoeField, MessageKey> = {
   to: "error.roe.to",
   contacts: "error.roe.contacts",
   confirm: "error.roe.confirm",
+  reason: "error.reason.required",
 };
 
 /** The form field a protocol path (`window.from`, `exclusions.2`, …) is about, or null. */
@@ -1505,6 +1642,13 @@ const all = (formData: FormData, name: string): string[] =>
  * version is never changed; the new one becomes current.
  */
 export async function signRulesOfEngagementAction(
+  previous: SignRulesOfEngagementState,
+  formData: FormData,
+): Promise<SignRulesOfEngagementState> {
+  return keptReason(await signRulesOfEngagementChange(previous, formData), formData);
+}
+
+async function signRulesOfEngagementChange(
   _previous: SignRulesOfEngagementState,
   formData: FormData,
 ): Promise<SignRulesOfEngagementState> {
@@ -1540,14 +1684,26 @@ export async function signRulesOfEngagementAction(
     return { ok: false, errors: roeErrors(fields, messages), values };
   }
   const confirm = text(formData, "confirm");
-  if (confirm !== confirmationPhrase(parsed.data.intensity)) {
-    return { ok: false, errors: roeErrors(["confirm"]), values };
+  const read = reasonFrom(formData, true);
+  const phraseWrong = confirm !== confirmationPhrase(parsed.data.intensity);
+  if (phraseWrong || "error" in read) {
+    const messages = "error" in read ? { reason: read.error.message } : {};
+    return {
+      ok: false,
+      errors: roeErrors(
+        [...(phraseWrong ? (["confirm"] as const) : []), ...("error" in read ? (["reason"] as const) : [])],
+        messages,
+      ),
+      values,
+    };
   }
 
   try {
-    await signRulesOfEngagement(key, { ...parsed.data, confirm });
+    await signRulesOfEngagement(key, { ...parsed.data, confirm }, withReason(read.reason));
   } catch (error) {
     if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal, values };
     // A chosen target that lost its verification comes back as a 400 on `scope.N` (below); a 409 is not guessed at.
     if (error instanceof ConflictError) {
       return { ok: false, errors: [{ path: "", message: t("error.target.conflict") }], values };
@@ -1679,6 +1835,53 @@ export async function assessAgainAction(_previous: AssessAgainState, formData: F
   }
   revalidatePath(ROUTES.build(appId, buildId));
   return { ok: true, assessment };
+}
+
+// ── Audit log (slice 18a) ─────────────────────────────────────────────────────────────────────────────
+// "Load more" reads the next page of the list with the filters of the page's address and the cursor of the last
+// page. It changes nothing; the answer lives in the state of the page view that asked.
+
+export type LoadMoreAuditState =
+  | { ok: true; entries: AuditEntry[]; nextCursor: string | null }
+  | { ok: false; message: string };
+
+const CURSOR = /^[1-9][0-9]{0,15}$/;
+
+/** The next page of the audit log after `cursor`, narrowed by `query` (the page's address, read again here). */
+export async function loadMoreAuditAction(
+  query: { action?: string; app?: string; from?: string; to?: string },
+  cursor: string,
+): Promise<LoadMoreAuditState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+  if (typeof cursor !== "string" || !CURSOR.test(cursor)) return { ok: false, message: t("audit.more.failed") };
+  const known = typeof query === "object" && query !== null ? query : {};
+  try {
+    const page = await listAudit(key, { ...auditFilterFrom(auditQueryFrom(known)), cursor });
+    return { ok: true, entries: page.entries, nextCursor: page.next_cursor };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ApiError) return { ok: false, message: t("audit.more.failed") };
+    throw error;
+  }
+}
+
+export type VerifyAuditChainState =
+  | { ok: true; result: Awaited<ReturnType<typeof verifyAudit>> }
+  | { ok: false; limited?: { retryAfter: number | undefined } };
+
+/** "Verify chain" of a filtered Audit log view: the chain checked now, a 429 with its wait, or a failure. */
+export async function verifyAuditChainAction(): Promise<VerifyAuditChainState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+  try {
+    return { ok: true, result: await verifyAudit(key) };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof RateLimitedError) return { ok: false, limited: { retryAfter: error.retryAfter } };
+    if (error instanceof ApiError) return { ok: false };
+    throw error;
+  }
 }
 
 /** Ends the session. */

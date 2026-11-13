@@ -283,6 +283,8 @@ describe("data directory", () => {
         { version: "0028_artifact_expiry_lock.sql" },
         { version: "0029_build_logic.sql" },
         { version: "0030_setup_index.sql" },
+        { version: "0031_audit.sql" },
+        { version: "0032_audit_chain_trigger.sql" },
       ]);
     } finally {
       await second.close();

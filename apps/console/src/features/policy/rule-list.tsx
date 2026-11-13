@@ -4,7 +4,7 @@ import { type Environment, isBroadPattern, type PolicyRule } from "@antireverse/
 import { useActionState, useId, useMemo } from "react";
 import { removeRuleAction, setRuleModeAction } from "@/app/actions.ts";
 import { ButtonLink } from "@/components/button.tsx";
-import { ConfirmPanel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
+import { ConfirmPanel, REASON_FIELD_ID, reasonLabel, TYPED_FIELD_ID } from "@/components/confirm-panel.tsx";
 import { EmptyState } from "@/components/empty-state.tsx";
 import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
 import { Icon } from "@/components/icons.tsx";
@@ -59,7 +59,13 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
 
   return (
     <div className="flex flex-col gap-3">
-      <ErrorSummary errors={errors} fields={{ typedEnvironment: { id: TYPED_FIELD_ID, label: typedLabel } }} />
+      <ErrorSummary
+        errors={errors}
+        fields={{
+          typedEnvironment: { id: TYPED_FIELD_ID, label: typedLabel },
+          reason: { id: REASON_FIELD_ID, label: reasonLabel(true) },
+        }}
+      />
       {rules.length === 0 ? (
         <div data-testid="policy-empty">
           <EmptyState>{t("policy.none")}</EmptyState>
@@ -206,6 +212,8 @@ export function RuleList({ appId, appName, environment, version, rules, confirmR
                           cancelHref={ROUTES.policy(appId, environment)}
                           action={modeAction}
                           busy={busy}
+                          // Slice 18a: promoting to Enforce is a sensitive change, recorded with its reason.
+                          reason={{ required: true, error: fieldError(modeErrors, "reason"), value: modeState?.reason }}
                           estimate={
                             estimate && simulated
                               ? estimateText(estimate, simulated.simulation.ran_at, simulated.simulation.truncated)

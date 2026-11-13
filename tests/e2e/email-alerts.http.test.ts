@@ -140,6 +140,9 @@ function caller(base: () => string) {
   return (path: string, init: { method?: string; key?: string; body?: unknown } = {}): Promise<Response> => {
     const headers: Record<string, string> = {};
     if (init.key) headers.authorization = `Bearer ${init.key}`;
+    // Slice 18a: every change carries a reason, as an operator gives one; sensitive changes refuse to go without.
+    if (init.key && (init.method ?? (init.body === undefined ? "GET" : "POST")) !== "GET")
+      headers["x-airverse-reason"] = "End-to-end test";
     if (init.body !== undefined) headers["content-type"] = "application/json";
     return fetch(`${base()}${path}`, {
       method: init.method ?? (init.body === undefined ? "GET" : "POST"),

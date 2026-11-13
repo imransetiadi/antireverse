@@ -2,6 +2,7 @@
 import { EXAMPLE_LIMIT_RULE, EXAMPLE_POLICY, type Policy, type PolicyRule } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dropReason } from "./helpers/reason.ts";
 
 // The Policy actions are exercised through their interface with the API client, the session, the cache
 // and the navigation replaced by fakes.
@@ -51,8 +52,13 @@ const UNCONFIRMED = "Nothing was published. Confirm the change first.";
 const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
 const API_FAILED = "The Airverse API reported a problem, so nothing was saved. Try again in a moment.";
 
+/** Slice 18a: a promotion to Enforce carries a reason. Forms that promote get this one unless they name their own. */
+const REASON = "Credential stuffing on /login; monitor showed no false positives";
+
 function form(fields: Record<string, string | string[]>): FormData {
   const data = new FormData();
+  const promotes = fields.mode === "enforce" && fields.ruleId !== undefined && !Object.hasOwn(fields, "reason");
+  if (promotes) data.append("reason", REASON);
   for (const [name, value] of Object.entries(fields)) {
     for (const entry of Array.isArray(value) ? value : [value]) data.append(name, entry);
   }
@@ -479,7 +485,7 @@ describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
 
   it("needs the confirmation to enforce, and keeps the action and the limit when the mode changes", async () => {
     signedIn(policy({ rules: [enforced, login] }));
-    const unconfirmed = await setRuleModeAction(null, form({ ...target, mode: "enforce" }));
+    const unconfirmed = dropReason(await setRuleModeAction(null, form({ ...target, mode: "enforce" })));
     expect(unconfirmed).toEqual({ ok: false, errors: [{ path: "confirm", message: UNCONFIRMED }] });
     expect(api.publishPolicy).not.toHaveBeenCalled();
 
@@ -492,6 +498,7 @@ describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
       "development",
       [enforced, { ...login, mode: "enforce" }],
       READ,
+      { reason: REASON },
     );
 
     signedIn(policy({ rules: [enforced, { ...login, mode: "enforce" }] }));
@@ -503,7 +510,7 @@ describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
     const broad = { ...login, path: "/*/login" };
     signedIn(policy({ rules: [broad] }));
     const confirmedOnly = { ...target, mode: "enforce", confirm: "development" };
-    expect(await setRuleModeAction(null, form(confirmedOnly))).toEqual({
+    expect(dropReason(await setRuleModeAction(null, form(confirmedOnly)))).toEqual({
       ok: false,
       errors: [{ path: "typedEnvironment", message: typedMismatch("development") }],
     });
@@ -517,22 +524,26 @@ describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
       "development",
       [{ ...broad, mode: "enforce" }],
       READ,
-      { allowBroad: true },
+      { allowBroad: true, reason: REASON },
     );
   });
 
   it("shows the guardrail in a limit's words for a Rule on /**, without asking the API to publish it", async () => {
     const everything = { ...login, path: "/**" };
     signedIn(policy({ rules: [everything] }));
-    const state = await setRuleModeAction(
-      null,
-      form({ ...target, mode: "enforce", confirm: "development", typedEnvironment: "development" }),
+    const state = dropReason(
+      await setRuleModeAction(
+        null,
+        form({ ...target, mode: "enforce", confirm: "development", typedEnvironment: "development" }),
+      ),
     );
     expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: LIMIT_GUARDRAIL }] });
     expect(api.publishPolicy).not.toHaveBeenCalled();
     // A block Rule on the same pattern keeps its own words.
     signedIn(policy({ rules: [{ ...enforced, id: login.id, path: "/**", mode: "monitor" }] }));
-    expect(await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }))).toEqual({
+    expect(
+      dropReason(await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }))),
+    ).toEqual({
       ok: false,
       errors: [{ path: "mode", message: GUARDRAIL }],
     });
@@ -543,7 +554,9 @@ describe("setRuleModeAction — a Rule with a limit (slice 08)", () => {
     vi.mocked(api.publishPolicy).mockRejectedValue(
       new api.ValidationError("refused", [{ path: "rules.1.mode", message: "would refuse every request" }]),
     );
-    const state = await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" }));
+    const state = dropReason(
+      await setRuleModeAction(null, form({ ...target, mode: "enforce", confirm: "development" })),
+    );
     expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: LIMIT_GUARDRAIL }] });
   });
 
@@ -572,6 +585,7 @@ describe("setRuleModeAction", () => {
       "development",
       [enforced, { ...monitored, mode: "enforce" }],
       READ,
+      { reason: REASON },
     );
     expect(revalidatePath).toHaveBeenCalledWith(PAGE);
   });
@@ -599,7 +613,7 @@ describe("setRuleModeAction", () => {
     ["a confirmation that is not an Environment", { confirm: "yes" }],
   ])("refuses to promote with %s and never calls the API", async (_label, confirmation) => {
     signedIn();
-    const state = await setRuleModeAction(null, form({ ...promote, ...confirmation }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, ...confirmation })));
     expect(state).toEqual({ ok: false, errors: [{ path: "confirm", message: UNCONFIRMED }] });
     expect(api.getPolicy).not.toHaveBeenCalled();
     expect(api.publishPolicy).not.toHaveBeenCalled();
@@ -623,14 +637,14 @@ describe("setRuleModeAction", () => {
     vi.mocked(api.publishPolicy).mockRejectedValue(
       new api.ValidationError("refused", [{ path: "rules.1.mode", message: "Would block every request" }]),
     );
-    const state = await setRuleModeAction(null, form({ ...promote, confirm: "development" }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, confirm: "development" })));
     expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: GUARDRAIL }] });
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
   it("shows the guardrail for a Rule on /** without asking the API to publish it", async () => {
     signedIn(policy({ rules: [enforced, { ...monitored, path: "/**" }] }));
-    const state = await setRuleModeAction(null, form({ ...promote, confirm: "development" }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, confirm: "development" })));
     expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: GUARDRAIL }] });
     expect(api.publishPolicy).not.toHaveBeenCalled();
   });
@@ -645,7 +659,7 @@ describe("setRuleModeAction", () => {
 
   it("says the Policy changed when the Rule is no longer part of it", async () => {
     signedIn(policy({ rules: [enforced] }));
-    const state = await setRuleModeAction(null, form({ ...promote, confirm: "development" }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, confirm: "development" })));
     expect(state).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
     expect(api.publishPolicy).not.toHaveBeenCalled();
   });
@@ -656,7 +670,7 @@ describe("setRuleModeAction", () => {
     ["an unknown Environment", { environment: "moon", confirm: "moon" }],
   ])("refuses %s without calling the API", async (_label, change) => {
     signedIn();
-    const state = await setRuleModeAction(null, form({ ...promote, confirm: "development", ...change }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, confirm: "development", ...change })));
     expect(state).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
     expect(api.getPolicy).not.toHaveBeenCalled();
   });
@@ -677,12 +691,15 @@ describe("setRuleModeAction", () => {
   it("says what failed when the API does not answer or the App is not the caller's", async () => {
     signedIn();
     vi.mocked(api.getPolicy).mockRejectedValueOnce(new api.ApiError("unreachable", 0));
-    expect(await setRuleModeAction(null, form(demote))).toEqual({
+    expect(dropReason(await setRuleModeAction(null, form(demote)))).toEqual({
       ok: false,
       errors: [{ path: "", message: API_DOWN }],
     });
     vi.mocked(api.getPolicy).mockRejectedValueOnce(new api.NotFoundError("no"));
-    expect(await setRuleModeAction(null, form(demote))).toEqual({ ok: false, errors: [{ path: "", message: STALE }] });
+    expect(dropReason(await setRuleModeAction(null, form(demote)))).toEqual({
+      ok: false,
+      errors: [{ path: "", message: STALE }],
+    });
   });
 });
 
@@ -749,7 +766,7 @@ describe("rollbackPolicyAction", () => {
     ["the confirmation of another Environment", { confirm: "development" }],
   ])("refuses to roll back with %s and never calls the API", async (_label, confirmation) => {
     signedIn();
-    const state = await rollbackPolicyAction(null, form({ ...fields, ...confirmation }));
+    const state = dropReason(await rollbackPolicyAction(null, form({ ...fields, ...confirmation })));
     expect(state).toEqual({ ok: false, errors: [{ path: "confirm", message: UNCONFIRMED }] });
     expect(api.rollbackPolicy).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
@@ -758,7 +775,7 @@ describe("rollbackPolicyAction", () => {
   it("says the Policy changed when the API does not know the version", async () => {
     signedIn();
     vi.mocked(api.rollbackPolicy).mockRejectedValue(new api.NotFoundError("no"));
-    expect(await rollbackPolicyAction(null, form(fields))).toEqual({
+    expect(dropReason(await rollbackPolicyAction(null, form(fields)))).toEqual({
       ok: false,
       errors: [{ path: "", message: STALE }],
     });
@@ -768,7 +785,7 @@ describe("rollbackPolicyAction", () => {
     "refuses the version %j without calling the API",
     async (version) => {
       signedIn();
-      expect(await rollbackPolicyAction(null, form({ ...fields, version }))).toEqual({
+      expect(dropReason(await rollbackPolicyAction(null, form({ ...fields, version })))).toEqual({
         ok: false,
         errors: [{ path: "", message: STALE }],
       });
@@ -791,7 +808,7 @@ describe("rollbackPolicyAction", () => {
   it("says what failed and what to do when the API does not answer", async () => {
     signedIn();
     vi.mocked(api.rollbackPolicy).mockRejectedValue(new api.ApiError("unreachable", 0));
-    expect(await rollbackPolicyAction(null, form(fields))).toEqual({
+    expect(dropReason(await rollbackPolicyAction(null, form(fields)))).toEqual({
       ok: false,
       errors: [{ path: "", message: API_DOWN }],
     });
@@ -900,7 +917,7 @@ describe("broad Enforce Rules", () => {
 
   it("does not promote a broad Rule without the typed Environment", async () => {
     signedIn(policy({ environment: "production", rules: [enforced, broad] }));
-    const state = await setRuleModeAction(null, form(promote));
+    const state = dropReason(await setRuleModeAction(null, form(promote)));
     expect(state).toEqual({ ok: false, errors: [{ path: "typedEnvironment", message: typedMismatch("production") }] });
     expect(api.publishPolicy).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
@@ -910,7 +927,7 @@ describe("broad Enforce Rules", () => {
     "does not promote a broad Rule when %j was typed: the match is exact",
     async (typed) => {
       signedIn(policy({ environment: "production", rules: [enforced, broad] }));
-      const state = await setRuleModeAction(null, form({ ...promote, typedEnvironment: typed }));
+      const state = dropReason(await setRuleModeAction(null, form({ ...promote, typedEnvironment: typed })));
       expect(state).toEqual({
         ok: false,
         errors: [{ path: "typedEnvironment", message: typedMismatch("production") }],
@@ -930,7 +947,7 @@ describe("broad Enforce Rules", () => {
       "production",
       [enforced, { ...broad, mode: "enforce" }],
       READ,
-      { allowBroad: true },
+      { allowBroad: true, reason: REASON },
     );
   });
 
@@ -939,7 +956,8 @@ describe("broad Enforce Rules", () => {
     await expect(
       setRuleModeAction(null, form({ ...promote, ruleId: monitored.id, typedEnvironment: "production" })),
     ).rejects.toThrow("REDIRECT");
-    expect(vi.mocked(api.publishPolicy).mock.calls[0]).toHaveLength(5);
+    // The key, the App, the Environment, the Rules, the version and the reason: no allow_broad.
+    expect(vi.mocked(api.publishPolicy).mock.calls[0]?.[5]).toEqual({ reason: REASON });
   });
 
   it("adds a broad Rule in Monitor mode with nothing extra", async () => {
@@ -980,12 +998,13 @@ describe("broad Enforce Rules", () => {
     vi.mocked(api.publishPolicy).mockRejectedValue(
       new api.ValidationError("refused", [{ path: "rules.1.mode", message: "needs allow_broad" }]),
     );
-    const state = await setRuleModeAction(null, form({ ...promote, typedEnvironment: "production" }));
+    const state = dropReason(await setRuleModeAction(null, form({ ...promote, typedEnvironment: "production" })));
     expect(state).toEqual({ ok: false, errors: [{ path: "mode", message: BROAD_UNCONFIRMED }] });
   });
 
   describe("rollback", () => {
-    const fields = { appId, environment: "production", version: "2", confirm: "production", ...SHOWN };
+    // Slice 18a: a version that enforces a Rule anew needs a reason as well.
+    const fields = { appId, environment: "production", version: "2", confirm: "production", reason: REASON, ...SHOWN };
     function withVersion(rules: PolicyRule[]): void {
       signedIn(policy({ environment: "production", rules: [enforced] }));
       vi.mocked(api.getPolicyVersion).mockResolvedValue({
@@ -996,7 +1015,7 @@ describe("broad Enforce Rules", () => {
     it("refuses to bring back a broad Enforce Rule without the typed Environment, or with a wrong one", async () => {
       withVersion([enforced, { ...broad, mode: "enforce" }]);
       for (const typed of [[], "", "Production", "staging"]) {
-        expect(await rollbackPolicyAction(null, form({ ...fields, typedEnvironment: typed }))).toEqual({
+        expect(dropReason(await rollbackPolicyAction(null, form({ ...fields, typedEnvironment: typed })))).toEqual({
           ok: false,
           errors: [{ path: "typedEnvironment", message: typedMismatch("production") }],
         });
@@ -1009,13 +1028,16 @@ describe("broad Enforce Rules", () => {
       await expect(rollbackPolicyAction(null, form({ ...fields, typedEnvironment: "production" }))).rejects.toThrow(
         `REDIRECT ${PAGE}?environment=production`,
       );
-      expect(api.rollbackPolicy).toHaveBeenCalledWith(admin.key, appId, "production", 2, READ, { allowBroad: true });
+      expect(api.rollbackPolicy).toHaveBeenCalledWith(admin.key, appId, "production", 2, READ, {
+        allowBroad: true,
+        reason: REASON,
+      });
     });
 
     it("needs nothing typed for a version whose broad Rules are in Monitor mode", async () => {
       withVersion([enforced, broad]);
       await expect(rollbackPolicyAction(null, form(fields))).rejects.toThrow("REDIRECT");
-      expect(api.rollbackPolicy).toHaveBeenCalledWith(admin.key, appId, "production", 2, READ);
+      expect(api.rollbackPolicy).toHaveBeenCalledWith(admin.key, appId, "production", 2, READ, { reason: REASON });
     });
 
     it("shows the API's refusal of a broad Rule next to the mode", async () => {
@@ -1023,16 +1045,18 @@ describe("broad Enforce Rules", () => {
       vi.mocked(api.rollbackPolicy).mockRejectedValue(
         new api.ValidationError("refused", [{ path: "rules.0.mode", message: "needs allow_broad" }]),
       );
-      expect(await rollbackPolicyAction(null, form({ ...fields, typedEnvironment: "production" }))).toEqual({
-        ok: false,
-        errors: [{ path: "mode", message: BROAD_UNCONFIRMED }],
-      });
+      expect(dropReason(await rollbackPolicyAction(null, form({ ...fields, typedEnvironment: "production" })))).toEqual(
+        {
+          ok: false,
+          errors: [{ path: "mode", message: BROAD_UNCONFIRMED }],
+        },
+      );
     });
 
     it("says the Policy changed when the version to bring back is not there", async () => {
       withVersion([]);
       vi.mocked(api.getPolicyVersion).mockRejectedValue(new api.NotFoundError("no"));
-      expect(await rollbackPolicyAction(null, form(fields))).toEqual({
+      expect(dropReason(await rollbackPolicyAction(null, form(fields)))).toEqual({
         ok: false,
         errors: [{ path: "", message: STALE }],
       });

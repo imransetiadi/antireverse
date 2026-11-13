@@ -23,10 +23,12 @@ async function createOrganizationAndApp(page: Page): Promise<{ shieldKey: string
   return { shieldKey, publicKey };
 }
 
-async function confirm(page: Page, question: RegExp): Promise<void> {
+/** `reason`: the reason a sensitive change requires (slice 18a); typed into the step when given. */
+async function confirm(page: Page, question: RegExp, reason?: string): Promise<void> {
   const dialog = page.getByTestId("policy-confirm");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByTestId("confirm-question")).toHaveText(question);
+  if (reason !== undefined) await dialog.getByTestId("confirm-reason").fill(reason);
   await dialog.getByTestId("confirm-submit").click();
   await expect(page.getByTestId("policy-confirm")).toHaveCount(0);
 }
@@ -52,7 +54,11 @@ test("a Rule promoted in the Console blocks a request, and a rollback lifts the 
 
   // 2. Promote it, with the confirmation naming Environment and pattern (version 2).
   await row.getByTestId("rule-promote").click();
-  await confirm(page, /^Promote to enforce in development\? Requests matching \/api\/admin\/\*\* will be blocked\.$/);
+  await confirm(
+    page,
+    /^Promote to enforce in development\? Requests matching \/api\/admin\/\*\* will be blocked\.$/,
+    "Admin area must not be reachable",
+  );
   await expect(row).toHaveAttribute("data-mode", "enforce");
   await expect(page.getByTestId("policy-version")).toHaveText("Version 2");
 
@@ -137,6 +143,7 @@ test("enforcing a broad Rule needs the stronger confirmation with the Environmen
   await expect(dialog.getByTestId("confirm-typed-label")).toHaveText("Type development to confirm");
 
   // A wrong value is not accepted: the browser holds the form back and nothing is published.
+  await dialog.getByTestId("confirm-reason").fill("Lock the App down during the incident");
   await dialog.getByTestId("confirm-typed").fill("Development");
   await dialog.getByTestId("confirm-submit").click();
   await expect(page.getByTestId("policy-version")).toHaveText("Version 1");

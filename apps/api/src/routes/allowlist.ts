@@ -8,6 +8,7 @@ import {
 } from "@antireverse/protocol";
 import { newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
+import { audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -43,6 +44,7 @@ export function allowlistRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv
   routes.post("/v1/allowlist", admin, limitBody(), validateJson(CreateAllowlistEntryRequestSchema), async (c) => {
     const { organizationId, keyId } = c.var.principal;
     const { cidr, note } = c.req.valid("json");
+    const actor = auditActor(c);
     // A failed statement aborts the transaction, so a concurrent duplicate is caught outside it.
     let result: AllowlistEntry | "allowlist-duplicate" | "allowlist-limit";
     try {
@@ -51,14 +53,22 @@ export function allowlistRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv
         await lockOrganization(q, organizationId);
         if (await allowlistHas(q, cidr)) return "allowlist-duplicate";
         if ((await countAllowlist(q)) >= CONTAINMENT_LIMITS.allowlistMax) return "allowlist-limit";
-        return insertAllowlistEntry(q, {
+        const at = now();
+        const entry = await insertAllowlistEntry(q, {
           organizationId,
           id: newId("alw"),
           cidr,
           note,
-          createdAt: now(),
+          createdAt: at,
           createdBy: keyId,
         });
+        await audit(q, actor, {
+          action: "allowlist_entry.create",
+          target: { kind: "allowlist_entry", id: entry.id },
+          summary: `Added ${cidr} to the never-block allowlist.`,
+          at,
+        });
+        return entry;
       });
     } catch (error) {
       if ((error as { code?: unknown }).code !== UNIQUE_VIOLATION) throw error;
@@ -71,9 +81,20 @@ export function allowlistRoutes(deps: { db: Db; now?: () => Date }): Hono<AppEnv
   routes.delete("/v1/allowlist/:entryId", admin, async (c) => {
     const { organizationId } = c.var.principal;
     const entryId = c.req.param("entryId");
+    const actor = auditActor(c);
     // A malformed id is an entry that does not exist; another Organization's is invisible to the transaction.
     const deleted = ID_PATTERNS.alw.test(entryId)
-      ? await db.tx({ organizationId }, (q) => deleteAllowlistEntry(q, entryId))
+      ? await db.tx({ organizationId }, async (q) => {
+          const cidr = await deleteAllowlistEntry(q, entryId);
+          if (cidr === null) return false;
+          await audit(q, actor, {
+            action: "allowlist_entry.delete",
+            target: { kind: "allowlist_entry", id: entryId },
+            summary: `Removed ${cidr} from the never-block allowlist.`,
+            at: now(),
+          });
+          return true;
+        })
       : false;
     if (!deleted) return problem(c, "not-found");
     return c.body(null, 204);

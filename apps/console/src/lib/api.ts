@@ -9,6 +9,14 @@ import {
   type AssessmentResponse,
   AssessmentResponseSchema,
   type AssessmentTier,
+  AUDIT_EXPORT_CONTENT_TYPE,
+  AUDIT_REASON_HEADER,
+  type AuditAction,
+  type AuditPublicKeyResponse,
+  AuditPublicKeyResponseSchema,
+  type AuditReasonErrorCode,
+  type AuditVerifyResponse,
+  AuditVerifyResponseSchema,
   type AuthorizeRequest,
   type AuthorizeResult,
   AuthorizeResultSchema,
@@ -36,6 +44,7 @@ import {
   type CurrentRulesOfEngagementResponse,
   CurrentRulesOfEngagementResponseSchema,
   type Environment,
+  encodeAuditReason,
   type FindingDetailResponse,
   FindingDetailResponseSchema,
   type FindingResponse,
@@ -57,6 +66,8 @@ import {
   ListAppsResponseSchema,
   type ListAssessmentsResponse,
   ListAssessmentsResponseSchema,
+  type ListAuditResponse,
+  ListAuditResponseSchema,
   type ListBuildsResponse,
   ListBuildsResponseSchema,
   type ListContainmentsResponse,
@@ -161,14 +172,41 @@ export class ConflictError extends ApiError {
   }
 }
 
-/** 400: the API refused the input. `errors` says where. */
+/**
+ * 400: the API refused the input. `errors` says where; `code` is the kind of refusal of a reason header
+ * (`AUDIT_REASON_ERROR_CODES`, slice 18a), when the API named one.
+ */
 export class ValidationError extends ApiError {
   readonly errors: ProblemError[];
-  constructor(message: string, errors: ProblemError[]) {
+  readonly code: AuditReasonErrorCode | undefined;
+  constructor(message: string, errors: ProblemError[], code?: AuditReasonErrorCode) {
     super(message, 400);
     this.name = "ValidationError";
     this.errors = errors;
+    this.code = code;
   }
+}
+
+/**
+ * 400 `reason-required` (slice 18a): a sensitive change was sent without a reason. Nothing was stored. A
+ * ValidationError, so that code that does not know it still treats it as a refusal.
+ */
+export class ReasonRequiredError extends ValidationError {
+  constructor(message: string) {
+    super(message, []);
+    this.name = "ReasonRequiredError";
+  }
+}
+
+/** The problem type of a missing reason; matched on its last segment, whatever the API's base. */
+const REASON_REQUIRED_TYPE = /\/reason-required$/;
+
+/**
+ * The reason of a change (slice 18a), sent as the `X-Airverse-Reason` header, percent-encoded UTF-8. Optional on
+ * every change; the API requires it on the sensitive ones.
+ */
+export interface ReasonOption {
+  reason?: string | undefined;
 }
 
 /**
@@ -207,12 +245,15 @@ interface CallOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   key?: string;
   body?: unknown;
+  /** The reason of the change, as typed (trimmed). Sent encoded with `encodeAuditReason`. */
+  reason?: string | undefined;
 }
 
 async function send(path: string, options: CallOptions & { accept: string; signal?: AbortSignal }): Promise<Response> {
   const headers: Record<string, string> = { accept: options.accept };
   if (options.key !== undefined) headers.authorization = `Bearer ${options.key}`;
   if (options.body !== undefined) headers["content-type"] = "application/json";
+  if (options.reason !== undefined) headers[AUDIT_REASON_HEADER] = encodeAuditReason(options.reason);
   const init: RequestInit = { method: options.method ?? "GET", headers, cache: "no-store" };
   if (options.body !== undefined) init.body = JSON.stringify(options.body);
   if (options.signal !== undefined) init.signal = options.signal;
@@ -236,10 +277,12 @@ async function failure(what: string, response: Response): Promise<ApiError> {
   if (response.status === 409) return new ConflictError(message, parsed.success ? parsed.data.reason : undefined);
   if (response.status === 429) return new RateLimitedError(message, retryAfterSeconds(response));
   if (response.status === 400) {
+    if (parsed.success && REASON_REQUIRED_TYPE.test(parsed.data.type)) return new ReasonRequiredError(message);
     const errors = parsed.success ? (parsed.data.errors ?? []) : [];
     return new ValidationError(
       message,
       errors.map((error) => ({ path: scrub(error.path), message: scrub(error.message) })),
+      parsed.success ? parsed.data.code : undefined,
     );
   }
   return new ApiError(message, response.status);
@@ -424,12 +467,13 @@ export function publishPolicy(
   environment: Environment,
   rules: readonly PolicyRuleInput[],
   expectedVersion: number,
-  options: BroadAcknowledgement = {},
+  options: BroadAcknowledgement & ReasonOption = {},
 ): Promise<PolicyResponse> {
   return call(policyPath(appId, environment), PolicyResponseSchema, {
     method: "PUT",
     key,
     body: { rules, expected_version: expectedVersion, ...acknowledged(options) },
+    reason: options.reason,
   });
 }
 
@@ -453,14 +497,19 @@ export function rollbackPolicy(
   environment: Environment,
   version: number,
   expectedVersion: number,
-  options: BroadAcknowledgement = {},
+  options: BroadAcknowledgement & ReasonOption = {},
 ): Promise<PolicyResponse> {
   const body = {
     version,
     expected_version: expectedVersion,
     ...acknowledged(options),
   } satisfies RollbackPolicyRequest;
-  return call(`${policyPath(appId, environment)}/rollback`, PolicyResponseSchema, { method: "POST", key, body });
+  return call(`${policyPath(appId, environment)}/rollback`, PolicyResponseSchema, {
+    method: "POST",
+    key,
+    body,
+    reason: options.reason,
+  });
 }
 
 /**
@@ -604,11 +653,13 @@ export function createContainment(
   key: string,
   incidentId: string,
   request: CreateContainmentRequest,
+  options: ReasonOption = {},
 ): Promise<ContainmentResponse> {
   return call(`/v1/incidents/${encodeURIComponent(incidentId)}/containments`, ContainmentResponseSchema, {
     method: "POST",
     key,
     body: request,
+    reason: options.reason,
   });
 }
 
@@ -722,11 +773,18 @@ export type PatchModeRequest = SetPatchModeRequest;
  * `POST /v1/apps/:appId/patches/:patchId/mode` — stores the mode and re-issues the bundle. The response body is
  * not read: the page is rendered again from the list.
  */
-export function setPatchMode(key: string, appId: string, patchId: string, request: PatchModeRequest): Promise<void> {
+export function setPatchMode(
+  key: string,
+  appId: string,
+  patchId: string,
+  request: PatchModeRequest,
+  options: ReasonOption = {},
+): Promise<void> {
   return callNoContent(`/v1/apps/${encodeURIComponent(appId)}/patches/${encodeURIComponent(patchId)}/mode`, {
     method: "POST",
     key,
     body: request,
+    reason: options.reason,
   });
 }
 
@@ -750,8 +808,12 @@ export function getTarget(key: string, targetId: string): Promise<TargetResponse
 }
 
 /** `DELETE /v1/targets/:targetId` — 204; a target in the current scope rejects with ConflictError. */
-export function deleteTarget(key: string, targetId: string): Promise<void> {
-  return callNoContent(`/v1/targets/${encodeURIComponent(targetId)}`, { method: "DELETE", key });
+export function deleteTarget(key: string, targetId: string, options: ReasonOption = {}): Promise<void> {
+  return callNoContent(`/v1/targets/${encodeURIComponent(targetId)}`, {
+    method: "DELETE",
+    key,
+    reason: options.reason,
+  });
 }
 
 /** `POST /v1/targets/:targetId/verify` — checks DNS, then the file; 429 after ten checks of the target in an hour. */
@@ -776,11 +838,63 @@ export function getCurrentRulesOfEngagement(key: string): Promise<CurrentRulesOf
 export function signRulesOfEngagement(
   key: string,
   request: SignRulesOfEngagementRequest,
+  options: ReasonOption = {},
 ): Promise<RulesOfEngagementResponse> {
-  return call("/v1/rules-of-engagement", RulesOfEngagementResponseSchema, { method: "POST", key, body: request });
+  return call("/v1/rules-of-engagement", RulesOfEngagementResponseSchema, {
+    method: "POST",
+    key,
+    body: request,
+    reason: options.reason,
+  });
 }
 
 /** `POST /v1/prove/authorize` — a dry check of one test: allowed, or the rule that refuses it. Nothing is started. */
 export function checkAuthorization(key: string, request: AuthorizeRequest): Promise<AuthorizeResult> {
   return call("/v1/prove/authorize", AuthorizeResultSchema, { method: "POST", key, body: request });
+}
+
+// ── Audit log (slice 18a) ─────────────────────────────────────────────────────────────────────────────
+
+/** Narrows the audit log. Every member is optional; `from` is inclusive and `to` exclusive (ISO times). */
+export interface AuditFilter {
+  action?: AuditAction | undefined;
+  appId?: string | undefined;
+  targetId?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  /** The `next_cursor` of the previous page. */
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}
+
+/** `GET /v1/audit?action=&app_id=&target_id=&from=&to=&cursor=&limit=` — newest first, one page. */
+export function listAudit(key: string, filter: AuditFilter = {}): Promise<ListAuditResponse> {
+  const query = new URLSearchParams();
+  if (filter.action !== undefined) query.set("action", filter.action);
+  if (filter.appId !== undefined) query.set("app_id", filter.appId);
+  if (filter.targetId !== undefined) query.set("target_id", filter.targetId);
+  if (filter.from !== undefined) query.set("from", filter.from);
+  if (filter.to !== undefined) query.set("to", filter.to);
+  if (filter.cursor !== undefined) query.set("cursor", filter.cursor);
+  if (filter.limit !== undefined) query.set("limit", String(filter.limit));
+  const search = query.toString();
+  return call(`/v1/audit${search ? `?${search}` : ""}`, ListAuditResponseSchema, { key });
+}
+
+/** `GET /v1/audit/public-key` — needs no key and sends none: the public half of the key that signs chain heads. */
+export function getAuditPublicKey(): Promise<AuditPublicKeyResponse> {
+  return call("/v1/audit/public-key", AuditPublicKeyResponseSchema);
+}
+
+/**
+ * `GET /v1/audit/verify` — the chain recomputed from the first entry, and the head signed. Rejects with
+ * RateLimitedError when checked too often.
+ */
+export function verifyAudit(key: string): Promise<AuditVerifyResponse> {
+  return call("/v1/audit/verify", AuditVerifyResponseSchema, { key });
+}
+
+/** `GET /v1/audit/export` — the raw upstream NDJSON response for the export route, whatever its status. */
+export function fetchAuditExport(key: string, signal: AbortSignal): Promise<Response> {
+  return send("/v1/audit/export", { key, accept: AUDIT_EXPORT_CONTENT_TYPE, signal });
 }

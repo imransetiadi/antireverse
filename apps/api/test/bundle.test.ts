@@ -28,6 +28,7 @@ import {
   type TestApi,
   tick,
   verifySignature,
+  withReason,
 } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-10T12:00:00.000Z");
@@ -753,7 +754,7 @@ describe("Policy Bundle", () => {
       await publishPolicy(api, t.adminKey, t.appId, "development", []);
       const rolledBack = await api.app.request(
         `/v1/apps/${t.appId}/policies/development/rollback`,
-        json({ version: 1 }, bearer(t.adminKey)),
+        json({ version: 1 }, withReason(bearer(t.adminKey))),
       );
       expect(rolledBack.status).toBe(201);
       const after = await fetchBundle(api, t.shieldKey, publicKey);

@@ -27,6 +27,7 @@ import {
   json,
   makeTestApi,
   type TestApi,
+  withReason,
 } from "./helpers.ts";
 
 // Slice 14 routes: Verified Targets, Rules of Engagement and the dry authorization check, with a stand-in resolver
@@ -102,7 +103,7 @@ const CONTENT = (scope: string[], intensity: Intensity = "safe-active"): RulesOf
 });
 
 function sign(admin: string, content: RulesOfEngagementContent, confirm = confirmationPhrase(content.intensity)) {
-  return api.app.request("/v1/rules-of-engagement", json({ ...content, confirm }, bearer(admin)));
+  return api.app.request("/v1/rules-of-engagement", json({ ...content, confirm }, withReason(bearer(admin))));
 }
 
 async function authorizeDry(admin: string, request: Record<string, unknown>): Promise<AuthorizeResult> {
@@ -220,7 +221,7 @@ describe("Verified Targets", () => {
         404,
       );
       await expectProblem(
-        await api.app.request(`/v1/targets/${id}`, { method: "DELETE", headers: bearer(admin) }),
+        await api.app.request(`/v1/targets/${id}`, { method: "DELETE", headers: withReason(bearer(admin)) }),
         404,
       );
     }
@@ -262,7 +263,10 @@ describe("Verified Targets", () => {
 
   it("deletes a target (204) that is not in the current scope", async () => {
     const { target } = await addTarget(adminA, "gone.acme-shop.io");
-    const res = await api.app.request(`/v1/targets/${target.id}`, { method: "DELETE", headers: bearer(adminA) });
+    const res = await api.app.request(`/v1/targets/${target.id}`, {
+      method: "DELETE",
+      headers: withReason(bearer(adminA)),
+    });
     expect(res.status).toBe(204);
     await expectProblem(await api.app.request(`/v1/targets/${target.id}`, { headers: bearer(adminA) }), 404);
   });
@@ -362,7 +366,7 @@ describe("verification", () => {
       await verify(admin, first.target.id);
     const deleted = await api.app.request(`/v1/targets/${first.target.id}`, {
       method: "DELETE",
-      headers: bearer(admin),
+      headers: withReason(bearer(admin)),
     });
     expect(deleted.status).toBe(204);
     const second = await addTarget(admin, "again.acme-shop.io");
@@ -517,14 +521,17 @@ describe("Rules of Engagement", () => {
     const dropped = await verifiedTarget(admin, "dropped.acme-shop.io");
     expect((await sign(admin, CONTENT([kept.id, dropped.id]))).status).toBe(201);
     const refused = await expectProblem(
-      await api.app.request(`/v1/targets/${dropped.id}`, { method: "DELETE", headers: bearer(admin) }),
+      await api.app.request(`/v1/targets/${dropped.id}`, { method: "DELETE", headers: withReason(bearer(admin)) }),
       409,
     );
     expect(refused.type).toMatch(/conflict$/);
     expect(refused.reason).toBe("target-in-scope");
     expect(refused.detail).toBe(CONFLICT_DETAILS["target-in-scope"]);
     expect((await sign(admin, CONTENT([kept.id]))).status).toBe(201);
-    const res = await api.app.request(`/v1/targets/${dropped.id}`, { method: "DELETE", headers: bearer(admin) });
+    const res = await api.app.request(`/v1/targets/${dropped.id}`, {
+      method: "DELETE",
+      headers: withReason(bearer(admin)),
+    });
     expect(res.status).toBe(204);
   });
 });

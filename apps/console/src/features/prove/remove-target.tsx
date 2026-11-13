@@ -4,8 +4,8 @@ import type { Target } from "@antireverse/protocol";
 import { useActionState } from "react";
 import { deleteTargetAction } from "@/app/actions.ts";
 import { ButtonLink } from "@/components/button.tsx";
-import { ConfirmPanel } from "@/components/confirm-panel.tsx";
-import { ErrorSummary, type SummaryError } from "@/components/error-summary.tsx";
+import { ConfirmPanel, REASON_FIELD_ID, reasonLabel } from "@/components/confirm-panel.tsx";
+import { ErrorSummary, fieldError, type SummaryError } from "@/components/error-summary.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 import { t } from "@/lib/t.ts";
 
@@ -37,7 +37,7 @@ export function RemoveTarget({ target, inScope, confirmRemove }: RemoveTargetPro
   return (
     <div className="flex flex-col gap-3">
       <p className="body-5 text-fg-muted">{t("target.remove.help")}</p>
-      <ErrorSummary errors={errors} fields={{}} />
+      <ErrorSummary errors={errors} fields={{ reason: { id: REASON_FIELD_ID, label: reasonLabel(true) } }} />
       {confirmRemove ? (
         <ConfirmPanel
           testId="target-confirm"
@@ -48,6 +48,8 @@ export function RemoveTarget({ target, inScope, confirmRemove }: RemoveTargetPro
           cancelHref={ROUTES.target(target.id)}
           action={removeAction}
           busy={pending}
+          // Slice 18a: removing a target is a sensitive change, recorded with its reason.
+          reason={{ required: true, error: fieldError(errors, "reason"), value: state?.reason }}
         >
           <input type="hidden" name="targetId" value={target.id} />
           {/* The confirmation: the target named in the question. */}

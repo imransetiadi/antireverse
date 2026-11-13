@@ -27,6 +27,7 @@ import {
   put,
   type TestApi,
   tick,
+  withReason,
 } from "./helpers.ts";
 
 const T0 = Date.parse("2026-11-10T11:00:00.000Z");
@@ -107,7 +108,7 @@ describe("Policies", () => {
 
       const res = await api.app.request(
         policyPath(appId, "development"),
-        put({ rules: [enforceRule, monitorRule] }, bearer(adminA)),
+        put({ rules: [enforceRule, monitorRule] }, withReason(bearer(adminA))),
       );
       expect(res.status).toBe(201);
       expect(res.headers.get("cache-control")).toBe("no-store");
@@ -226,7 +227,7 @@ describe("Policies", () => {
             ],
             allow_broad: true,
           },
-          bearer(adminA),
+          withReason(bearer(adminA)),
         ),
       );
       expect(res.status).toBe(201);
@@ -291,7 +292,7 @@ describe("Policies", () => {
     ])("refuses %s and stores nothing", async (_label, body, path) => {
       const appId = await freshApp();
 
-      const res = await api.app.request(policyPath(appId, "development"), put(body, bearer(adminA)));
+      const res = await api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA))));
 
       const problem = await expectProblem(res, 400);
       expect(problem.errors?.[0]?.path).toBe(path);
@@ -310,7 +311,7 @@ describe("Policies", () => {
         ],
       };
       const problem = await expectProblem(
-        await api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))),
+        await api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA)))),
         400,
       );
       expect(problem.errors?.map((error) => error.path).sort()).toEqual(["rules.0.mode", "rules.1.id", "rules.2.mode"]);
@@ -336,13 +337,13 @@ describe("Policies", () => {
 
       const publish = await api.app.request(
         policyPath(appId, "development"),
-        put({ rules: [valid], padding }, bearer(adminA)),
+        put({ rules: [valid], padding }, withReason(bearer(adminA))),
       );
       await expectProblem(publish, 413);
 
       const rollback = await api.app.request(
         policyPath(appId, "development", "/rollback"),
-        json({ version: 1, padding }, bearer(adminA)),
+        json({ version: 1, padding }, withReason(bearer(adminA))),
       );
       await expectProblem(rollback, 413);
       expect(await storedVersions(appId)).toEqual([]);
@@ -480,7 +481,9 @@ describe("Policies", () => {
 
   describe("rollback", () => {
     function rollback(appId: string, body: unknown, environment: Environment = "development"): Promise<Response> {
-      return Promise.resolve(api.app.request(policyPath(appId, environment, "/rollback"), json(body, bearer(adminA))));
+      return Promise.resolve(
+        api.app.request(policyPath(appId, environment, "/rollback"), json(body, withReason(bearer(adminA)))),
+      );
     }
 
     it("publishes the Rules of the named version as the next version", async () => {
@@ -582,7 +585,7 @@ describe("Policies", () => {
         Array.from({ length: 10 }, (_, index) =>
           api.app.request(
             policyPath(appId, "development"),
-            put({ rules: [{ name: `Publisher ${index}`, path: `/p/${index}` }] }, bearer(adminA)),
+            put({ rules: [{ name: `Publisher ${index}`, path: `/p/${index}` }] }, withReason(bearer(adminA))),
           ),
         ),
       );
@@ -608,8 +611,14 @@ describe("Policies", () => {
       const responses = await Promise.all(
         Array.from({ length: 8 }, (_, index) =>
           index % 2 === 0
-            ? api.app.request(policyPath(appId, "development"), put({ rules: [enforceRule] }, bearer(adminA)))
-            : api.app.request(policyPath(appId, "development", "/rollback"), json({ version: 1 }, bearer(adminA))),
+            ? api.app.request(
+                policyPath(appId, "development"),
+                put({ rules: [enforceRule] }, withReason(bearer(adminA))),
+              )
+            : api.app.request(
+                policyPath(appId, "development", "/rollback"),
+                json({ version: 1 }, withReason(bearer(adminA))),
+              ),
         ),
       );
 
@@ -651,7 +660,10 @@ describe("Policies", () => {
       const { db, attempts } = racing(2);
       const app = createApp({ db, bus: api.bus, signer: api.signer, logger: captureLogger() });
 
-      const res = await app.request(policyPath(appId, "development"), put({ rules: [monitorRule] }, bearer(adminA)));
+      const res = await app.request(
+        policyPath(appId, "development"),
+        put({ rules: [monitorRule] }, withReason(bearer(adminA))),
+      );
 
       expect(res.status).toBe(201);
       expect(PolicyResponseSchema.parse(await res.json()).policy.version).toBe(1);
@@ -665,7 +677,10 @@ describe("Policies", () => {
       const logger = captureLogger();
       const app = createApp({ db, bus: api.bus, signer: api.signer, logger });
 
-      const res = await app.request(policyPath(appId, "development"), put({ rules: [monitorRule] }, bearer(adminA)));
+      const res = await app.request(
+        policyPath(appId, "development"),
+        put({ rules: [monitorRule] }, withReason(bearer(adminA))),
+      );
 
       const problem = await expectProblem(res, 500);
       expect(JSON.stringify(problem)).not.toMatch(/duplicate|policy_versions/);
@@ -679,7 +694,7 @@ describe("Policies", () => {
     const BROAD = /most of the App's traffic.*allow_broad/;
 
     function publishWith(appId: string, body: Record<string, unknown>): Promise<Response> {
-      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))));
+      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA)))));
     }
 
     it.each(["/*", "/*/**", "/*/admin"])(
@@ -745,7 +760,7 @@ describe("Policies", () => {
       expect(broad.status).toBe(201);
       await publishPolicy(api, adminA, appId, "development", [monitorRule]);
       const rollback = (body: Record<string, unknown>) =>
-        api.app.request(policyPath(appId, "development", "/rollback"), json(body, bearer(adminA)));
+        api.app.request(policyPath(appId, "development", "/rollback"), json(body, withReason(bearer(adminA))));
 
       const refused = await expectProblem(await rollback({ version: 1 }), 400);
       expect(refused.errors).toEqual([{ path: "rules.0.mode", message: expect.stringMatching(BROAD) }]);
@@ -777,7 +792,7 @@ describe("Policies", () => {
     };
 
     function publishWith(appId: string, body: Record<string, unknown>): Promise<Response> {
-      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))));
+      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA)))));
     }
 
     it("publishes, reads, lists and rolls back a Rule with requires: signature, and stores it", async () => {
@@ -812,7 +827,7 @@ describe("Policies", () => {
 
       const res = await api.app.request(
         policyPath(appId, "development", "/rollback"),
-        json({ version: 1, expected_version: 2 }, bearer(adminA)),
+        json({ version: 1, expected_version: 2 }, withReason(bearer(adminA))),
       );
       expect(res.status).toBe(201);
       expect(PolicyResponseSchema.parse(await res.json()).policy).toMatchObject({ version: 3, rules: first.rules });
@@ -854,7 +869,10 @@ describe("Policies", () => {
 
       await publishPolicy(api, adminA, appId, "development", [monitorRule]);
       const rollback = await expectProblem(
-        await api.app.request(policyPath(appId, "development", "/rollback"), json({ version: 2 }, bearer(adminA))),
+        await api.app.request(
+          policyPath(appId, "development", "/rollback"),
+          json({ version: 2 }, withReason(bearer(adminA))),
+        ),
         400,
       );
       expect(rollback.errors?.[0]?.path).toBe("rules.0.mode");
@@ -870,7 +888,7 @@ describe("Policies", () => {
     };
 
     function publishWith(appId: string, body: Record<string, unknown>): Promise<Response> {
-      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))));
+      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA)))));
     }
 
     it("publishes, reads, lists and rolls back a Rule with a limit, and stores it complete", async () => {
@@ -922,7 +940,7 @@ describe("Policies", () => {
 
       const res = await api.app.request(
         policyPath(appId, "development", "/rollback"),
-        json({ version: 1, expected_version: 2 }, bearer(adminA)),
+        json({ version: 1, expected_version: 2 }, withReason(bearer(adminA))),
       );
       expect(res.status).toBe(201);
       const rolledBack = PolicyResponseSchema.parse(await res.json()).policy;
@@ -1015,13 +1033,16 @@ describe("Policies", () => {
       // A rollback to the broad Enforce limit Rule asks again.
       await publishPolicy(api, adminA, appId, "development", [monitorRule]);
       const rollback = await expectProblem(
-        await api.app.request(policyPath(appId, "development", "/rollback"), json({ version: 3 }, bearer(adminA))),
+        await api.app.request(
+          policyPath(appId, "development", "/rollback"),
+          json({ version: 3 }, withReason(bearer(adminA))),
+        ),
         400,
       );
       expect(rollback.errors?.[0]?.path).toBe("rules.0.mode");
       const acknowledged = await api.app.request(
         policyPath(appId, "development", "/rollback"),
-        json({ version: 3, allow_broad: true }, bearer(adminA)),
+        json({ version: 3, allow_broad: true }, withReason(bearer(adminA))),
       );
       expect(acknowledged.status).toBe(201);
       expect(PolicyResponseSchema.parse(await acknowledged.json()).policy.rules[0]).toMatchObject({
@@ -1035,7 +1056,10 @@ describe("Policies", () => {
       for (const res of [
         await api.app.request(policyPath(appId, "development"), { headers: bearer(adminB) }),
         await api.app.request(policyPath(appId, "development", "/versions/1"), { headers: bearer(adminB) }),
-        await api.app.request(policyPath(appId, "development"), put({ rules: [loginLimit] }, bearer(adminB))),
+        await api.app.request(
+          policyPath(appId, "development"),
+          put({ rules: [loginLimit] }, withReason(bearer(adminB))),
+        ),
       ]) {
         const problem = await expectProblem(res, 404);
         expect(JSON.stringify(problem)).not.toContain("limit");
@@ -1087,11 +1111,11 @@ describe("Policies", () => {
     };
 
     function publishOver(appId: string, body: Record<string, unknown>): Promise<Response> {
-      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, bearer(adminA))));
+      return Promise.resolve(api.app.request(policyPath(appId, "development"), put(body, withReason(bearer(adminA)))));
     }
     function rollbackOver(appId: string, body: Record<string, unknown>): Promise<Response> {
       return Promise.resolve(
-        api.app.request(policyPath(appId, "development", "/rollback"), json(body, bearer(adminA))),
+        api.app.request(policyPath(appId, "development", "/rollback"), json(body, withReason(bearer(adminA)))),
       );
     }
 

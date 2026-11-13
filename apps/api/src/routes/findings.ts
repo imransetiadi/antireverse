@@ -13,6 +13,7 @@ import {
 } from "@antireverse/protocol";
 import { Hono } from "hono";
 import { z } from "zod";
+import { audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
@@ -88,6 +89,7 @@ export function findingRoutes(deps: { db: Db; now?: (() => Date) | undefined }):
       const { organizationId, keyId } = c.var.principal;
       const id = c.req.param("findingId");
       const { reason, until } = c.req.valid("json");
+      const actor = auditActor(c);
       if (!ID_PATTERNS.fnd.test(id)) return problem(c, "not-found");
       const at = now();
       const expiry = Date.parse(until);
@@ -105,6 +107,13 @@ export function findingRoutes(deps: { db: Db; now?: (() => Date) | undefined }):
         if (finding === null) return null;
         if (finding.status === "fixed" || finding.status === "withdrawn") return "closed" as const;
         await ignoreFinding(q, id, { reason, until: new Date(expiry), by: keyId }, at);
+        await audit(q, actor, {
+          action: "finding.ignore",
+          appId: finding.app_id,
+          target: { kind: "finding", id },
+          summary: `Ignored the Finding ${id} (${finding.advisory_id} in ${finding.package}) until ${new Date(expiry).toISOString()}.`,
+          at,
+        });
         return findFinding(q, id);
       });
       if (result === null) return problem(c, "not-found");
@@ -115,6 +124,7 @@ export function findingRoutes(deps: { db: Db; now?: (() => Date) | undefined }):
 
   routes.post("/v1/findings/:findingId/reopen", admin, limitBody(), async (c) => {
     const { organizationId } = c.var.principal;
+    const actor = auditActor(c);
     const id = c.req.param("findingId");
     if (!ID_PATTERNS.fnd.test(id)) return problem(c, "not-found");
     const at = now();
@@ -123,7 +133,17 @@ export function findingRoutes(deps: { db: Db; now?: (() => Date) | undefined }):
       const finding = await findFinding(q, id, true);
       if (finding === null) return null;
       if (finding.status === "fixed" || finding.status === "withdrawn") return "closed" as const;
-      if (finding.status === "ignored") await reopenFinding(q, id, at);
+      // Reopening an open Finding changes nothing, and so writes no entry.
+      if (finding.status === "ignored") {
+        await reopenFinding(q, id, at);
+        await audit(q, actor, {
+          action: "finding.reopen",
+          appId: finding.app_id,
+          target: { kind: "finding", id },
+          summary: `Reopened the ignored Finding ${id} (${finding.advisory_id} in ${finding.package}).`,
+          at,
+        });
+      }
       return findFinding(q, id);
     });
     if (result === null) return problem(c, "not-found");

@@ -36,6 +36,7 @@ import {
   json,
   makeTestApi,
   type TestApi,
+  withReason,
 } from "./helpers.ts";
 
 // Slice 10, API lane: the public Clone Beacon endpoint, its limits, and the `clone-origin` Incidents it opens.
@@ -350,7 +351,10 @@ describe("Clone Beacon", () => {
       const path = `/v1/incidents/${incident?.id}/containments`;
       const prefix = await request(
         path,
-        json({ target: { kind: "prefix" }, ttl_s: CONTAINMENT_TTLS[0], confirm_prefix: PEER_PREFIX }, bearer(s.admin)),
+        json(
+          { target: { kind: "prefix" }, ttl_s: CONTAINMENT_TTLS[0], confirm_prefix: PEER_PREFIX },
+          withReason(bearer(s.admin)),
+        ),
       );
       const problem = await expectProblem(prefix, 409);
       expect(problem.reason).toBe("containment-not-applicable");
@@ -359,7 +363,7 @@ describe("Clone Beacon", () => {
         path,
         json(
           { target: { kind: "actor", ip_hash: `iph_${"a".repeat(32)}` }, ttl_s: CONTAINMENT_TTLS[0] },
-          bearer(s.admin),
+          withReason(bearer(s.admin)),
         ),
       );
       expect((await expectProblem(actor, 409)).reason).toBe("containment-not-applicable");

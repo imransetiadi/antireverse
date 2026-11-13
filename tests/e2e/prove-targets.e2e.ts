@@ -106,6 +106,8 @@ test("a host is added and verified, Rules of Engagement are signed, and a test i
   // The exact phrase signs. Everything but the phrase was kept by the refusal.
   await expect(page.locator("#roe-exclusions")).toHaveValue("/admin");
   await page.locator("#roe-confirm").fill((await page.getByTestId("roe-phrase").textContent()) ?? "");
+  // Slice 18a: signing is a sensitive change, recorded in the audit log with its reason.
+  await page.getByTestId("roe-reason").fill("Quarterly test window agreed with the shop owner");
   await page.getByTestId("roe-sign").click();
   await page.waitForURL(/\/prove\/rules-of-engagement$/);
 

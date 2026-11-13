@@ -63,10 +63,10 @@ export async function insertAllowlistEntry(
   return toEntry(row);
 }
 
-/** Removes an entry of the transaction's Organization. False when there is none with this id. */
-export async function deleteAllowlistEntry(q: Queryable, id: string): Promise<boolean> {
-  const { rows } = await q.query("DELETE FROM allowlist_entries WHERE id = $1 RETURNING id", [id]);
-  return rows.length === 1;
+/** Removes an entry of the transaction's Organization: its CIDR, or null when there is none with this id. */
+export async function deleteAllowlistEntry(q: Queryable, id: string): Promise<string | null> {
+  const { rows } = await q.query<{ cidr: string }>("DELETE FROM allowlist_entries WHERE id = $1 RETURNING cidr", [id]);
+  return rows[0]?.cidr ?? null;
 }
 
 /** The CIDRs of the transaction's Organization, as the Policy Bundle carries them: in `listAllowlist` order. */

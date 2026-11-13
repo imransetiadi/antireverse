@@ -1,4 +1,5 @@
 import {
+  canonicalJson,
   ENVIRONMENTS,
   ID_PATTERNS,
   POLICY_LIMITS,
@@ -11,6 +12,7 @@ import {
   RollbackPolicyRequestSchema,
 } from "@antireverse/protocol";
 import { Hono } from "hono";
+import { type AuditActor, audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
@@ -36,9 +38,27 @@ const UNIQUE_VIOLATION = "23505";
 
 /**
  * A published Policy; the errors that refused it; a conflict when the edit was based on a version that is no
- * longer current; or null when the App or the version does not exist.
+ * longer current; a refusal because it promotes a Rule to enforce without a reason (slice 18a); or null when the App
+ * or the version does not exist.
  */
-type Published = { policy: Policy } | { errors: ProblemError[] } | { conflict: true } | null;
+type Published = { policy: Policy } | { errors: ProblemError[] } | { conflict: true } | { reasonRequired: true } | null;
+
+/**
+ * What an enforced Rule does, as text that compares: its path, methods (as a set), action, requirement and limit. Its
+ * name and id are not part of it. Two enforced Rules with the same text refuse the same traffic.
+ */
+function enforcement(rule: PolicyRule): string {
+  return canonicalJson({
+    path: rule.path,
+    methods: [...rule.methods].sort(),
+    action: rule.action,
+    requires: rule.requires ?? null,
+    limit: rule.limit ?? null,
+  });
+}
+
+/** What a publish is, for its audit entry: a new list of Rules, or the Rules of an earlier version. */
+type PublishKind = { kind: "publish" } | { kind: "rollback"; version: number };
 
 export function policyRoutes(deps: {
   db: Db;
@@ -76,10 +96,14 @@ export function policyRoutes(deps: {
    * With `expectedVersion`, the publish is refused as a conflict unless that is the current version. It is
    * compared under the same row lock, so of two publishes based on one version exactly one gets through.
    * Only then are the Rules judged: `allowBroad` acknowledges Enforce Rules with a broad pattern.
+   *
+   * Slice 18a: a Rule in Enforce mode that was not enforced in the current version (a promotion, or a new Rule that
+   * starts enforced) needs a reason; the version and its audit entry are written in the same transaction.
    */
   async function publish(
     target: PolicyTarget | null,
-    publishedByKeyId: string,
+    actor: AuditActor,
+    kind: PublishKind,
     expectedVersion: number | undefined,
     allowBroad: boolean,
     rulesOf: (q: Queryable, target: PolicyTarget) => Promise<PolicyRule[] | null>,
@@ -97,7 +121,41 @@ export function policyRoutes(deps: {
           // Checked on whatever is about to be stored, also when it comes from an earlier version.
           const errors = guardrailErrors(rules, { allowBroad });
           if (errors.length > 0) return { errors };
-          return { policy: await insertPolicyVersion(q, target, { rules, publishedAt: now(), publishedByKeyId }) };
+          const before = await currentPolicy(q, target);
+          const enforcedBefore = new Map(
+            before.rules.filter((rule) => rule.mode === "enforce").map((rule) => [rule.id, enforcement(rule)]),
+          );
+          // Promoted: enforced now, and not enforced before or enforced on other traffic (review F1).
+          const promoted = rules.filter(
+            (rule) => rule.mode === "enforce" && enforcedBefore.get(rule.id) !== enforcement(rule),
+          );
+          if (promoted.length > 0 && actor.reason === undefined) return { reasonRequired: true };
+          const at = now();
+          const policy = await insertPolicyVersion(q, target, {
+            rules,
+            publishedAt: at,
+            publishedByKeyId: actor.keyId,
+          });
+          const enforced = rules.filter((rule) => rule.mode === "enforce").length;
+          const counts = `${rules.length} Rules, ${enforced} enforced`;
+          const promotion =
+            promoted.length === 0 ? "" : `; promoted to enforce: ${promoted.map((rule) => rule.id).join(", ")}`;
+          await audit(q, actor, {
+            action:
+              kind.kind === "rollback"
+                ? "policy.rollback"
+                : promoted.length > 0
+                  ? "policy.rule.promote"
+                  : "policy.publish",
+            appId: target.appId,
+            target: { kind: "policy", id: `${target.appId}/${target.environment}` },
+            summary:
+              kind.kind === "rollback"
+                ? `Rolled the ${target.environment} Policy back to the Rules of version ${kind.version}, published as version ${policy.version} (${counts})${promotion}.`
+                : `Published version ${policy.version} of the ${target.environment} Policy (${counts})${promotion}.`,
+            at,
+          });
+          return { policy };
         });
         // Committed. The version is stored whatever the listener does: its error never fails the publish.
         if (published !== null && "policy" in published) {
@@ -130,17 +188,23 @@ export function policyRoutes(deps: {
     limitBody(),
     validateJson(PublishPolicyRequestSchema),
     async (c) => {
-      const { organizationId, keyId } = c.var.principal;
+      const { organizationId } = c.var.principal;
       const target = targetOf(organizationId, c.req.param("appId"), c.req.param("environment"));
       const body = c.req.valid("json");
       const prepared = prepareRules(body.rules);
       if ("errors" in prepared) return problem(c, "validation", prepared.errors);
 
-      const published = await publish(target, keyId, body.expected_version, body.allow_broad === true, () =>
-        Promise.resolve(prepared.rules),
+      const published = await publish(
+        target,
+        auditActor(c),
+        { kind: "publish" },
+        body.expected_version,
+        body.allow_broad === true,
+        () => Promise.resolve(prepared.rules),
       );
       if (published === null) return problem(c, "not-found");
       if ("conflict" in published) return problem(c, "conflict");
+      if ("reasonRequired" in published) return problem(c, "reason-required");
       if ("errors" in published) return problem(c, "validation", published.errors);
       return c.json({ policy: published.policy } satisfies PolicyResponse, 201);
     },
@@ -171,15 +235,21 @@ export function policyRoutes(deps: {
     limitBody(),
     validateJson(RollbackPolicyRequestSchema),
     async (c) => {
-      const { organizationId, keyId } = c.var.principal;
+      const { organizationId } = c.var.principal;
       const target = targetOf(organizationId, c.req.param("appId"), c.req.param("environment"));
       const { version, expected_version: expectedVersion, allow_broad: allowBroad } = c.req.valid("json");
 
-      const published = await publish(target, keyId, expectedVersion, allowBroad === true, (q, policy) =>
-        findPolicyRules(q, policy, version),
+      const published = await publish(
+        target,
+        auditActor(c),
+        { kind: "rollback", version },
+        expectedVersion,
+        allowBroad === true,
+        (q, policy) => findPolicyRules(q, policy, version),
       );
       if (published === null) return problem(c, "not-found");
       if ("conflict" in published) return problem(c, "conflict");
+      if ("reasonRequired" in published) return problem(c, "reason-required");
       if ("errors" in published) return problem(c, "validation", published.errors);
       return c.json({ policy: published.policy } satisfies PolicyResponse, 201);
     },

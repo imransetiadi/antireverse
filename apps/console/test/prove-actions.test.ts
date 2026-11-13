@@ -7,6 +7,7 @@ import {
 } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dropReason } from "./helpers/reason.ts";
 
 // Slice 14: the Prove actions, exercised through their interface with the API client, the session, the cache and
 // the navigation replaced by fakes.
@@ -45,6 +46,8 @@ import * as session from "@/lib/session.ts";
 const admin = generateKey("admin");
 const TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdE";
 const targetId = EXAMPLE_TARGET.id;
+/** Slice 18a: removing a target and signing Rules of Engagement carry a reason. */
+const REASON = "Scope review of 2026-11-13";
 const CONFLICT = "This change conflicts with what the API holds, so nothing was saved. Reload the page and try again.";
 const API_DOWN = "The Airverse API did not answer, so nothing was saved. Check that it is running, then try again.";
 const HOST_INVALID =
@@ -196,13 +199,15 @@ describe("verifyTargetAction", () => {
 describe("deleteTargetAction", () => {
   it("removes the target named in the confirmation and goes back to the list", async () => {
     vi.mocked(api.deleteTarget).mockResolvedValue(undefined);
-    expect(await redirectOf(deleteTargetAction(null, form({ targetId, confirm: targetId })))).toBe("/prove/targets");
-    expect(api.deleteTarget).toHaveBeenCalledWith(admin.key, targetId);
+    expect(await redirectOf(deleteTargetAction(null, form({ targetId, confirm: targetId, reason: REASON })))).toBe(
+      "/prove/targets",
+    );
+    expect(api.deleteTarget).toHaveBeenCalledWith(admin.key, targetId, { reason: REASON });
     expect(revalidatePath).toHaveBeenCalledWith("/prove/targets");
   });
 
   it("refuses without the confirmation", async () => {
-    expect(await deleteTargetAction(null, form({ targetId }))).toEqual({
+    expect(dropReason(await deleteTargetAction(null, form({ targetId })))).toEqual({
       ok: false,
       errors: [{ path: "confirm", message: "Nothing was removed. Confirm the change first." }],
     });
@@ -211,16 +216,16 @@ describe("deleteTargetAction", () => {
 
   it("explains that a target in the current scope cannot be removed, on the reason target-in-scope only", async () => {
     vi.mocked(api.deleteTarget).mockRejectedValueOnce(new api.ConflictError("409"));
-    expect(await deleteTargetAction(null, form({ targetId, confirm: targetId }))).toEqual({
+    expect(dropReason(await deleteTargetAction(null, form({ targetId, confirm: targetId, reason: REASON })))).toEqual({
       ok: false,
       errors: [{ path: "", message: CONFLICT }],
     });
     vi.mocked(api.deleteTarget).mockRejectedValueOnce(new api.ConflictError("409", "target-limit"));
-    expect((await deleteTargetAction(null, form({ targetId, confirm: targetId })))?.errors).toEqual([
+    expect((await deleteTargetAction(null, form({ targetId, confirm: targetId, reason: REASON })))?.errors).toEqual([
       { path: "", message: CONFLICT },
     ]);
     vi.mocked(api.deleteTarget).mockRejectedValueOnce(new api.ConflictError("409", "target-in-scope"));
-    expect(await deleteTargetAction(null, form({ targetId, confirm: targetId }))).toEqual({
+    expect(dropReason(await deleteTargetAction(null, form({ targetId, confirm: targetId, reason: REASON })))).toEqual({
       ok: false,
       errors: [
         {
@@ -234,7 +239,9 @@ describe("deleteTargetAction", () => {
 
   it("treats a target that is already gone as removed", async () => {
     vi.mocked(api.deleteTarget).mockRejectedValueOnce(new api.NotFoundError("404"));
-    expect(await redirectOf(deleteTargetAction(null, form({ targetId, confirm: targetId })))).toBe("/prove/targets");
+    expect(await redirectOf(deleteTargetAction(null, form({ targetId, confirm: targetId, reason: REASON })))).toBe(
+      "/prove/targets",
+    );
   });
 });
 
@@ -248,6 +255,7 @@ describe("signRulesOfEngagementAction", () => {
     to: "17:00",
     contacts: "security@acme-shop.io\noncall@acme-shop.io",
     confirm: "I authorise safe-active testing",
+    reason: REASON,
   };
   const values = {
     scope: [targetId],
@@ -263,14 +271,18 @@ describe("signRulesOfEngagementAction", () => {
   it("signs the version with one exclusion and one contact per line, and opens the Rules of Engagement", async () => {
     vi.mocked(api.signRulesOfEngagement).mockResolvedValue({ version: EXAMPLE_RULES_OF_ENGAGEMENT });
     expect(await redirectOf(signRulesOfEngagementAction(null, form(fields)))).toBe("/prove/rules-of-engagement");
-    expect(api.signRulesOfEngagement).toHaveBeenCalledWith(admin.key, {
-      scope: [targetId],
-      exclusions: ["/admin", "/checkout"],
-      intensity: "safe-active",
-      window: { days: ["mon", "tue", "wed", "thu", "fri"], from: "09:00", to: "17:00" },
-      contacts: ["security@acme-shop.io", "oncall@acme-shop.io"],
-      confirm: "I authorise safe-active testing",
-    });
+    expect(api.signRulesOfEngagement).toHaveBeenCalledWith(
+      admin.key,
+      {
+        scope: [targetId],
+        exclusions: ["/admin", "/checkout"],
+        intensity: "safe-active",
+        window: { days: ["mon", "tue", "wed", "thu", "fri"], from: "09:00", to: "17:00" },
+        contacts: ["security@acme-shop.io", "oncall@acme-shop.io"],
+        confirm: "I authorise safe-active testing",
+      },
+      { reason: REASON },
+    );
     expect(revalidatePath).toHaveBeenCalledWith("/prove/rules-of-engagement");
   });
 
@@ -285,7 +297,9 @@ describe("signRulesOfEngagementAction", () => {
   });
 
   it("refuses without the exact phrase for the chosen intensity, and keeps what was written", async () => {
-    expect(await signRulesOfEngagementAction(null, form({ ...fields, confirm: "I authorise full testing" }))).toEqual({
+    expect(
+      dropReason(await signRulesOfEngagementAction(null, form({ ...fields, confirm: "I authorise full testing" }))),
+    ).toEqual({
       ok: false,
       errors: [{ path: "confirm", message: "Nothing was signed. Type the phrase exactly as shown." }],
       values,
@@ -294,16 +308,18 @@ describe("signRulesOfEngagementAction", () => {
   });
 
   it("explains every malformed field before sending anything", async () => {
-    const state = await signRulesOfEngagementAction(
-      null,
-      form({
-        exclusions: "admin\n/a/../b",
-        intensity: "loud",
-        from: "9",
-        to: "17:00",
-        contacts: "nobody",
-        confirm: "",
-      }),
+    const state = dropReason(
+      await signRulesOfEngagementAction(
+        null,
+        form({
+          exclusions: "admin\n/a/../b",
+          intensity: "loud",
+          from: "9",
+          to: "17:00",
+          contacts: "nobody",
+          confirm: "",
+        }),
+      ),
     );
     expect(state && !state.ok ? state.errors : []).toEqual([
       { path: "scope", message: "Choose at least one verified target." },
@@ -320,7 +336,7 @@ describe("signRulesOfEngagementAction", () => {
   });
 
   it("refuses an end time equal to the start", async () => {
-    const state = await signRulesOfEngagementAction(null, form({ ...fields, to: "09:00" }));
+    const state = dropReason(await signRulesOfEngagementAction(null, form({ ...fields, to: "09:00" })));
     expect(state && !state.ok ? state.errors : []).toEqual([
       { path: "to", message: "Enter an end time as HH:MM, from 00:00 to 24:00, different from the start." },
     ]);
@@ -328,7 +344,7 @@ describe("signRulesOfEngagementAction", () => {
 
   it("answers a 409 on signing with the generic conflict message, never a guess", async () => {
     vi.mocked(api.signRulesOfEngagement).mockRejectedValueOnce(new api.ConflictError("409"));
-    const state = await signRulesOfEngagementAction(null, form(fields));
+    const state = dropReason(await signRulesOfEngagementAction(null, form(fields)));
     expect(state && !state.ok ? state.errors : []).toEqual([{ path: "", message: CONFLICT }]);
   });
 
@@ -336,7 +352,7 @@ describe("signRulesOfEngagementAction", () => {
     vi.mocked(api.signRulesOfEngagement).mockRejectedValueOnce(
       new api.ValidationError("400", [{ path: "scope.0", message: "not verified" }]),
     );
-    const state = await signRulesOfEngagementAction(null, form(fields));
+    const state = dropReason(await signRulesOfEngagementAction(null, form(fields)));
     expect(state && !state.ok ? state.errors : []).toEqual([
       {
         path: "scope",

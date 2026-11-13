@@ -198,6 +198,10 @@ Add `--logic logic.json` to designate up to 5 protected functions with hidden te
 
 Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the score and fail the step when it is lower: exit 5 below the threshold, exit 6 when there is no score (inconclusive, failed, or `--wait` ran out) unless you pass `--on-no-score pass`. For a separate pipeline step use `antireverse gate --assessment <asm_id> --min-rrs <n> --endpoint <url> --key-env <VAR>`. `--out` is written before the wait; progress goes to stderr every minute.
 
+## Audit log
+
+Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

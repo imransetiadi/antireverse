@@ -1,5 +1,6 @@
 // Isomorphic: this module is safe for browsers. It must not import a Node built-in.
 import { z } from "zod";
+import { AUDIT_REASON_ERROR_CODES } from "./audit.ts";
 import { deepFreeze } from "./shared.ts";
 
 const ProblemErrorSchema = z.object({
@@ -47,6 +48,8 @@ export const ProblemSchema = z.object({
   errors: z.array(ProblemErrorSchema).optional(),
   /** Only on some 409 `conflict` documents. */
   reason: z.enum(CONFLICT_REASONS).optional(),
+  /** Only on a 400 `validation` document that refuses the reason header (slice 18a): why, as `AUDIT_REASON_ERROR_CODES`. */
+  code: z.enum(AUDIT_REASON_ERROR_CODES).optional(),
 });
 export type Problem = z.infer<typeof ProblemSchema>;
 

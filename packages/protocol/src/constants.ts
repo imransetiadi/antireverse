@@ -55,6 +55,8 @@ export const ID_PATTERNS = {
   rcp: /^rcp_[0-9a-f]{24}$/,
   /** A Reverse Assessment (slice 12a). */
   asm: /^asm_[0-9a-f]{24}$/,
+  /** An audit entry (slice 18a). */
+  aud: /^aud_[0-9a-f]{24}$/,
 } as const;
 export type IdPrefix = keyof typeof ID_PATTERNS;
 

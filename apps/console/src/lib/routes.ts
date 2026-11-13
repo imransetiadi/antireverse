@@ -1,5 +1,6 @@
 import type { Environment, IncidentStatus } from "@antireverse/protocol";
 import type { ConfirmOutcome } from "@/features/alerts/confirm-result.ts";
+import type { AuditQuery } from "@/features/audit/query.ts";
 import type { BlockRequest } from "@/features/containment/query.ts";
 import type { FindingQuery } from "@/features/findings/query.ts";
 
@@ -60,6 +61,17 @@ function allowlist(options: { remove?: string } = {}): string {
 /** The alert-channel settings. With `remove` it opens the step that asks before that channel is removed. */
 function alerts(options: { remove?: string } = {}): string {
   return options.remove === undefined ? "/settings/alerts" : `/settings/alerts?remove=${options.remove}`;
+}
+
+/** The audit log (slice 18a), optionally filtered: `?action=&app=&from=&to=`, in a fixed order. */
+function audit(query: AuditQuery = {}): string {
+  const search = new URLSearchParams();
+  if (query.action !== undefined) search.set("action", query.action);
+  if (query.app !== undefined) search.set("app", query.app);
+  if (query.from !== undefined) search.set("from", query.from);
+  if (query.to !== undefined) search.set("to", query.to);
+  const text = search.toString();
+  return `/settings/audit${text ? `?${text}` : ""}`;
 }
 
 /** The filters of a Finding list as a query string, in a fixed order; empty without filters. */
@@ -123,6 +135,9 @@ export const ROUTES = {
   containment,
   alerts,
   allowlist,
+  audit,
+  /** The NDJSON export of the audit log, through the Console's route handler that checks the session. */
+  auditExport: "/api/audit/export",
   /**
    * Where a confirmation link ends up after "Confirm email" (slice 06b): the outcome only, never the token. Public.
    */
