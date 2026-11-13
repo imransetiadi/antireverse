@@ -166,7 +166,9 @@ Before Airverse may test a host, prove you own it under **Prove → Targets**: a
 
 Run `antireverse harden --register --routes routes.json --assess T1` to register a Build with its route inventory and queue an Assessment of the protected output; the Build page then shows **Reverse resistance**: the score or why there is none, each Objective (Map, Secrets, Replay) with its evidence and a fix suggestion, and **Assess again** once a run has finished. The artifact is kept for 30 days after the last run.
 
-- **Honest limits:** the agent is a scripted stand-in until a real model is configured, so results measure the pipeline, not real resistance. Logic and Tamper Objectives come in 12b; until then every Assessment is inconclusive. Runs are isolated in a worker thread, not a separate hosted account.
+Add `--logic logic.json` to designate up to 5 protected functions with hidden test vectors (Objective Logic); without it Logic is not assessed and the run is inconclusive. Tamper is judged on the bundle's JavaScript files: a Build without `--integrity` has no tamper check, so it counts as tampered.
+
+- **Honest limits:** the agent is a scripted stand-in until a real model is configured, so results measure the pipeline, not real resistance. Untrusted code runs in a child process under Node's permission model, not a separate hosted account; a further adversarial review is pending before a real model agent is enabled. Harden's integrity check is a tamper signal, not tamper-proofing.
 
 ## Clone Beacon
 

@@ -3,8 +3,9 @@
 // for its submissions, and then submits what simple patterns find: Canary-shaped and secret-shaped strings (W2),
 // URL path literals and fetch/XHR/client call sites (W1), and one unsigned request built from the observed call
 // sites (W5). Same artifact, same calls, same submissions. Its scores measure the pipeline, not real resistance.
-import { STAND_IN_MODEL } from "@antireverse/protocol";
+import { LOGIC_LIMITS, type LogicPublic, STAND_IN_MODEL } from "@antireverse/protocol";
 import { BudgetExhaustedError } from "./budget.ts";
+import { TAMPER_MARKER } from "./tamper.ts";
 import { TOOLBELT_LIMITS } from "./toolbelt.ts";
 import type { AdversaryAgent, AgentContext, BudgetView, ReplayRequest, Toolbelt } from "./types.ts";
 
@@ -116,6 +117,60 @@ function replayRequest(sites: readonly CallSite[], endpoints: readonly string[])
   return { method: chosen.method, path, headers: { "content-type": "application/json" }, body: "{}" };
 }
 
+// --- W3 and W4 ---------------------------------------------------------------------------------------------
+
+const TAMPER_FILE = /\.(?:js|mjs|cjs)$/;
+
+/** A W3 body that answers the public examples from a table and null otherwise: the stand-in cannot reason. */
+export function lookupBody(entry: LogicPublic): string {
+  const table = Object.fromEntries(entry.examples.map((example) => [JSON.stringify(example.input), example.output]));
+  return `const table = ${JSON.stringify(table)}; const key = JSON.stringify(args); return Object.prototype.hasOwnProperty.call(table, key) ? table[key] : null;`;
+}
+
+const PAYLOAD_START = 'var __payload="';
+const HASH_CHECK = "if(__h(__payload)!==";
+
+/** The end (exclusive) of the JSON string literal that starts at `start` (its opening quote), or -1. */
+function stringLiteralEnd(text: string, start: number): number {
+  for (let i = start + 1; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 92)
+      i++; // backslash: skip the escaped character
+    else if (code === 34) return i + 1; // closing quote
+  }
+  return -1;
+}
+
+/**
+ * The stand-in's W4 edit: `globalThis.__airverse_tamper="<nonce>";` first in the file — or, for a file wrapped by
+ * Harden's integrity pass, first in the embedded payload, with the wrapper's hash comparison neutralised so the
+ * edited payload still runs.
+ */
+export function tamperEdit(text: string, nonce: string): string {
+  const marker = `${TAMPER_MARKER}=${JSON.stringify(nonce)};`;
+  const at = text.indexOf(PAYLOAD_START);
+  if (at !== -1) {
+    const quote = at + PAYLOAD_START.length - 1;
+    const end = stringLiteralEnd(text, quote);
+    let payload: unknown = null;
+    if (end !== -1) {
+      try {
+        payload = JSON.parse(text.slice(quote, end));
+      } catch {
+        payload = null;
+      }
+    }
+    if (typeof payload === "string") {
+      const edited = `${text.slice(0, quote)}${JSON.stringify(marker + payload)}${text.slice(end)}`;
+      const check = edited.indexOf(HASH_CHECK);
+      return check === -1
+        ? edited
+        : `${edited.slice(0, check)}if(false&&__h(__payload)!==${edited.slice(check + HASH_CHECK.length)}`;
+    }
+  }
+  return marker + text;
+}
+
 // --- The agent -------------------------------------------------------------------------------------------
 
 export class StandInAgent implements AdversaryAgent {
@@ -123,16 +178,19 @@ export class StandInAgent implements AdversaryAgent {
   readonly version = STAND_IN_AGENT.version;
   readonly model = STAND_IN_AGENT.model;
 
-  async run(_context: AgentContext, toolbelt: Toolbelt, budget: BudgetView): Promise<void> {
+  async run(context: AgentContext, toolbelt: Toolbelt, budget: BudgetView): Promise<void> {
     try {
-      await this.#work(toolbelt, budget);
+      await this.#work(context, toolbelt, budget);
     } catch (error) {
       if (!(error instanceof BudgetExhaustedError)) throw error;
       // The budget is spent: the run ends here, with whatever was submitted.
     }
   }
 
-  async #work(toolbelt: Toolbelt, budget: BudgetView): Promise<void> {
+  async #work(context: AgentContext, toolbelt: Toolbelt, budget: BudgetView): Promise<void> {
+    const designated = (context.logic ?? []).slice(0, LOGIC_LIMITS.submissionsMax);
+    // Calls kept for the submissions: W2, W1, W5, one W3 per designated function, one W4.
+    const reserved = RESERVED_CALLS + designated.length + 1;
     if (budget.callsLeft() < 1) return;
     const listed = await toolbelt.list();
     if (!listed.ok) return;
@@ -140,8 +198,11 @@ export class StandInAgent implements AdversaryAgent {
     const secrets = new Set<string>();
     const endpoints = new Set<string>();
     const sites: CallSite[] = [];
-    const canRead = () => budget.callsLeft() > RESERVED_CALLS && budget.secondsLeft() > 0;
+    const canRead = () => budget.callsLeft() > reserved && budget.secondsLeft() > 0;
+    let tamperTarget: { path: string; text: string } | null = null;
     for (const file of listed.files) {
+      // The first JavaScript file is also kept whole: the W4 edit needs it.
+      const parts: string[] | null = tamperTarget === null && TAMPER_FILE.test(file.path) ? [] : null;
       // Each chunk is scanned as it arrives, with the tail of the previous one in front, so no scan is longer
       // than one chunk plus the overlap and a match across a chunk boundary is still found.
       let tail = "";
@@ -150,16 +211,18 @@ export class StandInAgent implements AdversaryAgent {
       while (canRead()) {
         const read = await toolbelt.read(file.path, { offset, length: TOOLBELT_LIMITS.readBytesMax });
         if (!read.ok) break;
+        parts?.push(read.text);
         const window = tail + read.text;
         findSecrets(window, secrets);
         findRoutes(window, endpoints, sites);
         tail = window.slice(-SCAN_OVERLAP);
-        offset += TOOLBELT_LIMITS.readBytesMax;
+        offset = read.end;
         if (!read.more) {
           complete = true;
           break;
         }
       }
+      if (complete && parts !== null) tamperTarget = { path: file.path, text: parts.join("") };
       if (!complete) break;
     }
 
@@ -169,6 +232,13 @@ export class StandInAgent implements AdversaryAgent {
     }
     const routes = [...endpoints].slice(0, TOOLBELT_LIMITS.endpointsMax);
     if (routes.length > 0) await toolbelt.submit("W1", { endpoints: routes });
+    for (const entry of designated) await toolbelt.submit("W3", { function_id: entry.id, body: lookupBody(entry) });
+    if (tamperTarget !== null && context.tamper !== undefined) {
+      await toolbelt.submit("W4", {
+        path: tamperTarget.path,
+        code: tamperEdit(tamperTarget.text, context.tamper.nonce),
+      });
+    }
     await toolbelt.submit("W5", { request: replayRequest(sites, routes) });
   }
 }

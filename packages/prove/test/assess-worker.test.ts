@@ -2,7 +2,8 @@
 // own worker (artifact transferred, heap limited), terminates it on abort or at the deadline, and loads the agent
 // by built-in name or module specifier. Inside, every Toolbelt call yields a macrotask so timers can fire.
 import { fileURLToPath } from "node:url";
-import { EXAMPLE_CANARIES, EXAMPLE_ROUTE_INVENTORY } from "@antireverse/protocol";
+import { applyIntegrity } from "@antireverse/harden";
+import { EXAMPLE_CANARIES, EXAMPLE_LOGIC, EXAMPLE_ROUTE_INVENTORY } from "@antireverse/protocol";
 import { describe, expect, it } from "vitest";
 import { assess } from "../src/assess.ts";
 import { ASSESS_WORKER_LIMITS, assessInWorker } from "../src/assess-worker-host.ts";
@@ -33,6 +34,19 @@ describe("assessInWorker", () => {
     expect(inWorker.score).toEqual(inline.score);
     expect(inWorker.calls.map((c) => c.tool)).toEqual(inline.calls.map((c) => c.tool));
   });
+
+  it("a fully decided T1 run with logic and integrity is scored in the worker too", async () => {
+    const script = 'function add(i) { return fetch("/api/cart", { method: "POST" }); }\nvar k = 1;';
+    const outcome = await assessInWorker({
+      artifact: { "dist/app.js": applyIntegrity(script) },
+      build: { ...BUILD, logic: EXAMPLE_LOGIC, integrity: true },
+      tier: "T1",
+      agent: "stand-in",
+    });
+    expect(outcome.results.find((r) => r.objective === "W4")).toMatchObject({ result: "achieved" });
+    expect(outcome.results.find((r) => r.objective === "W3")).toMatchObject({ result: "not_achieved" });
+    expect(outcome.score).toMatchObject({ status: "scored" });
+  }, 20_000);
 
   it("copies the artifact: the caller's bytes stay readable", async () => {
     const bytes = new TextEncoder().encode(APP);
@@ -129,9 +143,28 @@ describe("assessInWorker", () => {
     );
   }, 20_000);
 
-  it("limits the worker's heap to about 256 MB", () => {
+  it("limits the worker's heap to about 256 MB, and its default grace covers the judging budget", () => {
     expect(ASSESS_WORKER_LIMITS.oldGenerationMb).toBe(256);
+    expect(ASSESS_WORKER_LIMITS.graceMs).toBe(90_000);
   });
+
+  // Review 12b F3: the module analysis ran a full Babel parse in this worker and blew its heap on 2 MB.
+  it.each([2, 8])(
+    "a %i MB JS file with the stand-in finishes",
+    async (mb) => {
+      const body = "a.b.c(1, [2, 3], { d: 4 });\n".repeat(Math.floor((mb * 1024 * 1024) / 27));
+      for (const code of [body, `import { a } from "lib";\n${body}`]) {
+        const outcome = await assessInWorker({
+          artifact: new Map([["app.js", code]]),
+          build: { canaries: [], routes: null, integrity: false },
+          tier: "T1",
+          agent: "stand-in",
+        });
+        expect(outcome.results).toHaveLength(5);
+      }
+    },
+    120_000,
+  );
 });
 
 describe("Toolbelt calls yield a macrotask", () => {

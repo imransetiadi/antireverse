@@ -2,7 +2,8 @@
 // a T1 Reverse Assessment from the e2e API (real prove engine, stand-in agent). While the run is held (the hold file of
 // fixtures/api-fixture-patches.ts) the Build page shows it running, then a second one queued, and offers no
 // "Assess again". Once both finish, the "Reverse resistance" section shows "Inconclusive: <reason>" with no number,
-// the scope and stand-in note, and the five Objective rows (W2 achieved on the planted Canary, W3/W4 not attempted).
+// the scope and stand-in note, and the five Objective rows (W2 achieved on the planted Canary, W3 not attempted without
+// --logic, with the hint; W4 not attempted, the reference bundle having no JavaScript file).
 // "Assess again" then requests a new Assessment of the kept bundle, which runs and finishes too.
 import { execFile } from "node:child_process";
 import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -205,7 +206,8 @@ test("the Build page shows the Reverse resistance result, and Assess again only 
     await expect(section.getByTestId("assessment-scope")).toContainText("tier T1");
     await expect(section.getByTestId("assessment-stand-in")).toBeVisible();
 
-    // The Objective rows: W1–W5 in order; W2 achieved on the decoy key (by id, never its value); W3/W4 not attempted.
+    // The Objective rows: W1–W5 in order; W2 achieved on the decoy key (by id, never its value); W3 not attempted
+    // without --logic (slice 12b shows how to add it); W4 not attempted: no JavaScript file to run (D-076).
     const rows = section.getByTestId("objective-row");
     await expect(rows).toHaveCount(5);
     for (const [index, id] of ["W1", "W2", "W3", "W4", "W5"].entries()) {
@@ -219,11 +221,12 @@ test("the Build page shows the Reverse resistance result, and Assess again only 
     await expect(section.locator('[data-testid="objective-row"][data-objective="W1"]')).not.toContainText(
       "Not attempted",
     );
-    for (const id of ["W3", "W4"]) {
-      await expect(section.locator(`[data-testid="objective-row"][data-objective="${id}"]`)).toContainText(
-        "Not attempted",
-      );
-    }
+    const w3 = section.locator('[data-testid="objective-row"][data-objective="W3"]');
+    await expect(w3).toContainText("Not attempted");
+    await expect(w3.getByTestId("objective-hint")).toContainText("--logic");
+    await expect(section.locator('[data-testid="objective-row"][data-objective="W4"]')).toContainText(
+      "Not attempted: no JavaScript file to run",
+    );
     await expect(section.locator('[data-testid="objective-row"][data-objective="W5"]')).toContainText("Not achieved");
     await expect(section).not.toContainText(keyCanary.value);
 

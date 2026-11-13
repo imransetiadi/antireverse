@@ -1,11 +1,12 @@
-// The Toolbelt's code runner (slice 12a, Review Focus 2). Each call starts a fresh worker_threads worker with
-// resource limits and an empty environment; inside it the code runs in a new V8 context (node:vm) that has only
-// the language built-ins: no require, import, process, Buffer, network classes or timers, and code generation
-// from strings is off (eval, new Function and the constructor escape all throw). The input crosses as a JSON
-// string and the output comes back as one, so no host object is ever reachable. The script timeout stops loops
-// (microtasks included); a host timer terminates the worker for anything the script timeout cannot interrupt.
-// Honest limit: node:vm in a worker is process-level isolation, not the hosted isolated account (SDD §12.2).
-import { Worker } from "node:worker_threads";
+// The Toolbelt's code runner (slice 12a, Review Focus 2; review 12b F1). Each call starts a fresh sandbox child
+// process (child.ts: permission model, no code generation in its own realm, empty environment, heap limit); inside
+// it the code runs in a new V8 context (node:vm) that has only the language built-ins: no require, import, process,
+// Buffer, network classes or timers, and code generation from strings is off (eval, new Function and the
+// constructor escape all throw). import() rejects with an error of the context's own realm. The input crosses as
+// a JSON string and the output comes back as one. The script timeout stops loops (microtasks included); the parent
+// kills the child for anything the script timeout cannot interrupt.
+// Honest limit: a child process on the same machine is not the hosted isolated account (SDD §12.2).
+import { runChild } from "./child.ts";
 import type { RunResult, ToolFailure } from "./types.ts";
 
 export const RUN_LIMITS = Object.freeze({
@@ -19,82 +20,21 @@ export const RUN_LIMITS = Object.freeze({
   outputCharsMax: 65_536,
   /** Characters of an error message passed back. */
   errorCharsMax: 300,
-  /** The worker's heap limits, in MB. */
-  oldGenerationMb: 64,
-  youngGenerationMb: 16,
-  stackMb: 4,
+  /** The child's heap limit, in MB. */
+  heapMb: 128,
 });
 
-/** Grace after the script timeout before the host terminates the worker. */
-const KILL_GRACE_MS = 250;
-
-// Plain JavaScript (an eval worker is a CommonJS script). Only this code has require; the agent's code runs in
-// the context, which has none.
-const WORKER_SOURCE = `
-"use strict";
-const vm = require("node:vm");
-const { parentPort, workerData } = require("node:worker_threads");
-process.on("unhandledRejection", () => {});
-const { code, input, timeoutMs, errorCharsMax } = workerData;
-function text(value) {
-  try { return String(value).slice(0, errorCharsMax); } catch { return "unreadable error"; }
-}
-let message;
-try {
-  const context = vm.createContext(Object.create(null), {
-    name: "prove-run",
-    codeGeneration: { strings: false, wasm: false },
-    microtaskMode: "afterEvaluate",
-  });
-  context.__input = input;
-  // The code is compiled as the body of a function of input (it cannot close the function and run outside
-  // it), in the context, and called by a fixed wrapper that runs under the script timeout.
-  context.__fn = vm.compileFunction('"use strict";\\n' + code, ["input"], {
-    parsingContext: context,
-    filename: "run.js",
-  });
-  const source =
-    '"use strict";(function () {' +
-    "const __parse = JSON.parse; const __stringify = JSON.stringify; const __fn = globalThis.__fn;" +
-    "delete globalThis.__fn;" +
-    "const __result = __fn.call(undefined, __parse(__input));" +
-    'if (__result !== null && (typeof __result === "object" || typeof __result === "function") && typeof __result.then === "function") {' +
-    'throw new TypeError("The code must return a value, not a Promise.");}' +
-    "return __stringify(__result === undefined ? null : __result);" +
-    "})()";
-  const script = new vm.Script(source, { filename: "wrapper.js", importModuleDynamically: undefined });
-  const output = script.runInContext(context, { timeout: timeoutMs, breakOnSigint: false });
-  // The output must be JSON text, checked with this realm's JSON (the code may have changed the context's).
-  // (JSON.stringify gives undefined for a function or symbol: that is null, as for undefined.)
-  let isJson = output === undefined;
-  if (typeof output === "string") {
-    try { JSON.parse(output); isJson = true; } catch {}
-  }
-  if (!isJson) message = { ok: false, kind: "error", error: "The result is not JSON data." };
-  else message = { ok: true, output: output === undefined ? "null" : output };
-} catch (error) {
-  let timedOut = false;
-  try { timedOut = error && error.code === "ERR_SCRIPT_EXECUTION_TIMEOUT"; } catch {}
-  if (timedOut) {
-    message = { ok: false, kind: "timeout", error: "The code ran over the time limit." };
-  } else {
-    let name = "Error";
-    let detail = "";
-    try { name = text(error && error.name); detail = text(error && error.message); } catch {}
-    message = { ok: false, kind: "error", error: text(name + ": " + detail) };
-  }
-}
-parentPort.postMessage(message);
-`;
+/** Grace after the script timeout before the parent kills the child (start-up included). */
+const KILL_GRACE_MS = 750;
 
 export interface RunOptions {
   /** Milliseconds this run may take. Default `RUN_LIMITS.timeoutMs`. */
   timeoutMs?: number;
-  /** Called with the exit code once the worker has really exited (tests: termination is real). */
-  onWorkerExit?: (code: number) => void;
+  /** Called with the exit code once the child has really exited (tests: termination is real). */
+  onExit?: (code: number | null) => void;
 }
 
-/** Runs `code` (a function body of `input`) in a fresh isolated worker. Never rejects. */
+/** Runs `code` (a function body of `input`) in a fresh sandbox child. Never rejects. */
 export function runIsolated(code: string, input: unknown, options: RunOptions = {}): Promise<RunResult | ToolFailure> {
   const timeoutMs = options.timeoutMs ?? RUN_LIMITS.timeoutMs;
   if (typeof code !== "string" || code.length > RUN_LIMITS.codeCharsMax) {
@@ -123,73 +63,33 @@ export function runIsolated(code: string, input: unknown, options: RunOptions = 
     });
   }
 
-  return new Promise((resolve) => {
-    let settled = false;
-    let worker: Worker;
-    const finish = (result: RunResult | ToolFailure) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      void worker.terminate().catch(() => {});
-      resolve(result);
-    };
-    try {
-      worker = new Worker(WORKER_SOURCE, {
-        eval: true,
-        workerData: { code, input: json, timeoutMs, errorCharsMax: RUN_LIMITS.errorCharsMax },
-        env: {},
-        argv: [],
-        execArgv: [],
-        stdin: false,
-        stdout: true,
-        stderr: true,
-        resourceLimits: {
-          maxOldGenerationSizeMb: RUN_LIMITS.oldGenerationMb,
-          maxYoungGenerationSizeMb: RUN_LIMITS.youngGenerationMb,
-          stackSizeMb: RUN_LIMITS.stackMb,
-        },
-      });
-    } catch {
-      resolve({ ok: false, kind: "sandbox", error: "The sandbox could not start." });
-      return;
+  return runChild(
+    { mode: "run", code, input: json, timeoutMs },
+    {
+      heapMb: RUN_LIMITS.heapMb,
+      timeoutMs: timeoutMs + KILL_GRACE_MS,
+      maxOutputBytes: RUN_LIMITS.outputCharsMax * 2 + 4_096,
+      ...(options.onExit === undefined ? {} : { onExit: options.onExit }),
+    },
+  ).then((outcome): RunResult | ToolFailure => {
+    const line = outcome.lines[0];
+    if (line === undefined) {
+      if (outcome.outOfMemory) return { ok: false, kind: "memory", error: "The code ran over the memory limit." };
+      if (outcome.killed) return { ok: false, kind: "timeout", error: "The code ran over the time limit." };
+      return { ok: false, kind: "sandbox", error: "The sandbox ended without a result." };
     }
-    // Whatever the worker writes is discarded.
-    worker.stdout?.resume();
-    worker.stderr?.resume();
-    const timer = setTimeout(() => {
-      finish({ ok: false, kind: "timeout", error: "The code ran over the time limit." });
-    }, timeoutMs + KILL_GRACE_MS);
-    worker.on("message", (message: unknown) => {
-      const m = message as { ok?: unknown; output?: unknown; kind?: unknown; error?: unknown };
-      if (m?.ok === true && typeof m.output === "string") {
-        if (m.output.length > RUN_LIMITS.outputCharsMax) {
-          finish({
-            ok: false,
-            kind: "invalid",
-            error: `The output is over ${RUN_LIMITS.outputCharsMax} characters of JSON.`,
-          });
-        } else {
-          finish({ ok: true, output: m.output });
-        }
-        return;
+    if (line.ok === true && typeof line.output === "string") {
+      if (line.output.length > RUN_LIMITS.outputCharsMax) {
+        return {
+          ok: false,
+          kind: "invalid",
+          error: `The output is over ${RUN_LIMITS.outputCharsMax} characters of JSON.`,
+        };
       }
-      const kind = m?.kind === "timeout" ? "timeout" : "error";
-      finish({ ok: false, kind, error: typeof m?.error === "string" ? m.error : "The code failed." });
-    });
-    worker.on("error", (error: Error & { code?: string }) => {
-      if (error?.code === "ERR_WORKER_OUT_OF_MEMORY") {
-        finish({ ok: false, kind: "memory", error: "The code ran over the memory limit." });
-      } else {
-        finish({ ok: false, kind: "sandbox", error: "The sandbox ended unexpectedly." });
-      }
-    });
-    worker.on("exit", (code: number) => {
-      try {
-        options.onWorkerExit?.(code);
-      } catch {
-        // An observer's failure changes nothing.
-      }
-      finish({ ok: false, kind: "sandbox", error: "The sandbox ended without a result." });
-    });
+      return { ok: true, output: line.output };
+    }
+    const kind = line.kind === "timeout" ? "timeout" : "error";
+    const error = typeof line.error === "string" ? line.error.slice(0, RUN_LIMITS.errorCharsMax) : "The code failed.";
+    return { ok: false, kind, error };
   });
 }

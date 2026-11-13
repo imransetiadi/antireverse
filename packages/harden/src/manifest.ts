@@ -42,6 +42,8 @@ export interface BuildManifestArgs {
   components?: { count: number; digest: string };
   /** The route inventory in summary (slice 12a): its length and `routesDigest`. Never the routes. Omitted when absent. */
   routes?: { count: number; digest: string };
+  /** The designated protected functions in summary (slice 12b): their number and `logicDigest`. Never the file. Omitted when absent. */
+  logic?: { count: number; digest: string };
 }
 
 function gzipLen(code: string): number {
@@ -87,5 +89,6 @@ export function buildManifest(args: BuildManifestArgs): BuildManifest {
     ...(args.beacon ? { beacon: { token: args.beacon.token, origins: [...args.beacon.origins] } } : {}),
     ...(args.components ? { components_digest: args.components.digest, component_count: args.components.count } : {}),
     ...(args.routes ? { routes_digest: args.routes.digest, route_count: args.routes.count } : {}),
+    ...(args.logic ? { logic_digest: args.logic.digest, logic_count: args.logic.count } : {}),
   };
 }

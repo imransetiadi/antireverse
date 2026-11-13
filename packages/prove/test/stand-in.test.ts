@@ -2,12 +2,20 @@
 // finds Canary-shaped and secret-shaped strings (W2), URL path literals and fetch/XHR call sites (W1), and builds
 // one request from the observed routes (W5), within its budget.
 import { canaryStatement } from "@antireverse/harden";
-import { EXAMPLE_CANARIES, STAND_IN_MODEL } from "@antireverse/protocol";
+import { EXAMPLE_CANARIES, EXAMPLE_LOGIC, LogicPublicSchema, STAND_IN_MODEL } from "@antireverse/protocol";
 import { describe, expect, it } from "vitest";
-import { STAND_IN_AGENT, StandInAgent } from "../src/agent.ts";
+import { STAND_IN_AGENT, StandInAgent, tamperEdit } from "../src/agent.ts";
 import { Budget } from "../src/budget.ts";
+import { TAMPER_MARKER } from "../src/tamper.ts";
 import { createToolbelt } from "../src/toolbelt.ts";
-import type { AgentContext, MapSubmission, ReplaySubmission, SecretsSubmission } from "../src/types.ts";
+import type {
+  AgentContext,
+  LogicSubmissionPayload,
+  MapSubmission,
+  ReplaySubmission,
+  SecretsSubmission,
+  TamperSubmissionPayload,
+} from "../src/types.ts";
 
 const TOKEN = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
 const APP = [
@@ -22,19 +30,37 @@ const APP = [
   canaryStatement(EXAMPLE_CANARIES),
 ].join("\n");
 
+const NONCE = "0123456789abcdef";
 const CONTEXT: AgentContext = {
   tier: "T1",
   objectives: [
     { id: "W1", name: "Map", submit: "endpoints" },
     { id: "W2", name: "Secrets", submit: "values" },
+    { id: "W4", name: "Tamper", submit: "file" },
     { id: "W5", name: "Replay", submit: "request" },
   ],
+  logic: [],
+  tamper: { nonce: NONCE, marker: TAMPER_MARKER },
+};
+const PRICE = EXAMPLE_LOGIC.functions[0] as (typeof EXAMPLE_LOGIC.functions)[number];
+const WITH_LOGIC: AgentContext = {
+  ...CONTEXT,
+  objectives: [...CONTEXT.objectives, { id: "W3", name: "Logic", submit: "body" }],
+  logic: [LogicPublicSchema.parse(PRICE)],
 };
 
-async function runStandIn(files: Record<string, string>, limits = { calls: 150, seconds: 900 }) {
+async function runStandIn(
+  files: Record<string, string>,
+  limits = { calls: 150, seconds: 900 },
+  context: AgentContext = CONTEXT,
+) {
   const budget = new Budget(limits, () => 0);
-  const handle = createToolbelt({ artifact: files, budget });
-  await new StandInAgent().run(CONTEXT, handle.toolbelt, budget);
+  const handle = createToolbelt({
+    artifact: files,
+    budget,
+    logicIds: context.logic.map((entry) => entry.id),
+  });
+  await new StandInAgent().run(context, handle.toolbelt, budget);
   const payload = <T>(objective: string) =>
     handle.submissions.find((s) => s.objective === objective)?.payload as T | undefined;
   return { ...handle, budget, payload };
@@ -77,7 +103,7 @@ describe("StandInAgent", () => {
 
   it("works only through the Toolbelt: every step is a recorded call", async () => {
     const { calls } = await runStandIn({ "dist/app.js": APP, "dist/b.js": "fetch('/api/b')" });
-    expect(calls.map((c) => c.tool)).toEqual(["list", "read", "read", "submit", "submit", "submit"]);
+    expect(calls.map((c) => c.tool)).toEqual(["list", "read", "read", "submit", "submit", "submit", "submit"]);
   });
 
   it("reads a large file in chunks", async () => {
@@ -112,9 +138,9 @@ describe("StandInAgent", () => {
     const files = Object.fromEntries(
       Array.from({ length: 10 }, (_, i) => [`f${i}.js`, `fetch("/api/f${i}"); const token = "${TOKEN}";`]),
     );
-    const { calls, budget, payload } = await runStandIn(files, { calls: 6, seconds: 900 });
-    expect(budget.calls()).toBe(6);
-    expect(calls.filter((c) => c.tool === "submit")).toHaveLength(3);
+    const { calls, budget, payload } = await runStandIn(files, { calls: 7, seconds: 900 });
+    expect(budget.calls()).toBe(7);
+    expect(calls.filter((c) => c.tool === "submit")).toHaveLength(4);
     expect(payload<MapSubmission>("W1")?.endpoints).toEqual(["GET /api/f0", "GET /api/f1"]);
   });
 
@@ -128,5 +154,20 @@ describe("StandInAgent", () => {
     expect(payload<SecretsSubmission>("W2")).toBeUndefined();
     expect(payload<MapSubmission>("W1")).toBeUndefined();
     expect(payload<ReplaySubmission>("W5")).toEqual({ request: { method: "GET", path: "/", headers: {} } });
+  });
+
+  it("W3: submits a lookup over each designated function's public examples", async () => {
+    const { submissions } = await runStandIn({ "a.js": "var x = 1;" }, undefined, WITH_LOGIC);
+    const w3 = submissions.filter((s) => s.objective === "W3").map((s) => s.payload as LogicSubmissionPayload);
+    expect(w3).toHaveLength(1);
+    expect(w3[0]?.function_id).toBe(PRICE.id);
+    expect(w3[0]?.body).toContain(JSON.stringify(JSON.stringify(PRICE.examples[0]?.input)));
+    for (const vector of PRICE.vectors.slice(2)) expect(w3[0]?.body).not.toContain(JSON.stringify(vector.input));
+  });
+
+  it("W4: submits the first fully read JS file with the marker edit and this run's nonce", async () => {
+    const file = "var x = 1;\n".repeat(20);
+    const { payload } = await runStandIn({ "a.js": file, "b.css": "p{}", "c.js": file });
+    expect(payload<TamperSubmissionPayload>("W4")).toEqual({ path: "a.js", code: tamperEdit(file, NONCE) });
   });
 });

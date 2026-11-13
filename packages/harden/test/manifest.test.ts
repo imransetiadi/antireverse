@@ -109,6 +109,24 @@ describe("buildManifest", () => {
     expect(BuildManifestSchema.parse(manifest)).toEqual(manifest);
   });
 
+  it("carries logic_count and logic_digest when given (slice 12b), never the logic file, and parses", () => {
+    const manifest = buildManifest({
+      ...BASE,
+      artifacts: [{ path: "a.mjs", code: "const a=1;" }],
+      logic: { count: 2, digest: "b".repeat(64) },
+    });
+    expect(manifest.logic_count).toBe(2);
+    expect(manifest.logic_digest).toBe("b".repeat(64));
+    expect("logic" in manifest).toBe(false);
+    expect(BuildManifestSchema.parse(manifest)).toEqual(manifest);
+  });
+
+  it("omits logic_count and logic_digest when no logic file is given", () => {
+    const manifest = buildManifest({ ...BASE, artifacts: [{ path: "a.mjs", code: "const a=1;" }] });
+    expect("logic_count" in manifest).toBe(false);
+    expect("logic_digest" in manifest).toBe(false);
+  });
+
   it("omits route_count and routes_digest when no inventory is given", () => {
     const manifest = buildManifest({ ...BASE, artifacts: [{ path: "a.mjs", code: "const a=1;" }] });
     expect("route_count" in manifest).toBe(false);

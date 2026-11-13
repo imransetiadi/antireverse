@@ -3,6 +3,7 @@ import {
   EXAMPLE_BUILD_MANIFEST,
   EXAMPLE_FINDINGS_SUMMARY,
   EXAMPLE_INVENTORY,
+  EXAMPLE_LOGIC,
   EXAMPLE_ROUTE_INVENTORY,
 } from "@antireverse/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -127,5 +128,30 @@ describe("registerBuild — route inventory (slice 12a)", () => {
       routes,
     });
     expect(body).toEqual({ manifest: EXAMPLE_BUILD_MANIFEST, components, routes });
+  });
+});
+
+describe("registerBuild — logic file (slice 12b)", () => {
+  it("sends the logic file beside the routes, and no logic key when absent", async () => {
+    let body: unknown;
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ build: EXAMPLE_BUILD }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const routes = [...EXAMPLE_ROUTE_INVENTORY];
+    await registerBuild({
+      endpoint: ENDPOINT,
+      key: KEY,
+      appId: APP,
+      manifest: EXAMPLE_BUILD_MANIFEST,
+      routes,
+      logic: EXAMPLE_LOGIC,
+    });
+    expect(body).toEqual({ manifest: EXAMPLE_BUILD_MANIFEST, routes, logic: EXAMPLE_LOGIC });
+    await registerBuild({ endpoint: ENDPOINT, key: KEY, appId: APP, manifest: EXAMPLE_BUILD_MANIFEST, routes });
+    expect(body).toEqual({ manifest: EXAMPLE_BUILD_MANIFEST, routes });
   });
 });

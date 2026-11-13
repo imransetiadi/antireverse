@@ -250,6 +250,8 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-072 | Email alerts: one service SMTP account from environment settings, an in-house SMTP client (STARTTLS required, certificate validation), an `email` channel kind with 1–5 recipients who each confirm by a single-use link before receiving any alert, plain-text mail | Jev 0.94, following the owner's SMTP choice (D-068) | accepted |
 | D-073 | Slice 12 is split: 12a (orchestrator, stand-in agent, Toolbelt, scorer, W1 Map, W2 Secrets, W5 Replay, Console) then 12b (W3 Logic, W4 Tamper); scores stay inconclusive until 12b | Jev tie 0.47/0.47; chosen for smaller increments under the owner's keep-going instruction (2026-11-13) | accepted |
 | D-074 | Slice 12a: W2 on Canaries only; W1 needs coverage ≥ 60 % and precision ≥ 50 % with submissions capped at 2 × the inventory; only evidence-referenced calls stored (≤ 200); each Assessment runs in its own worker with a hard deadline; preflights are never replays | Jev 0.91 / 0.70 / 0.96; independent review F1–F3 | accepted |
+| D-075 | Slice 12b: W3 via a `--logic` file (hidden vectors, all must pass); W4 counts as achieved on a Build without an integrity check (no check, no resistance) | Jev 1.0 on W3; owner chose W4 after Jev 0.33 (2026-11-13) | accepted |
+| D-076 | W4 with no runnable JavaScript file is not attempted (`no_runnable_file`); all Prove sandboxes run in a child process under `node --permission` with no grants | Owner after Jev 0.36; Jev 1.0 after review F1 (escape via import() in node:vm) | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -377,7 +379,7 @@ Which practice to apply when. The practices come from the references in PRD §19
 - Owner answers to questions 1–7 in PRD §17 (the calls C1–C7 were approved with the specification).
 - Owner confirmation of D-018 to D-026, made during slice 01.
 - Owner: set AR_SMTP_* and the sender domain's SPF/DKIM to switch on email alerts (D-068, built in 06b); an AI provider key and spend caps before real Reverse Assessments (D-067).
-- Slice 12b: W3 Logic and W4 Tamper verifiers, so scores can leave inconclusive. Side effect from 12a e2e work: 10 fixture advisories were written into the local dev database `apps/api/.data/pg` (recreate it to remove them).
+- Before enabling a real model agent for Reverse Assessments: complete the adversarial review of the Prove sandbox and W4 rules (the 12b pass was stopped by model safeguards; see plan 12b A4). Side effect from 12a e2e work: 10 fixture advisories were written into the local dev database `apps/api/.data/pg` (recreate it to remove them).
 - Follow-ups from slice 11: Shield records whether a request's content type was in `bodyVerified` (exact signature judging); two-count limit replay to judge more passes.
 - The repository is on GitHub (private, imransetiadi/antireverse, branch main) since 2026-11-11; the working copy lives in the folder the app made for the session.
 - Legal review of licences and usage terms for the embedded engines before general availability.
@@ -548,3 +550,4 @@ Next step for whoever continues:
 | 2026-11-13 | Slice 14 built; decisions D-067–D-071; Verified Targets, simulation follow-ups |
 | 2026-11-13 | Slice 06b built; decision D-072; email alerts over SMTP |
 | 2026-11-13 | Slice 12a built; decision D-074; Reverse Assessment v1 (stand-in agent) |
+| 2026-11-13 | Slice 12b built; decisions D-075–D-076; W3 Logic and W4 Tamper, sandbox in a permission-limited child process |

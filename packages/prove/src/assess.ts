@@ -4,10 +4,14 @@
 // cost at its submission and the earliest tier that cost fits; the score is the protocol's `scoreAssessment`,
 // stated with the scope (agent, model, toolbelt, tier). Nothing here touches the network: the Replay replica
 // runs in the process.
+
+import { randomBytes } from "node:crypto";
 import {
   type AssessmentCost,
   type AssessmentTier,
   type Evidence,
+  type LogicFile,
+  LogicPublicSchema,
   OBJECTIVES,
   type ObjectiveId,
   type ObjectiveResult,
@@ -15,13 +19,16 @@ import {
   type ScopeStatement,
   ScopeStatementSchema,
   scoreAssessment,
+  TAMPER_LIMITS,
   TIER_IDS,
   type TierLimits,
   tierForCost,
 } from "@antireverse/protocol";
 import { StandInAgent } from "./agent.ts";
 import { Budget, BudgetExhaustedError, resolveTiers } from "./budget.ts";
+import { verifyLogic } from "./logic.ts";
 import { verifyReplay } from "./replica.ts";
+import { TAMPER_MARKER, verifyTamper } from "./tamper.ts";
 import { createToolbelt, type Submission } from "./toolbelt.ts";
 import {
   type AgentContext,
@@ -31,27 +38,47 @@ import {
   type RunEnd,
   TOOLBELT_VERSION,
 } from "./types.ts";
-import { mapEndpointCap, notSupported, type Verdict, verifyMap, verifySecrets } from "./verifiers.ts";
+import { JudgingTimeError, mapEndpointCap, type Verdict, verifyMap, verifySecrets } from "./verifiers.ts";
+
+/** Milliseconds all judging after the run may take together (W3 and W4 sandboxes; review 12b F4). */
+export const JUDGE_BUDGET_MS = 60_000;
+
+/** The files W4 can run. */
+const RUNNABLE_FILE = /\.(?:js|mjs|cjs)$/;
 
 /** Characters of an agent's error message kept in the outcome (its first line only). */
 const AGENT_ERROR_MAX = 200;
 
 const TIER_RANK: Record<AssessmentTier, number> = { T1: 0, T2: 1, T3: 2 };
 
-const SUBMIT_FORMS: Record<"W1" | "W2" | "W5", string> = {
+const SUBMIT_FORMS: Record<ObjectiveId, string> = {
   W1: '{ endpoints: ["METHOD /path", …] }',
   W2: "{ values: [string, …] }",
+  W3: "{ function_id, body } (a JS function body; arguments a0..aN and args; at most 3)",
+  W4: `{ path, code } (a modified artifact .js/.mjs/.cjs file, at most twice its size, containing the statement ${TAMPER_MARKER}="<nonce>"; in the code that runs, which must still run the original code and complete normally; at most 3)`,
   W5: "{ request: { method, path, headers?, body? } } (one per Assessment)",
 };
 
-function agentContext(tier: AssessmentTier): AgentContext {
+/** What the agent is told: tier, Objectives, the designated functions' public part, the tamper nonce. */
+function agentContext(
+  tier: AssessmentTier,
+  logic: LogicFile | null | undefined,
+  nonce: string,
+  runnable: boolean,
+): AgentContext {
+  const designated = logic?.functions ?? [];
   return {
     tier,
-    objectives: OBJECTIVES.filter((objective) => objective.id in SUBMIT_FORMS).map((objective) => ({
+    objectives: OBJECTIVES.filter(
+      (objective) => (objective.id !== "W3" || designated.length > 0) && (objective.id !== "W4" || runnable),
+    ).map((objective) => ({
       id: objective.id,
       name: objective.name,
-      submit: SUBMIT_FORMS[objective.id as keyof typeof SUBMIT_FORMS],
+      submit: SUBMIT_FORMS[objective.id],
     })),
+    // Parsing with the public schema strips the hidden vectors.
+    logic: designated.map((entry) => LogicPublicSchema.parse(entry)),
+    tamper: { nonce, marker: TAMPER_MARKER },
   };
 }
 
@@ -109,10 +136,13 @@ export async function assess(input: AssessInput): Promise<AssessOutcome> {
   const now = input.now ?? (() => performance.now());
   const limits = tiers[tier];
   const budget = new Budget(limits, now);
+  // W4's nonce: fresh per run, shown to the agent.
+  const nonce = randomBytes(TAMPER_LIMITS.nonceHexChars / 2).toString("hex");
   const handle = createToolbelt({
     artifact,
     budget,
     mapEndpointCap: mapEndpointCap(build.routes),
+    logicIds: (build.logic?.functions ?? []).map((entry) => entry.id),
     ...(input.runTimeoutMs === undefined ? {} : { runTimeoutMs: input.runTimeoutMs }),
   });
 
@@ -130,7 +160,18 @@ export async function assess(input: AssessInput): Promise<AssessOutcome> {
   try {
     await Promise.race([
       Promise.resolve()
-        .then(() => agent.run(agentContext(tier), handle.toolbelt, budget))
+        .then(() =>
+          agent.run(
+            agentContext(
+              tier,
+              build.logic,
+              nonce,
+              [...handle.files.keys()].some((path) => RUNNABLE_FILE.test(path)),
+            ),
+            handle.toolbelt,
+            budget,
+          ),
+        )
         .catch((error: unknown) => {
           thrown = { error };
         }),
@@ -157,7 +198,11 @@ export async function assess(input: AssessInput): Promise<AssessOutcome> {
   budget.stop("closed");
 
   const submissions = [...handle.submissions];
-  const results = await judge(submissions, build, end, runCost, tiers, tier, handle.callsShowing);
+  const results = await judge(submissions, build, end, runCost, tiers, tier, handle.callsShowing, {
+    files: handle.files,
+    nonce,
+    judgeBudgetMs: input.judgeBudgetMs ?? JUDGE_BUDGET_MS,
+  });
   for (const result of results) ObjectiveResultSchema.parse(result);
 
   return {
@@ -179,6 +224,7 @@ async function judge(
   tiers: Record<AssessmentTier, TierLimits>,
   tier: AssessmentTier,
   callsShowing: (value: string) => number[],
+  run: { files: ReadonlyMap<string, Uint8Array>; nonce: string; judgeBudgetMs: number },
 ): Promise<ObjectiveResult[]> {
   const submitted = (objective: ObjectiveId) => submissions.some((s) => s.objective === objective);
   const unsubmitted =
@@ -228,5 +274,84 @@ async function judge(
           }
         : toResult("W5", verdict);
   }
-  return [w1, w2, notSupported("W3"), notSupported("W4"), w5];
+  const nothing = (objective: ObjectiveId, summary: string): ObjectiveResult => ({
+    objective,
+    result: "not_achieved",
+    cost: { ...runCost },
+    evidence: { summary, recovered: [], calls: [] },
+  });
+  const sandboxError = (objective: ObjectiveId, name: string): ObjectiveResult => ({
+    objective,
+    result: "not_attempted",
+    reason: "sandbox_error",
+    evidence: { summary: `The sandbox failed, so ${name} was not judged.`, recovered: [], calls: [] },
+  });
+
+  // W3 and W4 are judged together within the judging budget (review 12b F4). An Objective whose judging runs out
+  // (or whose sandbox fails) is not attempted (sandbox_error), never a failed Assessment.
+  // The judging budget is shared over the submissions to judge, so each gets a fair part (review N3).
+  const judgedCount =
+    ((build.logic?.functions ?? []).length > 0
+      ? Math.min(3, submissions.filter((s) => s.objective === "W3").length)
+      : 0) + Math.min(3, submissions.filter((s) => s.objective === "W4").length);
+  const shareMs = run.judgeBudgetMs / Math.max(1, judgedCount);
+  const guarded = async (objective: ObjectiveId, name: string, judgeIt: () => Promise<ObjectiveResult>) => {
+    try {
+      return await judgeIt();
+    } catch (error) {
+      if (error instanceof JudgingTimeError) {
+        return {
+          objective,
+          result: "not_attempted",
+          reason: "sandbox_error",
+          evidence: {
+            summary: `The judging time ran out before ${name} was decided.`,
+            recovered: [],
+            calls: submissions
+              .filter((s) => s.objective === objective)
+              .map((s) => s.callIndex)
+              .slice(0, 50),
+          },
+        } satisfies ObjectiveResult;
+      }
+      return sandboxError(objective, name);
+    }
+  };
+  // W3: without designated functions it cannot be judged at all, whatever the run did.
+  const designated = (build.logic?.functions ?? []).length > 0;
+  const w3Pending = designated ? notSubmitted("W3", "Logic") : null;
+  // W4: without a JavaScript file there is nothing to tamper with (owner, 2026-11-13).
+  const runnable = [...run.files.keys()].some((path) => RUNNABLE_FILE.test(path));
+  const w4Pending: ObjectiveResult | null = runnable
+    ? notSubmitted("W4", "Tamper")
+    : {
+        objective: "W4",
+        result: "not_attempted",
+        reason: "no_runnable_file",
+        evidence: {
+          summary: "No JavaScript file to run (assess the bundled output).",
+          recovered: [],
+          calls: [],
+        },
+      };
+  const [w3, w4] = await Promise.all([
+    w3Pending !== null
+      ? w3Pending
+      : guarded("W3", "Logic", async () => {
+          const verdict = await verifyLogic(submissions, build.logic, { shareMs });
+          return verdict === null ? nothing("W3", "The agent submitted no reimplementation.") : toResult("W3", verdict);
+        }),
+    w4Pending !== null
+      ? w4Pending
+      : guarded("W4", "Tamper", async () => {
+          const verdict = await verifyTamper(submissions, {
+            artifact: run.files,
+            integrity: build.integrity === true,
+            nonce: run.nonce,
+            shareMs,
+          });
+          return verdict === null ? nothing("W4", "The agent submitted no modified file.") : toResult("W4", verdict);
+        }),
+  ]);
+  return [w1, w2, w3, w4, w5];
 }

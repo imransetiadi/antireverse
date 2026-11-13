@@ -30,7 +30,13 @@ describe("proveAssessor", () => {
     const outcome = await proveAssessor().assess({
       tier: "T1",
       artifact,
-      build: { canaries: [CANARY], leakFindings: [], routes: ["GET /api/products", "POST /api/cart"] },
+      build: {
+        canaries: [CANARY],
+        leakFindings: [],
+        routes: ["GET /api/products", "POST /api/cart"],
+        logic: null,
+        integrity: false,
+      },
       signal: new AbortController().signal,
     });
     expect(outcome.results.map((result) => result.objective)).toEqual(["W1", "W2", "W3", "W4", "W5"]);
@@ -45,7 +51,7 @@ describe("proveAssessor", () => {
     const outcome = await proveAssessor({ agent: { module: AGENTS, export: "broken" }, identity: TEST_AGENT }).assess({
       tier: "T1",
       artifact: new Map([["dist/index.js", new TextEncoder().encode("1;")]]),
-      build: { canaries: [CANARY], leakFindings: [], routes: null },
+      build: { canaries: [CANARY], leakFindings: [], routes: null, logic: null, integrity: false },
       signal: new AbortController().signal,
     });
     expect(outcome.end).toBe("agent_error");
@@ -58,7 +64,7 @@ describe("proveAssessor", () => {
     const run = proveAssessor({ agent: { module: AGENTS, export: "blocking" }, identity: TEST_AGENT }).assess({
       tier: "T1",
       artifact: new Map([["dist/index.js", new TextEncoder().encode("1;")]]),
-      build: { canaries: [CANARY], leakFindings: [], routes: null },
+      build: { canaries: [CANARY], leakFindings: [], routes: null, logic: null, integrity: false },
       signal: controller.signal,
     });
     // The agent spins forever in its worker; this thread still runs timers.

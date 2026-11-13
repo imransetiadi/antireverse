@@ -2,6 +2,7 @@ import type {
   AssessmentTier,
   Canary,
   LeakRuleId,
+  LogicFile,
   ObjectiveResult,
   ScopeStatement,
   TierLimits,
@@ -32,6 +33,13 @@ export interface AssessorBuildFacts {
   leakFindings: readonly AssessorLeakFinding[];
   /** The tenant's route inventory (`METHOD /path`), or null when none was registered (W1: not attempted). */
   routes: readonly string[] | null;
+  /**
+   * The Build's logic file (slice 12b, W3): designated functions with their hidden vectors, or null when none was
+   * registered. The engine shows the agent only ids, descriptions and examples; the vectors stay verifier inputs.
+   */
+  logic: LogicFile | null;
+  /** Whether the Build was hardened with the integrity pass (the Manifest's `transform.integrity`), for W4. */
+  integrity: boolean;
 }
 
 export interface AssessorInput {

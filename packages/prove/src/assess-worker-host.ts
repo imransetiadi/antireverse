@@ -15,8 +15,8 @@ export const ASSESS_WORKER_LIMITS = Object.freeze({
   youngGenerationMb: 32,
   /** The worker's stack, in MB. */
   stackMb: 4,
-  /** Milliseconds allowed after the tier's time for start-up and verification, by default. */
-  graceMs: 30_000,
+  /** Milliseconds allowed after the tier's time, by default: the judging budget (60 s) plus 30 s of margin. */
+  graceMs: 90_000,
 });
 
 /** The built-in agents, by name. */

@@ -6,7 +6,13 @@
 // say which calls exposed a recovered value; it never enters the log and is dropped with the Toolbelt.
 
 import type { AssessmentCost, ObjectiveId } from "@antireverse/protocol";
-import { ROUTE_LIMITS } from "@antireverse/protocol";
+import {
+  LOGIC_LIMITS,
+  LogicSubmissionSchema,
+  ROUTE_LIMITS,
+  TAMPER_LIMITS,
+  TamperSubmissionSchema,
+} from "@antireverse/protocol";
 import { generate } from "@babel/generator";
 import { parse } from "@babel/parser";
 import type { Budget } from "./budget.ts";
@@ -16,6 +22,7 @@ import type {
   BeautifyResult,
   CallRecord,
   ListResult,
+  LogicSubmissionPayload,
   MapSubmission,
   ReadResult,
   ReplaySubmission,
@@ -25,6 +32,7 @@ import type {
   SecretsSubmission,
   SubmissionPayload,
   SubmitResult,
+  TamperSubmissionPayload,
   Toolbelt,
   ToolFailure,
   ToolName,
@@ -43,7 +51,7 @@ export const TOOLBELT_LIMITS = Object.freeze({
   /** Characters of a search hit's preview. */
   previewChars: 200,
   /** Bytes of a file `beautify` accepts. */
-  beautifyBytesMax: 5_000_000,
+  beautifyBytesMax: 1_048_576,
   /** Characters of `beautify` output. */
   beautifyCharsMax: 1_000_000,
   /** Values of one W2 submission, and characters of each. */
@@ -63,12 +71,13 @@ export const TOOLBELT_LIMITS = Object.freeze({
   summaryMax: 200,
 });
 
-const SUPPORTED: ReadonlySet<ObjectiveId> = new Set(["W1", "W2", "W5"]);
+const SUPPORTED: ReadonlySet<ObjectiveId> = new Set(["W1", "W2", "W3", "W4", "W5"]);
+const TAMPER_PATHS = /\.(?:js|mjs|cjs)$/;
 const JS_EXTENSIONS = /\.(?:m?js|cjs|jsx|ts|mts|cts|tsx)$/i;
 
 /** One accepted submission, in order, with the cost of the run when it was made. */
 export interface Submission {
-  objective: "W1" | "W2" | "W5";
+  objective: ObjectiveId;
   payload: SubmissionPayload;
   /** The index of the submit call in the call log. */
   callIndex: number;
@@ -77,6 +86,8 @@ export interface Submission {
 
 export interface ToolbeltHandle {
   toolbelt: Toolbelt;
+  /** The artifact as the Toolbelt holds it (a copy): for the verifiers, never for the agent. */
+  files: ReadonlyMap<string, Uint8Array>;
   /** The call log, in order (live). */
   calls: CallRecord[];
   /** The accepted submissions, in order (live). */
@@ -95,6 +106,8 @@ export interface ToolbeltOptions {
    * A W1 submission that would exceed it is refused and recorded as refused. Default: no cap.
    */
   mapEndpointCap?: number | null;
+  /** The ids of the designated functions (public): W3 accepts only these. Default: none, so W3 is refused. */
+  logicIds?: readonly string[];
 }
 
 /** A read-only copy of the artifact: path → bytes, sorted by path. */
@@ -227,6 +240,58 @@ export function createToolbelt(options: ToolbeltOptions): ToolbeltHandle {
   let replaySubmitted = false;
   const mapEndpoints = new Set<string>();
   const mapCap = options.mapEndpointCap ?? null;
+  const logicIds = new Set(options.logicIds ?? []);
+  let logicSubmitted = 0;
+  let tamperSubmitted = 0;
+
+  type CodeChecked =
+    | { ok: true; payload: LogicSubmissionPayload | TamperSubmissionPayload; summary: string }
+    | { ok: false; error: string; why: string };
+  /** W3 and W4 submissions: shape (protocol schemas), designation or artifact file, size and count. */
+  function checkCodeSubmission(objective: "W3" | "W4", payload: unknown): CodeChecked {
+    if (objective === "W3") {
+      if (logicIds.size === 0)
+        return { ok: false, error: "No function was designated for this Build.", why: "none designated" };
+      if (logicSubmitted >= LOGIC_LIMITS.submissionsMax) {
+        return { ok: false, error: `W3 takes at most ${LOGIC_LIMITS.submissionsMax} submissions.`, why: "limit" };
+      }
+      const parsed = LogicSubmissionSchema.safeParse(payload);
+      if (!parsed.success) return { ok: false, error: "W3 takes { function_id, body }.", why: "malformed" };
+      if (!logicIds.has(parsed.data.function_id)) {
+        return { ok: false, error: "That function was not designated.", why: "unknown function" };
+      }
+      logicSubmitted += 1;
+      return {
+        ok: true,
+        payload: { function_id: parsed.data.function_id, body: parsed.data.body },
+        summary: `function ${parsed.data.function_id}, body of ${parsed.data.body.length} characters`,
+      };
+    }
+    if (tamperSubmitted >= TAMPER_LIMITS.submissionsMax) {
+      return { ok: false, error: `W4 takes at most ${TAMPER_LIMITS.submissionsMax} submissions.`, why: "limit" };
+    }
+    const parsed = TamperSubmissionSchema.safeParse(payload);
+    if (!parsed.success)
+      return { ok: false, error: "W4 takes { path, code } for a .js, .mjs or .cjs file.", why: "malformed" };
+    const original = files.get(parsed.data.path);
+    if (original === undefined || !TAMPER_PATHS.test(parsed.data.path)) {
+      return { ok: false, error: "The path is not a JavaScript file of the artifact.", why: "unknown file" };
+    }
+    const bytes = Buffer.byteLength(parsed.data.code, "utf8");
+    if (bytes > original.length * TAMPER_LIMITS.sizeFactorMax) {
+      return {
+        ok: false,
+        error: `The code may be at most ${TAMPER_LIMITS.sizeFactorMax} times the original file's size.`,
+        why: "too large",
+      };
+    }
+    tamperSubmitted += 1;
+    return {
+      ok: true,
+      payload: { path: parsed.data.path, code: parsed.data.code },
+      summary: `${shown(parsed.data.path)}, ${bytes} bytes`,
+    };
+  }
 
   /** Charges the budget, runs the tool, records the call. A spent budget rejects before anything runs. */
   async function call<T>(
@@ -288,9 +353,21 @@ export function createToolbelt(options: ToolbeltOptions): ToolbeltHandle {
           return { result: failure("A range is a whole offset and length, ≥ 0."), summary: "invalid range" };
         }
         const start = Math.min(offset, bytes.length);
-        const end = Math.min(bytes.length, start + Math.min(length, TOOLBELT_LIMITS.readBytesMax));
+        let end = Math.min(bytes.length, start + Math.min(length, TOOLBELT_LIMITS.readBytesMax));
+        // Never cut a UTF-8 sequence: end before a continuation byte's character (unless that empties the read).
+        let boundary = end;
+        while (boundary > start && boundary < bytes.length && ((bytes[boundary] as number) & 0xc0) === 0x80) boundary--;
+        if (boundary > start) end = boundary;
         const text = decoder.decode(bytes.subarray(start, end));
-        const result: ReadResult = { ok: true, path, offset, text, bytes: bytes.length, more: end < bytes.length };
+        const result: ReadResult = {
+          ok: true,
+          path,
+          offset,
+          end,
+          text,
+          bytes: bytes.length,
+          more: end < bytes.length,
+        };
         return { result, summary: `${shown(path)} bytes ${start}-${end} of ${bytes.length}`, showed: text };
       }),
 
@@ -389,6 +466,13 @@ export function createToolbelt(options: ToolbeltOptions): ToolbeltHandle {
         if (objective === "W5" && replaySubmitted) {
           return { result: failure("W5 takes one request per Assessment."), summary: "W5 again: refused" };
         }
+        if (objective === "W3" || objective === "W4") {
+          const checked = checkCodeSubmission(objective, payload);
+          if (!checked.ok) return { result: failure(checked.error), summary: `${objective} refused: ${checked.why}` };
+          submissions.push({ objective, payload: checked.payload, callIndex: index, cost: budget.cost() });
+          const result: SubmitResult = { ok: true, accepted: true };
+          return { result, summary: `${objective}, ${checked.summary}` };
+        }
         const checked = checkSubmission(objective, payload);
         if (!checked.ok) return { result: failure(checked.error), summary: `${objective} malformed` };
         if (objective === "W1") {
@@ -418,6 +502,7 @@ export function createToolbelt(options: ToolbeltOptions): ToolbeltHandle {
 
   return {
     toolbelt,
+    files,
     calls,
     submissions,
     callsShowing(value: string): number[] {

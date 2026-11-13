@@ -11,6 +11,7 @@ export * from "./containment.ts";
 export * from "./events.ts";
 export * from "./exposure.ts";
 export * from "./incidents.ts";
+export * from "./logic.ts";
 export * from "./patches.ts";
 export * from "./policy.ts";
 export * from "./problem.ts";

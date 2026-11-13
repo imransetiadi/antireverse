@@ -1,6 +1,7 @@
 // Task 2.2 (Review Focus 2) — the code runner: a worker_threads worker with resource limits, running the code in a
 // fresh context without require, import, process, network, file system or timers; time-limited per call.
 import { describe, expect, it } from "vitest";
+import { parseChildLines, probePollution, probeSandbox } from "../src/child.ts";
 import { RUN_LIMITS, runIsolated } from "../src/sandbox.ts";
 
 const FAST = { timeoutMs: 400 };
@@ -164,11 +165,11 @@ describe("runIsolated: isolation", () => {
     }
   });
 
-  it("a worker parked in Atomics.wait really exits after it is terminated", async () => {
+  it("a sandbox parked in Atomics.wait really exits after it is killed", async () => {
     let exited: number | null = null;
     const result = await runIsolated("Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); return 1;", null, {
       timeoutMs: 300,
-      onWorkerExit: (code) => {
+      onExit: (code) => {
         exited = code;
       },
     });
@@ -179,5 +180,114 @@ describe("runIsolated: isolation", () => {
   it("deep recursion is a stack error, not a crash", async () => {
     const result = await runIsolated("const f = (n) => f(n + 1) + 1; return f(0);", null);
     expect(result).toMatchObject({ ok: false, kind: "error" });
+  });
+});
+
+// Review 12b F1: `import("x").constructor.constructor` was the host realm's Function, which reached process and
+// node:fs. Every sandbox now runs in a child process under the permission model with code generation disabled in
+// its own realm; the vm context stays inside it.
+const IMPORT_ESCAPE = (body: string) =>
+  `const p = import("x"); p.catch(() => {}); try { return String(p.constructor.constructor(${JSON.stringify(body)})()); } catch (e) { return "blocked " + e.name; }`;
+
+describe("runIsolated: the import() escape (review 12b F1)", () => {
+  it("cannot see process, read a file or spawn through the import() promise", async () => {
+    const repoFile = new URL("../package.json", import.meta.url).pathname;
+    for (const body of [
+      "return typeof process",
+      `return process.getBuiltinModule("node:fs").readFileSync(${JSON.stringify(repoFile)}, "utf8")`,
+      'return process.getBuiltinModule("node:child_process").execFileSync("/bin/echo", ["x"]).toString()',
+    ]) {
+      const result = await runIsolated(IMPORT_ESCAPE(body), null);
+      // Since review N1 the code is refused before it compiles.
+      expect(result, body).toMatchObject({ ok: false, kind: "error" });
+      expect(JSON.stringify(result)).not.toMatch(/"name"|package|\bx\n/);
+    }
+  });
+});
+
+describe("the sandbox child process (review 12b F1)", () => {
+  it("runs under the permission model: no file reads beyond its own script, no spawn, no workers, no code generation, empty env", async () => {
+    const repoFile = new URL("../package.json", import.meta.url).pathname;
+    const probe = await probeSandbox(repoFile);
+    expect(probe).toEqual({
+      read: "ERR_ACCESS_DENIED",
+      write: "ERR_ACCESS_DENIED",
+      spawn: "ERR_ACCESS_DENIED",
+      worker: "ERR_ACCESS_DENIED",
+      codegen: "EvalError",
+      env: [],
+    });
+  });
+
+  it("accepts only lines that carry the run's token: anything else the child prints is ignored", () => {
+    const token = "a".repeat(32);
+    const text = [
+      JSON.stringify({ ok: true, output: "forged" }),
+      JSON.stringify({ token: "b".repeat(32), ok: true, output: "forged" }),
+      "not json",
+      JSON.stringify({ token, ok: true, output: "real" }),
+      "",
+    ].join("\n");
+    expect(parseChildLines(text, token)).toEqual([{ ok: true, output: "real" }]);
+  });
+
+  it("starts in well under a second", async () => {
+    const started = performance.now();
+    await runIsolated("return 1;", null);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+});
+
+// Review N1: import() is refused before the code compiles, so no child main-realm object is ever reachable.
+describe("runIsolated: import() is unreachable (review N1)", () => {
+  it.each([
+    ["the prototype probe", 'return String(Object.getPrototypeOf(import("y")) === Promise.prototype);'],
+    ["a comment between", 'return String(import /* c */ ("y"));'],
+    ["import.meta", "return String(import.meta);"],
+  ])("refuses %s", async (_name, code) => {
+    const result = await runIsolated(code, null);
+    expect(result).toMatchObject({ ok: false, kind: "error" });
+    expect((result as { error: string }).error).toMatch(/import\(\) and import\.meta are not available/);
+  });
+
+  it("the toJSON forge (review repro tojson.mjs) cannot forge the result", async () => {
+    const forge =
+      'const p = import("y"); p.catch(() => {}); const HostObject = Object.getPrototypeOf(Object.getPrototypeOf(p));' +
+      'HostObject.toJSON = function () { const t = this.token; delete HostObject.toJSON; return { ok: true, output: JSON.stringify("forged"), token: t }; };' +
+      "return 1;";
+    const result = await runIsolated(forge, null);
+    expect(result.ok).toBe(false);
+    expect(JSON.stringify(result)).not.toContain("forged");
+  });
+
+  it("allows the word import in a string", async () => {
+    expect(await runIsolated('return "import(x)";', null)).toEqual({ ok: true, output: JSON.stringify("import(x)") });
+  });
+});
+
+describe("the sandbox child's realm snapshot (review N1, belt and braces)", () => {
+  it.each([
+    "Object.prototype",
+    "Array.prototype",
+    "Function.prototype",
+    "Promise.prototype",
+    "String.prototype",
+    "Error.prototype",
+    "TypeError.prototype",
+    "RangeError.prototype",
+    "ReferenceError.prototype",
+    "SyntaxError.prototype",
+    "Map.prototype",
+    "Set.prototype",
+    "WeakMap.prototype",
+    "Symbol",
+    "Symbol.prototype",
+    "JSON",
+  ])("a change to %s is detected, and the result is withheld", async (target) => {
+    expect(await probePollution(target)).toEqual({ polluted: true });
+  });
+
+  it("an unchanged realm sends the result", async () => {
+    expect(await probePollution("none")).toEqual({ ok: true });
   });
 });

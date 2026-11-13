@@ -16,9 +16,11 @@ import {
   EXAMPLE_CANARIES,
   EXAMPLE_FINDINGS_SUMMARY,
   EXAMPLE_INVENTORY,
+  EXAMPLE_LOGIC,
   EXAMPLE_ROUTE_INVENTORY,
   EXPOSURE_LIMITS,
   ListBuildsResponseSchema,
+  LOGIC_LIMITS,
   PROFILES,
   type Profile,
   RegisterBuildRequestSchema,
@@ -434,5 +436,64 @@ describe("route inventory beside the Manifest (slice 12a)", () => {
     const build = BuildSchema.parse({ ...EXAMPLE_BUILD, ...withRoutes, routes });
     expect(build.route_count).toBe(routes.length);
     expect(build).not.toHaveProperty("routes");
+  });
+});
+
+describe("logic beside the Manifest (slice 12b)", () => {
+  const logic = structuredClone(EXAMPLE_LOGIC);
+  const DIGEST = "c".repeat(64);
+  const count = logic.functions.length;
+  const withLogic = { ...EXAMPLE_BUILD_MANIFEST, logic_digest: DIGEST, logic_count: count };
+
+  it("keeps a Manifest without a logic digest valid, and absent stays absent", () => {
+    const parsed = BuildManifestSchema.parse(EXAMPLE_BUILD_MANIFEST);
+    expect(parsed).not.toHaveProperty("logic_digest");
+    expect(parsed).not.toHaveProperty("logic_count");
+  });
+
+  it("carries the logic's digest and function count in the Manifest, never the functions", () => {
+    const parsed: BuildManifest = BuildManifestSchema.parse({ ...withLogic, logic });
+    expect(parsed.logic_digest).toBe(DIGEST);
+    expect(parsed.logic_count).toBe(count);
+    expect(parsed).not.toHaveProperty("logic");
+    expect(accepts(manifest({ logic_digest: "C".repeat(64) }))).toBe(false);
+    expect(accepts(manifest({ logic_digest: "c".repeat(63) }))).toBe(false);
+    expect(accepts(manifest({ logic_count: 0 }))).toBe(false);
+    expect(accepts(manifest({ logic_count: 1.5 }))).toBe(false);
+    expect(accepts(manifest({ logic_count: 1 }))).toBe(true);
+    expect(accepts(manifest({ logic_count: LOGIC_LIMITS.functionsMax }))).toBe(true);
+    expect(accepts(manifest({ logic_count: LOGIC_LIMITS.functionsMax + 1 }))).toBe(false);
+  });
+
+  it("sends the logic file beside the Manifest in the registration request, optional and validated", () => {
+    const request = RegisterBuildRequestSchema.parse({ manifest: withLogic, logic });
+    expect(request.logic).toEqual(logic);
+    expect(RegisterBuildRequestSchema.parse({ manifest: EXAMPLE_BUILD_MANIFEST })).not.toHaveProperty("logic");
+    expect(RegisterBuildRequestSchema.safeParse({ manifest: withLogic, logic: { functions: [] } }).success).toBe(false);
+    const short = { functions: [{ ...logic.functions[0], vectors: logic.functions[0]?.vectors.slice(0, 9) }] };
+    expect(RegisterBuildRequestSchema.safeParse({ manifest: withLogic, logic: short }).success).toBe(false);
+  });
+
+  it("requires the Manifest's logic_count to equal the functions sent, when both are present", () => {
+    const two = { functions: [logic.functions[0], { ...logic.functions[0], id: "other" }] };
+    const parse = (manifestCount: number | undefined, file: unknown) =>
+      RegisterBuildRequestSchema.safeParse({
+        manifest: manifestCount === undefined ? EXAMPLE_BUILD_MANIFEST : { ...withLogic, logic_count: manifestCount },
+        ...(file === undefined ? {} : { logic: file }),
+      });
+    expect(parse(1, logic).success).toBe(true);
+    expect(parse(2, two).success).toBe(true);
+    expect(parse(2, logic).success).toBe(false);
+    expect(parse(undefined, logic).success).toBe(true);
+    expect(parse(1, undefined).success).toBe(true);
+    expect(parse(1, two).error?.issues.map((issue) => issue.path)).toEqual([["logic"]]);
+  });
+
+  it("returns the count and digest with the Build, never the functions", () => {
+    const build = BuildSchema.parse({ ...EXAMPLE_BUILD, ...withLogic, logic });
+    expect(build.logic_count).toBe(count);
+    expect(build.logic_digest).toBe(DIGEST);
+    expect(build).not.toHaveProperty("logic");
+    expect(ListBuildsResponseSchema.parse({ builds: [{ ...build, logic }] }).builds[0]).not.toHaveProperty("logic");
   });
 });

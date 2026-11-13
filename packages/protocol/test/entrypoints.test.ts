@@ -150,6 +150,7 @@ describe("entry points", () => {
       "EXAMPLE_INCIDENT",
       "EXAMPLE_INVENTORY",
       "EXAMPLE_LIMIT_RULE",
+      "EXAMPLE_LOGIC",
       "EXAMPLE_PATCH_SUMMARY",
       "EXAMPLE_POLICY",
       "EXAMPLE_POLICY_RULE",
@@ -194,6 +195,7 @@ describe("entry points", () => {
       "LIMIT_FAILURE_STATUSES",
       "LIMIT_KEYS",
       "LIMIT_LIMITS",
+      "LOGIC_LIMITS",
       "LeakAllowlistSchema",
       "LeakScanSummarySchema",
       "ListAlertChannelsResponseSchema",
@@ -208,6 +210,13 @@ describe("entry points", () => {
       "ListPatchesResponseSchema",
       "ListRulesOfEngagementResponseSchema",
       "ListTargetsResponseSchema",
+      "LogicFileSchema",
+      "LogicFunctionIdSchema",
+      "LogicFunctionSchema",
+      "LogicHiddenSchema",
+      "LogicPublicSchema",
+      "LogicSubmissionSchema",
+      "LogicVectorSchema",
       "ManifestBeaconSchema",
       "NOT_ATTEMPTED_REASONS",
       "OBJECTIVES",
@@ -273,11 +282,13 @@ describe("entry points", () => {
       "SimulatePolicyResponseSchema",
       "SimulationResultSchema",
       "StoredEventSchema",
+      "TAMPER_LIMITS",
       "TARGET_LIMITS",
       "TARGET_STATUSES",
       "TIERS",
       "TIER_IDS",
       "TOOL_NAMES",
+      "TamperSubmissionSchema",
       "TargetResponseSchema",
       "TargetSchema",
       "TargetVerificationSchema",
@@ -354,6 +365,7 @@ describe("entry points", () => {
       "jwkThumbprint",
       "keyIdOf",
       "leakFingerprint",
+      "logicDigest",
       "newId",
       "parseKey",
       "routesDigest",
@@ -383,6 +395,7 @@ describe("entry points", () => {
       "exposure.ts",
       "incidents.ts",
       "index.ts",
+      "logic.ts",
       "patches.ts",
       "policy.ts",
       "problem.ts",
@@ -409,6 +422,8 @@ describe("entry points", () => {
       "exposure.ts",
       "ids.ts",
       "keys.ts",
+      "logic-digest.ts",
+      "logic.ts",
       "patches.ts",
       "prove-crypto.ts",
       "prove.ts",
@@ -425,7 +440,8 @@ describe("entry points", () => {
     // attestation-crypto.ts validates claims with the schemas of attestation.ts; signature-crypto.ts builds on the
     // header parser and canonical string of signature.ts; prove-crypto.ts hashes the content schema and canonical
     // JSON of prove.ts (slice 14); routes-digest.ts parses entries with the route grammar of assessment.ts
-    // (slice 12a).
+    // (slice 12a); logic-digest.ts validates with the logic schemas of logic.ts and hashes their canonical JSON
+    // (canonicalJson of prove.ts; slice 12b).
     expect(graph.packages).toEqual(["node:crypto", "zod"]);
   });
 });

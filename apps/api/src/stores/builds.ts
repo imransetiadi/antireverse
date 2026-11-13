@@ -1,4 +1,4 @@
-import type { Build, BuildManifest } from "@antireverse/protocol";
+import type { Build, BuildManifest, LogicFile } from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
 
 /** Which Builds: those of an App of the transaction's Organization. */
@@ -111,4 +111,28 @@ export async function findManifest(q: Queryable, target: BuildTarget, buildId: s
     [target.organizationId, target.appId, buildId],
   );
   return rows[0]?.manifest ?? null;
+}
+
+/**
+ * Stores a Build's logic file (slice 12b, W3 Logic) in the Build's own transaction. Read only by the Assessment
+ * runner, as a verifier input; never returned by a route.
+ */
+export async function insertBuildLogic(
+  q: Queryable,
+  input: { organizationId: string; appId: string; buildId: string; logic: LogicFile },
+): Promise<void> {
+  await q.query(
+    `INSERT INTO build_logic (organization_id, app_id, build_id, logic)
+     VALUES ($1::text, $2::text, $3::text, $4::jsonb)`,
+    [input.organizationId, input.appId, input.buildId, JSON.stringify(input.logic)],
+  );
+}
+
+/** A Build's logic file, or null when it was registered without one. */
+export async function findBuildLogic(q: Queryable, target: BuildTarget, buildId: string): Promise<LogicFile | null> {
+  const { rows } = await q.query<{ logic: LogicFile }>(
+    `SELECT logic FROM build_logic WHERE ${OF_TARGET} AND build_id = $3::text`,
+    [target.organizationId, target.appId, buildId],
+  );
+  return rows[0]?.logic ?? null;
 }

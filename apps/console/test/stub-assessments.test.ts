@@ -25,6 +25,9 @@ const builds = [
     ...EXAMPLE_BUILD,
     build_id: "bld_111111111111111111111111",
     canaries: [{ id: "cny_33d265fca16c848eb2f23f43", kind: "key" as const }],
+    // Slice 12b: two protected functions designated with `harden --logic`.
+    logic_digest: "ab".repeat(32),
+    logic_count: 2,
   },
   { ...EXAMPLE_BUILD, build_id: "bld_222222222222222222222222" },
   { ...EXAMPLE_BUILD, build_id: "bld_333333333333333333333333" },
@@ -68,14 +71,40 @@ const listOf = (call: ReturnType<typeof setup>["call"], buildId: string): Assess
 };
 
 describe("stub Assessments — seed", () => {
-  it("gives the newest Build an inconclusive stand-in run, then a failed one, newest first", () => {
+  it("gives the newest Build a scored stand-in run with all five Objectives decided (slice 12b)", () => {
+    const { call } = setup();
+    const [latest] = listOf(call, NEWEST) as [Assessment];
+    expect([latest.status, latest.tier, latest.scope.model, latest.renormalised]).toEqual([
+      "scored",
+      "T1",
+      STAND_IN_MODEL,
+      false,
+    ]);
+    expect(latest.rrs).toEqual(expect.any(Number));
+    expect(latest.results.map((result) => [result.objective, result.result])).toEqual([
+      ["W1", "not_achieved"],
+      ["W2", "achieved"],
+      ["W3", "not_achieved"],
+      ["W4", "achieved"],
+      ["W5", "not_achieved"],
+    ]);
+    // W3 names the designated function and a pass count; W4 names the edited file, never code.
+    expect(latest.results[2]?.evidence.summary).toMatch(/price-total/);
+    const tamper = latest.results[3]?.evidence;
+    expect(tamper?.summary).toContain("dist/index.js");
+    expect(tamper?.summary).not.toMatch(/__airverse_tamper|[{}=;]\s*\S*\(|globalThis/);
+    expect(tamper?.recovered).toEqual([]);
+  });
+
+  it("gives the newest Build an older inconclusive stand-in run, then a failed one", () => {
     const { call } = setup();
     const list = listOf(call, NEWEST);
     expect(list.map((one) => [one.status, one.tier])).toEqual([
+      ["scored", "T1"],
       ["inconclusive", "T1"],
       ["failed", "T1"],
     ]);
-    const [latest, failed] = list as [Assessment, Assessment];
+    const [, latest, failed] = list as [Assessment, Assessment, Assessment];
     expect(latest.scope.model).toBe(STAND_IN_MODEL);
     expect(latest.rrs).toBeNull();
     expect(latest.inconclusive_reason).toMatch(/not attempted/);
@@ -132,13 +161,23 @@ describe("stub Assessments — seed", () => {
 describe("stub Assessments — request", () => {
   const files = [{ path: "dist/index.js", base64: "Y29uc29sZS5sb2coMSk7" }];
 
-  it("queues a run with the uploaded files, which runs and then turns inconclusive", () => {
+  it("scores a requested run of a Build with designated functions", () => {
     const { call, clock } = setup();
-    const created = call("POST", `/v1/apps/${app}/builds/${NEWEST}/assessments`, { tier: "T2", files });
+    const created = call("POST", `/v1/apps/${app}/builds/${NEWEST}/assessments`, { tier: "T1" });
+    const { assessment } = parsed(CreateAssessmentResponseSchema, created.body);
+    clock.ms += 60_000;
+    const done = parsed(AssessmentResponseSchema, call("GET", `/v1/assessments/${assessment.id}`).body).assessment;
+    expect(done.status).toBe("scored");
+    expect(done.rrs).toEqual(expect.any(Number));
+  });
+
+  it("queues a run with the uploaded files, which runs and then turns inconclusive without a designated function", () => {
+    const { call, clock } = setup();
+    const created = call("POST", `/v1/apps/${app}/builds/${OLDEST}/assessments`, { tier: "T2", files });
     expect(created.status).toBe(202);
     const { assessment } = parsed(CreateAssessmentResponseSchema, created.body);
     expect([assessment.status, assessment.tier, assessment.scope.tier]).toEqual(["queued", "T2", "T2"]);
-    expect(listOf(call, NEWEST)[0]?.id).toBe(assessment.id);
+    expect(listOf(call, OLDEST)[0]?.id).toBe(assessment.id);
 
     clock.ms += 5_000;
     expect(
@@ -148,6 +187,11 @@ describe("stub Assessments — request", () => {
     const done = parsed(AssessmentResponseSchema, call("GET", `/v1/assessments/${assessment.id}`).body).assessment;
     expect(done.status).toBe("inconclusive");
     expect(done.results).toHaveLength(5);
+    expect(done.results.find((result) => result.objective === "W3")).toMatchObject({
+      result: "not_attempted",
+      reason: "not_designated",
+    });
+    expect(done.inconclusive_reason).toMatch(/--logic/);
   });
 
   it("keeps every seeded artifact until 30 days after its run, except one already deleted", () => {

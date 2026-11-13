@@ -1,0 +1,197 @@
+const __ar_k = Uint8Array.from(atob("uHk3ng=="), c => c.charCodeAt(0));
+const __ar_d = s => {
+  const b = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const o = new Uint8Array(b.length);
+  for (let j = 0; j < b.length; j++) o[j] = b[j] ^ __ar_k[j % __ar_k.length];
+  return new TextDecoder().decode(o);
+};
+const __ar_s0 = __ar_d("8hhZ"),
+  __ar_s1 = __ar_d("/hxV"),
+  __ar_s2 = __ar_d("9RhF"),
+  __ar_s3 = __ar_d("+QlF"),
+  __ar_s4 = __ar_d("9RhO"),
+  __ar_s5 = __ar_d("8gxZ"),
+  __ar_s6 = __ar_d("8gxb"),
+  __ar_s7 = __ar_d("+QxQ"),
+  __ar_s8 = __ar_d("6xxH"),
+  __ar_s9 = __ar_d("9xpD"),
+  __ar_s10 = __ar_d("9hZB"),
+  __ar_s11 = __ar_d("/BxU"),
+  __ar_s12 = __ar_d("zBBS7A=="),
+  __ar_s13 = __ar_d("1RZZ6tA="),
+  __ar_s14 = __ar_d("zRdc8NcOWQ=="),
+  __ar_s15 = __ar_d("zBZD/9Q="),
+  __ar_s16 = __ar_d("6hxB+9YMUr7aABfq0RxF"),
+  __ar_s17 = __ar_d("6hxB+9YMUr7aABfz1xdD9g=="),
+  __ar_s18 = __ar_d("6hxB+9YMUr7aABf91wxZ6soA"),
+  __ar_s19 = __ar_d("iFcHuw=="),
+  __ar_s20 = __ar_d("mA=="),
+  __ar_s21 = __ar_d("/wtY68g="),
+  __ar_s22 = __ar_d("9wtT+8oK"),
+  __ar_s23 = __ar_d("6xxW6ss="),
+  __ar_s24 = __ar_d("6hxB+9YMUg=="),
+  __ar_s25 = __ar_d("+Q9S7NkeUg=="),
+  __ar_s26 = __ar_d("6xFW7N0="),
+  __ar_s27 = __ar_d("7BZD/9Q="),
+  __ar_s28 = __ar_d("iUkHsIhc"),
+  __ar_s29 = __ar_d(""),
+  __ar_s30 = __ar_d("mFk="),
+  __ar_s31 = __ar_d("lQ=="),
+  __ar_s32 = __ar_d("2RVbvswQWvs="),
+  __ar_s33 = __ar_d("WvmR"),
+  __ar_s34 = __ar_d("sg=="),
+  __ar_s35 = __ar_d("mls="),
+  __ar_s36 = __ar_d("3wtY68g="),
+  __ar_s37 = __ar_d("1wtT+8oK"),
+  __ar_s38 = __ar_d("yxxW6ss="),
+  __ar_s39 = __ar_d("yhxB+9YMUsHbHFnqyw=="),
+  __ar_s40 = __ar_d("yhxR69YdRA=="),
+  __ar_s41 = __ar_d("2Q9S7NkeUsHbHFnqyw=="),
+  __ar_s42 = __ar_d("lA=="),
+  __ar_s43 = __ar_d("tXM=");
+var aH87 = {
+  free: 0,
+  pro: 1900,
+  business: 4900,
+  "enterprise-eu": 9900
+};
+function HUB(CnYq) {
+  const Z1alb = aH87[CnYq];
+  if (Z1alb === void 0) throw new Error(`unknown tier: ${CnYq}`);
+  return Z1alb;
+}
+function yFizp(rU1gq) {
+  return `\u20AC${(rU1gq / 100).toFixed(2)}`;
+}
+function Ae(QYogj, Ds2) {
+  return Math.round(QYogj * (1 - Ds2 / 100));
+}
+var Psm = [__ar_s0, __ar_s1, __ar_s2, __ar_s3, __ar_s4, __ar_s5, __ar_s6, __ar_s7, __ar_s8, __ar_s9, __ar_s10, __ar_s11];
+var xL = /^(\d{4})-(\d{2})-(\d{2})$/;
+function pnQIW(X1O) {
+  const mytn = xL.exec(X1O);
+  if (mytn === null) throw new Error(`invalid date: ${X1O}`);
+  const [Y7k, ecY, nj_] = [Number(mytn[1]), Number(mytn[2]), Number(mytn[3])];
+  const WHB = new Date(Date.UTC(Y7k, ecY - 1, nj_));
+  if (WHB.getUTCFullYear() !== Y7k || WHB.getUTCMonth() !== ecY - 1 || WHB.getUTCDate() !== nj_) {
+    throw new Error(`invalid date: ${X1O}`);
+  }
+}
+function MD(spIW) {
+  pnQIW(spIW);
+  const cnOPb = Number(spIW.slice(5, 7));
+  return `${Psm[cnOPb - 1]} ${spIW.slice(0, 4)}`;
+}
+function $pWju(x1P) {
+  if (!Number.isInteger(x1P.seats) || x1P.seats < 0) throw new Error(`invalid seats on order ${x1P.id}`);
+  const tMa = x1P.discountPct ?? 0;
+  if (tMa < 0 || tMa > 100) throw new Error(`invalid discount on order ${x1P.id}`);
+  if (x1P.refunded) return 0;
+  return Ae(HUB(x1P.tier) * x1P.seats, tMa);
+}
+function njU(DKPhe, hTrPs) {
+  if (hTrPs === __ar_s12) return DKPhe.tier;
+  if (hTrPs === __ar_s13) return DKPhe.date.slice(0, 7);
+  return (DKPhe.country ?? __ar_s14).toUpperCase();
+}
+function gqdN(Xehl) {
+  return {
+    key: Xehl,
+    orders: 0,
+    seats: 0,
+    revenue: 0,
+    refunds: 0,
+    average: 0
+  };
+}
+function m9Tzt(cHyX, e98) {
+  cHyX.orders += 1;
+  cHyX.seats += e98.seats;
+  cHyX.revenue += $pWju(e98);
+  if (e98.refunded) cHyX.refunds += 1;
+}
+function Z5S4(Uh) {
+  return {
+    ...Uh,
+    average: Uh.orders === 0 ? 0 : Math.round(Uh.revenue / Uh.orders)
+  };
+}
+function Yhc1s(GHy, hs7N, ckNp) {
+  if (hs7N !== null) pnQIW(hs7N);
+  if (ckNp !== null) pnQIW(ckNp);
+  if (hs7N !== null && ckNp !== null && hs7N > ckNp) throw new Error(`empty period: ${hs7N} after ${ckNp}`);
+  return GHy.filter(IN => {
+    pnQIW(IN.date);
+    return (hs7N === null || IN.date >= hs7N) && (ckNp === null || IN.date <= ckNp);
+  });
+}
+function B5TkR(db, KPZ, K7b1 = {}) {
+  const b_IKx = K7b1.from ?? null;
+  const eR = K7b1.to ?? null;
+  const aGJ = Yhc1s(db, b_IKx, eR);
+  const UFXe = new Map();
+  const Nn1 = gqdN(__ar_s15);
+  for (const xnj6 of aGJ) {
+    const cMLk = njU(xnj6, KPZ);
+    let Zr = UFXe.get(cMLk);
+    if (Zr === void 0) {
+      Zr = gqdN(cMLk);
+      UFXe.set(cMLk, Zr);
+    }
+    m9Tzt(Zr, xnj6);
+    m9Tzt(Nn1, xnj6);
+  }
+  const flScZ = [...UFXe.values()].map(Z5S4).sort((Au, IEaOc) => IEaOc.revenue - Au.revenue || (Au.key < IEaOc.key ? -1 : Au.key > IEaOc.key ? 1 : 0));
+  const s40OD = {
+    tier: __ar_s16,
+    month: __ar_s17,
+    country: __ar_s18
+  };
+  return {
+    title: s40OD[KPZ],
+    from: b_IKx,
+    to: eR,
+    groups: flScZ,
+    total: Z5S4(Nn1)
+  };
+}
+function h8kyh(_lP2L, vNKY) {
+  if (vNKY === 0) return __ar_s19;
+  return `${(_lP2L / vNKY * 100).toFixed(1)}%`;
+}
+function rQG(vWTpk, u7GPB) {
+  if (vWTpk.title === __ar_s17 && /^\d{4}-\d{2}$/.test(u7GPB)) return MD(`${u7GPB}-01`);
+  return u7GPB;
+}
+function eZ0r(PO, gaYXo, Ocp) {
+  const q5 = __ar_s20.repeat(Math.max(0, gaYXo - [...PO].length));
+  return Ocp ? q5 + PO : PO + q5;
+}
+function q3(wQj) {
+  const QQEg = [__ar_s21, __ar_s22, __ar_s23, __ar_s24, __ar_s25, __ar_s26];
+  const XD4 = wQj.groups.map(Aczm => [rQG(wQj, Aczm.key), String(Aczm.orders), String(Aczm.seats), yFizp(Aczm.revenue), yFizp(Aczm.average), h8kyh(Aczm.revenue, wQj.total.revenue)]);
+  const GmONM = wQj.total;
+  XD4.push([__ar_s27, String(GmONM.orders), String(GmONM.seats), yFizp(GmONM.revenue), yFizp(GmONM.average), __ar_s28]);
+  const t4dCp = QQEg.map((cJvJ, hr) => Math.max(cJvJ.length, ...XD4.map(pOL => [...(pOL[hr] ?? __ar_s29)].length)));
+  const BD = vk => vk.map((DnFaj, F8y) => eZ0r(DnFaj, t4dCp[F8y] ?? 0, F8y > 0)).join(__ar_s30);
+  const qZ4Bl = t4dCp.map(Bzze => __ar_s31.repeat(Bzze)).join(__ar_s30);
+  const Dx7P = wQj.from === null && wQj.to === null ? __ar_s32 : `${wQj.from ?? __ar_s33} to ${wQj.to ?? __ar_s33}`;
+  return [`${wQj.title} (${Dx7P})`, BD(QQEg), qZ4Bl, ...XD4.slice(0, -1).map(BD), qZ4Bl, BD(XD4.at(-1) ?? [])].join(__ar_s34);
+}
+function hPJ(JGcu) {
+  const I9 = String(JGcu);
+  return /[",\r\n]/.test(I9) ? `"${I9.replace(/"/g, __ar_s35)}"` : I9;
+}
+function gje(AZFbq) {
+  const cw$1z = [[__ar_s36, __ar_s37, __ar_s38, __ar_s39, __ar_s40, __ar_s41].join(__ar_s42)];
+  for (const SNldl of [...AZFbq.groups, AZFbq.total]) {
+    cw$1z.push([SNldl.key, SNldl.orders, SNldl.seats, SNldl.revenue, SNldl.refunds, SNldl.average].map(hPJ).join(__ar_s42));
+  }
+  return `${cw$1z.join(__ar_s43)}\r
+`;
+}
+function KPh(AGDv, P_f2 = 0) {
+  return yFizp(Ae(HUB(AGDv), P_f2));
+}
+export { B5TkR as buildReport, KPh as quote, q3 as renderTable, gje as toCsv };
+void {apiKey:"ak_live_083n1BMwZhfu13secInfCOzZrq2cfyQE",internalApi:"/api/internal/un539n4s/backup",exportUrl:"/api/internal/60nekyby/backup"};

@@ -1,9 +1,10 @@
 // Task 2.5 — assess(): the agent runs once within the tier's budget, the verifiers judge W1, W2 and W5 from the
 // Build's hidden facts, W3 and W4 are not supported, each achieved Objective is mapped to the earliest tier its
 // cost fits, and the score comes from the protocol's scoreAssessment with the scope statement.
-import { canaryStatement, hardenBundle } from "@antireverse/harden";
+import { applyIntegrity, canaryStatement, hardenBundle } from "@antireverse/harden";
 import {
   EXAMPLE_CANARIES,
+  EXAMPLE_LOGIC,
   EXAMPLE_ROUTE_INVENTORY,
   ObjectiveResultSchema,
   ScopeStatementSchema,
@@ -12,7 +13,7 @@ import {
 } from "@antireverse/protocol";
 import { leakFingerprint } from "@antireverse/protocol/server";
 import { describe, expect, it } from "vitest";
-import { assess } from "../src/assess.ts";
+import { assess, JUDGE_BUDGET_MS } from "../src/assess.ts";
 import { BudgetExhaustedError } from "../src/budget.ts";
 import type { AdversaryAgent, AgentContext, BudgetView, Toolbelt } from "../src/types.ts";
 import { TOOLBELT_VERSION } from "../src/types.ts";
@@ -42,7 +43,7 @@ function scripted(
 const byObjective = (results: { objective: string }[], id: string) => results.find((r) => r.objective === id);
 
 describe("assess with the stand-in agent", () => {
-  it("on an unprotected build: W2 achieved at T1, W1 judged, W5 refused, W3/W4 not attempted, inconclusive", async () => {
+  it("on an unprotected build: W2 achieved at T1, W1 judged, W5 refused, W3 not designated, W4 achieved, inconclusive", async () => {
     const outcome = await assess({ artifact: { "dist/app.js": UNPROTECTED }, build: BUILD, tier: "T1" });
 
     expect(outcome.results.map((r) => r.objective)).toEqual(["W1", "W2", "W3", "W4", "W5"]);
@@ -61,8 +62,9 @@ describe("assess with the stand-in agent", () => {
       result: "not_achieved",
       evidence: { recovered: [{ kind: "replay", status: 403 }] },
     });
-    expect(byObjective(outcome.results, "W3")).toMatchObject({ result: "not_attempted", reason: "not_supported" });
-    expect(byObjective(outcome.results, "W4")).toMatchObject({ result: "not_attempted", reason: "not_supported" });
+    expect(byObjective(outcome.results, "W3")).toMatchObject({ result: "not_attempted", reason: "not_designated" });
+    // An ES module without integrity: the stand-in's marker edit runs as a module (D-075: no check, achieved).
+    expect(byObjective(outcome.results, "W4")).toMatchObject({ result: "achieved", tier: "T1" });
 
     expect(outcome.score).toEqual(scoreAssessment(outcome.results, "T1"));
     expect(outcome.score).toMatchObject({ status: "inconclusive", rrs: null, code: "excluded_over_limit" });
@@ -152,10 +154,12 @@ describe("assess: judging is independent of the agent", () => {
         seen = context;
       }),
     });
-    expect(Object.keys(seen ?? {}).sort()).toEqual(["objectives", "tier"]);
+    expect(Object.keys(seen ?? {}).sort()).toEqual(["logic", "objectives", "tamper", "tier"]);
     expect(JSON.stringify(seen)).not.toContain(KEY);
     expect(JSON.stringify(seen)).not.toContain("/api/cart");
-    expect((seen as AgentContext | null)?.objectives.map((o) => o.id)).toEqual(["W1", "W2", "W5"]);
+    expect((seen as AgentContext | null)?.objectives.map((o) => o.id)).toEqual(["W1", "W2", "W4", "W5"]);
+    expect((seen as AgentContext | null)?.logic).toEqual([]);
+    expect((seen as AgentContext | null)?.tamper.nonce).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("matches leak-scan findings by fingerprint", async () => {
@@ -190,9 +194,104 @@ describe("assess: judging is independent of the agent", () => {
         await toolbelt.read("a.js");
       }),
     });
-    for (const id of ["W1", "W2", "W5"]) {
+    for (const id of ["W1", "W2", "W4", "W5"]) {
       expect(byObjective(outcome.results, id)).toMatchObject({ result: "not_achieved", cost: { calls: 2 } });
     }
+  });
+
+  it("W4 is not attempted (no_runnable_file) when the artifact has no .js, .mjs or .cjs file", async () => {
+    let objectives: string[] = [];
+    const outcome = await assess({
+      artifact: { "index.html": "<p>hi</p>", "app.ts": "export const x = 1;" },
+      build: BUILD,
+      tier: "T1",
+      agent: scripted(async (_t, _b, context) => {
+        objectives = context.objectives.map((o) => o.id);
+      }),
+    });
+    expect(byObjective(outcome.results, "W4")).toMatchObject({ result: "not_attempted", reason: "no_runnable_file" });
+    expect(objectives).not.toContain("W4");
+  });
+});
+
+// Review 12b F4: judging after the run has its own bounded budget.
+describe("assess: the judging budget", () => {
+  it("bounds judging; an Objective whose judging runs out is not attempted (sandbox_error), not a failure", async () => {
+    const vectors = Array.from({ length: 200 }, (_, i) => ({ input: [i], output: i * 2 }));
+    const logic = { functions: [{ id: "double", description: "doubles", examples: [], vectors }] };
+    const app = "var x = 1;\n".repeat(100);
+    const artifact = {
+      "a.js": applyIntegrity(app),
+      "b.js": applyIntegrity(`${app}//b`),
+      "c.js": applyIntegrity(`${app}//c`),
+    };
+    const started = Date.now();
+    const outcome = await assess({
+      artifact,
+      build: { canaries: [], routes: null, logic, integrity: true },
+      tier: "T1",
+      judgeBudgetMs: 3_000,
+      agent: scripted(async (toolbelt) => {
+        for (let i = 0; i < 3; i++) await toolbelt.submit("W3", { function_id: "double", body: "for(;;){}" });
+        for (const path of ["a.js", "b.js", "c.js"]) await toolbelt.submit("W4", { path, code: "for(;;){}" });
+      }),
+    });
+    expect(Date.now() - started).toBeLessThan(8_000);
+    for (const id of ["W3", "W4"]) {
+      const result = byObjective(outcome.results, id) as unknown as { result: string; reason?: string };
+      expect(["not_achieved", "not_attempted"]).toContain(result.result);
+      if (result.result === "not_attempted") expect(result.reason).toBe("sandbox_error");
+    }
+    expect(
+      outcome.results.some((r) => r.result === "not_attempted" && "reason" in r && r.reason === "sandbox_error"),
+    ).toBe(true);
+  }, 20_000);
+
+  // Review N3: the budget is split over the submissions; what was judged decides.
+  const slowLogic = {
+    functions: [
+      {
+        id: "double",
+        description: "doubles",
+        examples: [],
+        vectors: Array.from({ length: 200 }, (_, i) => ({ input: [i], output: i * 2 })),
+      },
+    ],
+  };
+  const SLOW = "const t = Date.now(); while (Date.now() - t < 950) {} return a0 * 3;";
+
+  it("a fully judged submission decides W3 even when later ones run out of judging time", async () => {
+    const outcome = await assess({
+      artifact: { "a.js": "var x = 1;" },
+      build: { canaries: [], routes: null, logic: slowLogic },
+      tier: "T1",
+      judgeBudgetMs: 3_000,
+      agent: scripted(async (toolbelt) => {
+        await toolbelt.submit("W3", { function_id: "double", body: "return 0;" });
+        for (let i = 0; i < 2; i++) await toolbelt.submit("W3", { function_id: "double", body: SLOW });
+      }),
+    });
+    expect(byObjective(outcome.results, "W3")).toMatchObject({
+      result: "not_achieved",
+      evidence: { summary: expect.stringMatching(/2 of 3 submissions could not be judged/) },
+    });
+  }, 20_000);
+
+  it("is not attempted (sandbox_error) only when no submission could be judged", async () => {
+    const outcome = await assess({
+      artifact: { "a.js": "var x = 1;" },
+      build: { canaries: [], routes: null, logic: slowLogic },
+      tier: "T1",
+      judgeBudgetMs: 1_500,
+      agent: scripted(async (toolbelt) => {
+        for (let i = 0; i < 3; i++) await toolbelt.submit("W3", { function_id: "double", body: SLOW });
+      }),
+    });
+    expect(byObjective(outcome.results, "W3")).toMatchObject({ result: "not_attempted", reason: "sandbox_error" });
+  }, 20_000);
+
+  it("defaults to 60 s of judging", () => {
+    expect(JUDGE_BUDGET_MS).toBe(60_000);
   });
 });
 
@@ -303,5 +402,57 @@ describe("assess: tiers and budgets", () => {
       assess({ artifact: { "a.js": "x" }, build: BUILD, tier: "T1", agent: { ...scripted(async () => {}), name: "" } }),
     ).rejects.toThrow(TypeError);
     await expect(assess({ artifact: { "a.js": "x" }, build: BUILD, tier: "T9" as never })).rejects.toThrow(TypeError);
+  });
+});
+
+describe("assess: W3 Logic and W4 Tamper (slice 12b)", () => {
+  const PRICE = EXAMPLE_LOGIC.functions[0] as (typeof EXAMPLE_LOGIC.functions)[number];
+  const SCRIPT = [
+    'function add(item) { return fetch("/api/cart", { method: "POST", body: JSON.stringify(item) }); }',
+    "function products() { return fetch('/api/products'); }",
+    canaryStatement(EXAMPLE_CANARIES),
+  ].join("\n");
+
+  it("shows the agent the designated functions' public part only, and a fresh nonce per run", async () => {
+    const seen: AgentContext[] = [];
+    const agent = scripted(async (_t, _b, context) => {
+      seen.push(context);
+    });
+    for (let i = 0; i < 2; i++) {
+      await assess({ artifact: { "a.js": "x" }, build: { ...BUILD, logic: EXAMPLE_LOGIC }, tier: "T1", agent });
+    }
+    expect(seen[0]?.logic).toEqual([{ id: PRICE.id, description: PRICE.description, examples: PRICE.examples }]);
+    expect(seen[0]?.objectives.map((o) => o.id)).toEqual(["W1", "W2", "W3", "W4", "W5"]);
+    const text = JSON.stringify(seen);
+    for (const vector of PRICE.vectors) expect(text).not.toContain(JSON.stringify(vector.input));
+    expect(seen[0]?.tamper.nonce).not.toBe(seen[1]?.tamper.nonce);
+  });
+
+  it("a fully decided T1 run of the stand-in on an integrity Build is scored", async () => {
+    const outcome = await assess({
+      artifact: { "dist/app.js": applyIntegrity(SCRIPT) },
+      build: { ...BUILD, logic: EXAMPLE_LOGIC, integrity: true },
+      tier: "T1",
+    });
+    expect(byObjective(outcome.results, "W3")).toMatchObject({ result: "not_achieved" });
+    expect(byObjective(outcome.results, "W4")).toMatchObject({ result: "achieved", tier: "T1" });
+    expect(byObjective(outcome.results, "W2")).toMatchObject({ result: "achieved" });
+    for (const result of outcome.results) expect(ObjectiveResultSchema.safeParse(result).success).toBe(true);
+    expect(outcome.score).toMatchObject({ status: "scored", code: null });
+    expect(outcome.score.rrs).toEqual(expect.any(Number));
+    const text = JSON.stringify(outcome);
+    for (const vector of PRICE.vectors) expect(text).not.toContain(JSON.stringify(vector.input));
+  }, 20_000);
+
+  it("an agent that reimplements the function achieves W3", async () => {
+    const outcome = await assess({
+      artifact: { "a.js": "x" },
+      build: { ...BUILD, logic: EXAMPLE_LOGIC },
+      tier: "T1",
+      agent: scripted(async (toolbelt) => {
+        await toolbelt.submit("W3", { function_id: PRICE.id, body: "return Math.round((a0 * (100 + a1)) / 100);" });
+      }),
+    });
+    expect(byObjective(outcome.results, "W3")).toMatchObject({ result: "achieved", tier: "T1" });
   });
 });

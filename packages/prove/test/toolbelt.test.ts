@@ -42,6 +42,7 @@ describe("read", () => {
       ok: true,
       path: "dist/app.js",
       offset: 6,
+      end: 7,
       text: "k",
       bytes: Buffer.byteLength(APP),
       more: true,
@@ -258,5 +259,65 @@ describe("the call log and the budget", () => {
     await toolbelt.search("vendor");
     expect(callsShowing(SECRET)).toEqual([1]);
     expect(callsShowing("never-seen")).toEqual([]);
+  });
+});
+
+describe("submit W3 and W4 (slice 12b)", () => {
+  const BODY = "return a0 + a1; // secret-ish body text";
+  it("W3: a designated function id and a body, at most 3 per run; the summary never carries the body", async () => {
+    const budget = new Budget({ calls: 100, seconds: 1000 }, () => 0);
+    const { toolbelt, submissions, calls } = createToolbelt({ artifact: { "a.js": "x" }, budget, logicIds: ["sum"] });
+    expect(await toolbelt.submit("W3", { function_id: "nope", body: BODY })).toMatchObject({ ok: false });
+    expect(await toolbelt.submit("W3", { function_id: "sum", body: "" })).toMatchObject({ ok: false });
+    for (let i = 0; i < 3; i++)
+      expect(await toolbelt.submit("W3", { function_id: "sum", body: BODY })).toMatchObject({ ok: true });
+    expect(await toolbelt.submit("W3", { function_id: "sum", body: BODY })).toMatchObject({ ok: false });
+    expect(submissions.filter((s) => s.objective === "W3")).toHaveLength(3);
+    expect(JSON.stringify(calls)).not.toContain("secret-ish");
+  });
+
+  it("W3 without designated functions is refused", async () => {
+    const { toolbelt } = setup();
+    expect(await toolbelt.submit("W3", { function_id: "sum", body: BODY })).toMatchObject({ ok: false });
+  });
+
+  it("W4: an artifact JS file, code at most twice its size, at most 3 per run; the summary never carries code", async () => {
+    const budget = new Budget({ calls: 100, seconds: 1000 }, () => 0);
+    const original = "var original = 1;";
+    const { toolbelt, submissions, calls } = createToolbelt({
+      artifact: { "dist/app.js": original, "index.html": "<p></p>" },
+      budget,
+    });
+    const code = `/*tamper-text*/${original}`;
+    expect(await toolbelt.submit("W4", { path: "missing.js", code })).toMatchObject({ ok: false });
+    expect(await toolbelt.submit("W4", { path: "index.html", code })).toMatchObject({ ok: false });
+    expect(
+      await toolbelt.submit("W4", { path: "dist/app.js", code: "x".repeat(original.length * 2 + 1) }),
+    ).toMatchObject({
+      ok: false,
+    });
+    for (let i = 0; i < 3; i++)
+      expect(await toolbelt.submit("W4", { path: "dist/app.js", code })).toMatchObject({ ok: true });
+    expect(await toolbelt.submit("W4", { path: "dist/app.js", code })).toMatchObject({ ok: false });
+    expect(submissions.filter((s) => s.objective === "W4")).toHaveLength(3);
+    expect(JSON.stringify(calls)).not.toContain("tamper-text");
+  });
+});
+
+describe("read never cuts a UTF-8 sequence", () => {
+  it("ends a range before a multi-byte character and reports where to continue", async () => {
+    const { toolbelt } = setup({ "u.js": "ab€cd" }); // € is 3 bytes: a b [e2 82 ac] c d
+    const first = await toolbelt.read("u.js", { offset: 0, length: 3 });
+    expect(first).toMatchObject({ ok: true, text: "ab", end: 2, more: true });
+    const second = await toolbelt.read("u.js", { offset: 2, length: 3 });
+    expect(second).toMatchObject({ ok: true, text: "€", end: 5 });
+  });
+});
+
+describe("beautify stays within the assess worker's heap (review 12b F3)", () => {
+  it("refuses a file over 1 MB: a full Babel parse costs about 150 MB of heap per MB", async () => {
+    expect(TOOLBELT_LIMITS.beautifyBytesMax).toBe(1_048_576);
+    const { toolbelt } = setup({ "big.js": "var a = 1;\n".repeat(110_000) });
+    expect(await toolbelt.beautify("big.js")).toMatchObject({ ok: false, kind: "invalid" });
   });
 });

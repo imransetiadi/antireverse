@@ -5,7 +5,7 @@
 // Safety properties enforced here:
 //   - The admin key is read ONLY from the named environment variable (`--key-env`), never from an argument,
 //     and is never printed.
-//   - Local-first: nothing but the Manifest (with the components and routes beside it) leaves the machine, and only
+//   - Local-first: nothing but the Manifest (with the components, routes and logic beside it) leaves the machine, and only
 //     when `--register` is passed; the protected output files leave it only with `--assess`.
 //   - The run exits non-zero on any failure: a parse error, an equivalence failure, a budget that even
 //     mangle-only cannot satisfy, Canaries (with the Clone Beacon, when on) that fit no file's budget, or a
@@ -23,6 +23,10 @@
 //   - Route inventory (slice 12a): `--routes <file>` is read and validated before any work (exit 2, naming an entry
 //     by position, never by value). The routes are sent beside the Manifest only with --register (the Manifest
 //     carries their count and digest); they are never written into the output and never printed beyond a count.
+//   - Logic file (slice 12b): `--logic <file>` (the designated protected functions with their hidden vectors, at most
+//     1 MB) is read and validated before any work (exit 2, naming a place in the file, never a value). Like the routes
+//     it is sent beside the Manifest only with --register (the Manifest carries `logic_count` and `logic_digest`); it
+//     is never written into the output, never uploaded with --assess and never printed beyond a count.
 //   - Reverse Assessment (slice 12a): `--assess <T1|T2|T3>` needs --register and is validated with it. The
 //     protected output files (exactly the Manifest's artifacts) are uploaded only after a successful registration.
 //     Output over the 25 MB / 1,000-file limits is registered and written as usual, and the upload is skipped (never
@@ -42,18 +46,27 @@ import {
   type FindingsSummary,
   ID_PATTERNS,
   isLocalOrigin,
+  type LogicFile,
   type ManifestBeacon,
   PROFILES,
   type Profile,
   TIER_IDS,
 } from "@antireverse/protocol";
-import { componentsDigest, deriveBeaconToken, newId, routesDigest, seedId } from "@antireverse/protocol/server";
+import {
+  componentsDigest,
+  deriveBeaconToken,
+  logicDigest,
+  newId,
+  routesDigest,
+  seedId,
+} from "@antireverse/protocol/server";
 import { type AssessmentFile, assessmentUploadProblem, consoleBuildUrl, requestAssessment } from "./assess.ts";
 import { beaconEndpointUrl } from "./beacon.ts";
 import { readComponents } from "./components.ts";
 import { type BundleLeakScan, hardenBundle } from "./engine.ts";
 import { checkEquivalence } from "./equivalence.ts";
 import { DEFAULT_ALLOWLIST_PATH, type LeakFinding, loadAllowlist } from "./leaks/scan.ts";
+import { readLogic } from "./logic.ts";
 import { buildManifest } from "./manifest.ts";
 import { applyIntegrity } from "./passes/integrity.ts";
 import { registerBuild } from "./register.ts";
@@ -119,7 +132,7 @@ Clone Beacon (needs --register):
                        reports it once (navigator.sendBeacon to <endpoint>/v1/beacon). Planted with the Canaries.
 
 Register the Build (sends ONLY the Manifest — no source, no bundle, no seed — and, beside it, the lockfile's
-components and the --routes inventory):
+components, the --routes inventory and the --logic file):
   --register --endpoint <url> --key-env <VAR> --app <appId> --environment <env> --build-version <v>
   The admin key is read only from the environment variable named by --key-env; it is never printed.
 
@@ -134,6 +147,13 @@ Route inventory (Reverse Assessment, W1 Map):
   --routes <file>      JSON array of "METHOD /path" (":param" segments), at most 2,000. Sent beside the Manifest
                        with --register (the Manifest carries only their count and digest); never written to --out,
                        never printed beyond a count, never shown to the assessing agent.
+
+Protected functions (Reverse Assessment, W3 Logic):
+  --logic <file>       JSON { "functions": [{ "id", "description", "examples", "vectors" }] }: 1–5 functions, each
+                       with up to 2 public examples and 10–200 hidden test vectors ({ "input": [args], "output" }),
+                       at most 1 MB. Sent beside the Manifest with --register (the Manifest carries only their count
+                       and digest); never written to --out, never printed beyond a count. The assessing agent sees
+                       each function's id, description and examples, never the vectors.
 
 Reverse Assessment (needs --register):
   --assess <${TIER_IDS.join("|")}>  After registration, upload the protected output files (at most 25 MB and 1,000 files)
@@ -167,6 +187,8 @@ interface Flags {
   failOn?: string | null | undefined;
   /** `--routes`: absent = no inventory; `null` = the flag was given without a value. */
   routes?: string | null | undefined;
+  /** `--logic`: absent = no protected functions; `null` = the flag was given without a value. */
+  logic?: string | null | undefined;
   /** `--assess`: absent = no Assessment; `null` = the flag was given without a value. */
   assess?: string | null | undefined;
 }
@@ -230,6 +252,9 @@ function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
         break;
       case "--routes":
         flags.routes = args[++i] ?? null;
+        break;
+      case "--logic":
+        flags.logic = args[++i] ?? null;
         break;
       case "--assess":
         flags.assess = args[++i] ?? null;
@@ -470,6 +495,22 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     routes = read.routes;
   }
 
+  // The logic file (slice 12b), read before any work like the routes: an unreadable, invalid or oversized file is an
+  // input error (exit 2). The message names a place in the file only — a vector is never printed.
+  let logic: LogicFile | null = null;
+  if (flags.logic !== undefined) {
+    if (flags.logic === null || flags.logic === "") {
+      io.stderr("harden: --logic needs a path\n");
+      return 2;
+    }
+    const read = readLogic(resolve(cwd, flags.logic));
+    if ("error" in read) {
+      io.stderr(`harden: --logic ${flags.logic} ${read.error}\n`);
+      return 2;
+    }
+    logic = read.logic;
+  }
+
   let sources: Record<string, string>;
   try {
     sources = readSources(dir);
@@ -620,6 +661,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
         ? { components: { count: inventory.components.length, digest: componentsDigest(inventory.components) } }
         : {}),
       ...(routes ? { routes: { count: routes.length, digest: routesDigest(routes) } } : {}),
+      ...(logic ? { logic: { count: logic.functions.length, digest: logicDigest(logic) } } : {}),
     });
     const reg = await registerBuild({
       endpoint: flags.endpoint as string,
@@ -628,6 +670,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       manifest,
       ...(inventory ? { components: inventory.components } : {}),
       ...(routes ? { routes } : {}),
+      ...(logic ? { logic } : {}),
     });
     if ("error" in reg) {
       io.stderr(`harden: register failed: ${reg.error}\n`);
@@ -711,6 +754,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     findings,
     gate,
     routes,
+    logic,
     assessment,
   });
   if (assessment && "error" in assessment) {
@@ -904,6 +948,8 @@ interface ReportInput {
   gate: GateResult | null;
   /** The route inventory (never printed: only its count). */
   routes: string[] | null;
+  /** The logic file (never printed: only its function count). */
+  logic: LogicFile | null;
   assessment: AssessmentReport | undefined;
 }
 
@@ -933,6 +979,8 @@ function emitReport(io: CliIo, input: ReportInput): void {
       gate: gateReport(input.gate),
       // Count only: the routes themselves are never printed.
       routes: input.routes ? { count: input.routes.length } : null,
+      // Count only: the functions and their vectors are never printed.
+      logic: input.logic ? { count: input.logic.functions.length } : null,
       ...(input.assessment
         ? {
             assessment:
@@ -966,6 +1014,7 @@ function emitReport(io: CliIo, input: ReportInput): void {
   }
   lines.push(...inventoryLines(input));
   lines.push(...routeLines(input));
+  lines.push(...logicLines(input));
   if (input.registered) {
     lines.push("build_id" in input.registered ? `  registered: ${input.registered.build_id}` : `  register error`);
   }
@@ -995,6 +1044,14 @@ function routeLines(input: ReportInput): string[] {
   const n = input.routes.length;
   const noun = `route${n === 1 ? "" : "s"}`;
   return input.flags.register ? [`✓ ${n} ${noun} in inventory`] : [`  ${n} ${noun} read (not sent: pass --register)`];
+}
+
+/** Count only — never a function, an example or a vector. */
+function logicLines(input: ReportInput): string[] {
+  if (input.logic === null) return [];
+  const n = input.logic.functions.length;
+  const noun = `protected function${n === 1 ? "" : "s"}`;
+  return input.flags.register ? [`✓ ${n} ${noun} designated`] : [`  ${n} ${noun} read (not sent: pass --register)`];
 }
 
 function assessmentLines(input: ReportInput): string[] {

@@ -462,7 +462,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 09 | Containment: block an Actor from an Incident → enforced on all Shields within 30 s — **done 2026-11-11** | 02, 06 |
 | 10 | Clone Beacon: protected bundle served from an unauthorized origin raises an Incident — **done 2026-11-11** | 05, 06 |
 | 11 | Policy simulation: replay the last 24 h against a draft rule — **done 2026-11-11** | 02, 06 |
-| 12 | Reverse Assessment v1: Build → sandboxed assessment → RRS with evidence on the Build page — **12a done 2026-11-13** (W1, W2, W5, stand-in agent); 12b W3/W4 next | 05 |
+| 12 | Reverse Assessment v1: Build → sandboxed assessment → RRS with evidence on the Build page — **done 2026-11-13** (12a W1, W2, W5; 12b W3, W4; stand-in agent) | 05 |
 | 13 | CI gate: pipeline fails when RRS is under threshold | 12 |
 | 14 | Verified Target and Rules of Engagement flow — **done 2026-11-13** | 01 |
 | 15 | Pentest Campaign (beta) against `ar-range` staging → Findings with retest | 14 |

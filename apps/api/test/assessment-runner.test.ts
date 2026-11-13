@@ -4,12 +4,20 @@ import {
   type BuildManifest,
   type Canary,
   CreateAssessmentResponseSchema,
+  EXAMPLE_LOGIC,
   EXAMPLE_ROUTE_INVENTORY,
+  type LogicFile,
   scoreAssessment,
 } from "@antireverse/protocol";
-import { newId, routesDigest } from "@antireverse/protocol/server";
+import { logicDigest, newId, routesDigest } from "@antireverse/protocol/server";
+import { ASSESS_WORKER_LIMITS } from "@antireverse/prove";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { type AssessmentRunner, createAssessmentRunner, FAILURE_REASONS } from "../src/assess/runner.ts";
+import {
+  type AssessmentRunner,
+  createAssessmentRunner,
+  FAILURE_REASONS,
+  RUNNER_DEFAULTS,
+} from "../src/assess/runner.ts";
 import { type OwnedDb, openDb } from "../src/db/db.ts";
 import {
   artifactFor,
@@ -56,7 +64,7 @@ describe("Assessment runner", () => {
 
   async function queue(
     org: { admin: string; appId: string },
-    options: { manifest?: Partial<BuildManifest>; routes?: string[]; tier?: string } = {},
+    options: { manifest?: Partial<BuildManifest>; routes?: string[]; logic?: LogicFile; tier?: string } = {},
   ): Promise<{ assessment: Assessment; manifest: BuildManifest; contents: Map<string, string> }> {
     const routes = options.routes;
     const { manifest, files, contents } = artifactFor(org.appId, {
@@ -65,7 +73,14 @@ describe("Assessment runner", () => {
     });
     const registered = await api.app.request(
       `/v1/apps/${org.appId}/builds`,
-      json({ manifest, ...(routes === undefined ? {} : { routes }) }, bearer(org.admin)),
+      json(
+        {
+          manifest,
+          ...(routes === undefined ? {} : { routes }),
+          ...(options.logic === undefined ? {} : { logic: options.logic }),
+        },
+        bearer(org.admin),
+      ),
     );
     expect(registered.status).toBe(201);
     const res = await api.app.request(
@@ -123,7 +138,7 @@ describe("Assessment runner", () => {
     const run = await within(assessor.run(0), 2_000, "the run");
     expect(Object.keys(run.input).sort()).toEqual(["artifact", "budgets", "build", "onResult", "signal", "tier"]);
     expect(run.input.tier).toBe("T1");
-    expect(run.input.build).toEqual({ canaries: planted, leakFindings: [], routes });
+    expect(run.input.build).toEqual({ canaries: planted, leakFindings: [], routes, logic: null, integrity: false });
     expect([...run.input.artifact.keys()].sort()).toEqual([...contents.keys()].sort());
     for (const [path, text] of contents) {
       expect(Buffer.from(run.input.artifact.get(path) as Uint8Array).toString("utf8")).toBe(text);
@@ -153,6 +168,29 @@ describe("Assessment runner", () => {
       artifact_kept_until: new Date(T0 + 61_000 + 30 * DAY).toISOString(),
     });
     expect(manifest.build_id).toBe(done.build_id);
+  });
+
+  it("forwards the Build's stored logic file and its integrity flag to the Assessor (slice 12b)", async () => {
+    assessor = fakeAssessor();
+    runner = makeRunner();
+    await runner.start();
+    const logic = EXAMPLE_LOGIC;
+    const { manifest } = artifactFor(C().appId);
+    const { assessment } = await queue(C(), {
+      manifest: {
+        transform: { ...manifest.transform, integrity: true },
+        logic_count: logic.functions.length,
+        logic_digest: logicDigest(logic),
+      },
+      logic,
+    });
+    const run = await within(assessor.run(0), 2_000, "the run");
+    expect(run.input.build.logic).toEqual(logic);
+    expect(run.input.build.integrity).toBe(true);
+    run.resolve({ results: scoredResults(), scope: fakeScope("T1") });
+    await runner.idle();
+    const res = await api.app.request(`/v1/assessments/${assessment.id}`, { headers: bearer(C().admin) });
+    expect(await res.text()).not.toContain("price-with-tax");
   });
 
   it("passes null routes for a Build registered without an inventory, and records an inconclusive run", async () => {
@@ -498,5 +536,11 @@ describe("Assessment runner", () => {
       q.query<{ calls: unknown }>("SELECT calls FROM assessments WHERE id = $1", [assessment.id]),
     );
     for (const canary of planted) expect(JSON.stringify(rows)).not.toContain(canary.value);
+  });
+});
+
+describe("runner grace (slice 12b, review F4)", () => {
+  it("outlasts the engine's own deadline grace, so the engine's judging budget ends a run first", () => {
+    expect(RUNNER_DEFAULTS.graceMs).toBeGreaterThan(ASSESS_WORKER_LIMITS.graceMs);
   });
 });

@@ -2,7 +2,8 @@
 // Build with a route inventory (`--routes`) and requests a T1 Reverse Assessment (`--assess T1`) from a real API
 // (startApi) whose runner uses the real prove engine with its deterministic stand-in agent. The planted Canaries are
 // left reachable (an unprotected build), so the stand-in recovers one: W2 achieved, naming the Canary by id; W1 judged
-// against the inventory the agent never sees; W5 refused by the replica Shield; W3/W4 not attempted; the Assessment
+// against the inventory the agent never sees; W5 refused by the replica Shield; W3 not attempted (no --logic, slice 12b), W4
+// not attempted (the reference bundle has no JavaScript file, D-076); the Assessment
 // inconclusive (`excluded_over_limit`) with the stand-in's scope. No API response carries a Canary value. Then: an
 // Assessment without files reassesses the kept artifact (409 when none is kept), a Shield key gets 403, another
 // Organization 404, and a file whose SHA-256 differs from the Manifest's 400.
@@ -228,7 +229,7 @@ describe("slice 12a Reverse Assessment over HTTP/CLI", () => {
   }, 90_000);
 
   it(
-    "finishes inconclusive: W2 achieved on a Canary, W1 judged, W5 refused, W3/W4 not attempted, stand-in scope",
+    "finishes inconclusive: W2 achieved on a Canary, W1 judged, W5 refused, W3 and W4 not attempted, stand-in scope",
     async () => {
       finished = await waitFinished(assessmentId);
       expect(finished).toMatchObject({
@@ -275,9 +276,11 @@ describe("slice 12a Reverse Assessment over HTTP/CLI", () => {
       expect(replay.status).toBeGreaterThanOrEqual(400);
       expect(replay.status).toBeLessThan(500);
 
-      // W3 and W4: not attempted (no verifier in 12a).
-      expect(byId.W3).toMatchObject({ result: "not_attempted", reason: "not_supported" });
-      expect(byId.W4).toMatchObject({ result: "not_attempted", reason: "not_supported" });
+      // W3: not attempted without --logic (slice 12b), which alone excludes 25 % and keeps the run inconclusive.
+      // W4: the reference bundle ships only TypeScript files, so there is no JavaScript file to run (D-076); the
+      // 12b tests assess a bundled JavaScript build.
+      expect(byId.W3).toMatchObject({ result: "not_attempted", reason: "not_designated" });
+      expect(byId.W4).toMatchObject({ result: "not_attempted", reason: "no_runnable_file" });
 
       // The Build's list shows it, newest first.
       const listed = await call(`/v1/apps/${appId}/builds/${buildId}/assessments`, { key: adminKey });

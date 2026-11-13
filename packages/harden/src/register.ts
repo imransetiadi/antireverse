@@ -1,8 +1,9 @@
 // The register client: one POST that sends the Build Manifest to the API. It sends ONLY the Manifest (no
 // source, no unprotected bundle, no seed value) and, from slice 19, the lockfile's components beside it (name,
-// version, dev — nothing else) and, from slice 12a, the route inventory (`METHOD /path` entries), carries the
+// version, dev — nothing else), from slice 12a, the route inventory (`METHOD /path` entries) and, from slice 12b,
+// the logic file (the designated protected functions with their hidden vectors, for W3), carries the
 // admin key in the Authorization header, never logs or returns the key, and never throws into the caller — failures come back as `{ error }`.
-import type { Build, BuildManifest, Component, FindingsSummary } from "@antireverse/protocol";
+import type { Build, BuildManifest, Component, FindingsSummary, LogicFile } from "@antireverse/protocol";
 import { BuildResponseSchema } from "@antireverse/protocol";
 
 export interface RegisterArgs {
@@ -16,6 +17,8 @@ export interface RegisterArgs {
   components?: readonly Component[];
   /** The route inventory (slice 12a), sent beside the Manifest for W1 Map. Omitted from the body when absent. */
   routes?: readonly string[];
+  /** The logic file (slice 12b), sent beside the Manifest for W3 Logic. Omitted from the body when absent. */
+  logic?: LogicFile;
 }
 
 /** `findings` is the Build's open-findings summary when the API returned one (slice 19). */
@@ -39,6 +42,7 @@ export async function registerBuild(args: RegisterArgs): Promise<RegisterResult>
         manifest: args.manifest,
         ...(args.components ? { components: args.components } : {}),
         ...(args.routes ? { routes: args.routes } : {}),
+        ...(args.logic ? { logic: args.logic } : {}),
       }),
     });
   } catch (error) {

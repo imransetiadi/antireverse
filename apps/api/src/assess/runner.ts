@@ -28,7 +28,7 @@ import {
   interruptRunning,
   type StoredCalls,
 } from "../stores/assessments.ts";
-import { findBuildRoutes } from "../stores/builds.ts";
+import { findBuildLogic, findBuildRoutes, findManifest } from "../stores/builds.ts";
 import type { Assessor, AssessorInput, AssessorOutcome } from "./assessor.ts";
 
 // The Assessment queue and runner (slice 12a). Runs queued Assessments oldest first, one running per Organization and
@@ -60,8 +60,11 @@ export const FAILURE_REASONS = Object.freeze({
 export const RUNNER_DEFAULTS = Object.freeze({
   /** Assessments running at once, across Organizations. */
   concurrency: 2,
-  /** Added to the tier's seconds before the runner gives up on a run the engine did not end itself. */
-  graceMs: 60_000,
+  /**
+   * Added to the tier's seconds before the runner gives up on a run the engine did not end itself. It outlasts
+   * the engine's own grace (prove's 60 s judging budget plus margin, 90 s), so the engine ends a run first.
+   */
+  graceMs: 120_000,
   /** Between runs of the artifact expiry. */
   expiryIntervalMs: 3_600_000,
   /** Queue entries read per pass. */
@@ -223,6 +226,8 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
         artifact,
         canaries: await buildCanaries(q, target, claimed.buildId),
         routes: await findBuildRoutes(q, target, claimed.buildId),
+        logic: await findBuildLogic(q, target, claimed.buildId),
+        integrity: (await findManifest(q, target, claimed.buildId))?.transform.integrity ?? false,
       };
     });
     if (facts === null) {
@@ -234,7 +239,13 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
       tier: claimed.tier,
       artifact: facts.artifact,
       // Verifier inputs only: the Assessor keeps them out of the agent's context.
-      build: { canaries: facts.canaries, leakFindings: [], routes: facts.routes },
+      build: {
+        canaries: facts.canaries,
+        leakFindings: [],
+        routes: facts.routes,
+        logic: facts.logic,
+        integrity: facts.integrity,
+      },
       budgets,
       signal: controller.signal,
       onResult: (result) => {

@@ -6,6 +6,8 @@ import type {
   AssessmentTier,
   Canary,
   LeakRuleId,
+  LogicFile,
+  LogicPublic,
   ObjectiveId,
   ObjectiveResult,
   ScopeStatement,
@@ -46,6 +48,10 @@ export interface BuildFacts {
   routes?: readonly string[] | null;
   /** The route the Replay replica requires a signature on (W5). Default: every route (`/**`, all methods). */
   replayTarget?: ReplayTarget;
+  /** The designated protected functions with their hidden vectors (W3), or null/absent when none were designated. */
+  logic?: LogicFile | null;
+  /** Whether the Build was hardened with the integrity pass: the Manifest's `transform.integrity` (W4). */
+  integrity?: boolean;
 }
 
 /** What one Toolbelt call cost, cumulatively since the run started. */
@@ -77,6 +83,8 @@ export interface ReadResult {
   ok: true;
   path: string;
   offset: number;
+  /** The byte offset after the returned text: where the next read continues (a UTF-8 sequence is never cut). */
+  end: number;
   /** UTF-8 decoded bytes `[offset, offset + length)` (at most `TOOLBELT_LIMITS.readBytesMax`). */
   text: string;
   /** The file's total size in bytes. */
@@ -142,7 +150,22 @@ export interface ReplayRequest {
 export interface ReplaySubmission {
   request: ReplayRequest;
 }
-export type SubmissionPayload = MapSubmission | SecretsSubmission | ReplaySubmission;
+/** W3: a designated function's id and a reimplementation as a JS function body (arguments a0..aN and `args`). */
+export interface LogicSubmissionPayload {
+  function_id: string;
+  body: string;
+}
+/** W4: one artifact JS file's path and its modified code, which must set the marker to the run's nonce. */
+export interface TamperSubmissionPayload {
+  path: string;
+  code: string;
+}
+export type SubmissionPayload =
+  | MapSubmission
+  | SecretsSubmission
+  | ReplaySubmission
+  | LogicSubmissionPayload
+  | TamperSubmissionPayload;
 
 /**
  * The agent's only access to the artifact. Every call costs one tool call and is recorded; once the budget is
@@ -181,6 +204,10 @@ export interface AgentContext {
   tier: AssessmentTier;
   /** The Objectives with a verifier in this version, with their names. */
   objectives: ReadonlyArray<{ id: ObjectiveId; name: string; submit: string }>;
+  /** The designated functions' public part (id, description, examples); never their vectors. Empty when none. */
+  logic: readonly LogicPublic[];
+  /** W4: the run's nonce and the global the modified file must set to it. */
+  tamper: { nonce: string; marker: string };
 }
 
 /** The seam for an adversary agent: the deterministic stand-in now, a model-backed agent later (D-067). */
@@ -205,6 +232,8 @@ export interface AssessInput {
   budgets?: Partial<Record<AssessmentTier, TierLimits>>;
   /** Milliseconds a `run` call may take. Default 5,000. */
   runTimeoutMs?: number;
+  /** Milliseconds all judging after the run may take (W3 and W4 sandboxes). Default 60,000 (`JUDGE_BUDGET_MS`). */
+  judgeBudgetMs?: number;
   /** The clock in milliseconds (tests). Default `performance.now`-based. */
   now?: () => number;
 }

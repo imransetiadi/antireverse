@@ -30,10 +30,17 @@ export function proveAssessor(options: { agent?: AgentSpec; identity?: AgentIden
       tier,
     }),
     async assess(input) {
+      // Slice 12b: the logic file and the integrity flag go to the W3 and W4 verifiers. Not leak findings (12a).
+      const build = {
+        canaries: input.build.canaries,
+        routes: input.build.routes,
+        logic: input.build.logic,
+        integrity: input.build.integrity,
+      };
       const outcome = await assessInWorker(
         {
           artifact: input.artifact,
-          build: { canaries: input.build.canaries, routes: input.build.routes },
+          build,
           tier: input.tier,
           agent,
           ...(input.budgets === undefined ? {} : { budgets: input.budgets }),

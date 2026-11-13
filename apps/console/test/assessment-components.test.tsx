@@ -373,3 +373,134 @@ describe("ReverseResistance — Assess again", () => {
     expect(screen.queryByTestId("assess-again-queued")).toBeNull();
   });
 });
+
+// Slice 12b: W3 Logic and W4 Tamper are decided, so a stand-in run is scored. A T1 run with every Objective
+// attempted: W2 and W4 achieved within T1 limits, the rest held — RRS 24, not renormalised.
+const decided: ObjectiveResult[] = [
+  ...EXAMPLE_ASSESSMENT.results.filter((result) => result.objective === "W1" || result.objective === "W2"),
+  {
+    objective: "W3",
+    result: "not_achieved",
+    cost: { calls: 150, seconds: 840 },
+    evidence: {
+      summary: "Submitted a reimplementation of price-total; 2 of 40 hidden vectors passed.",
+      recovered: [],
+      calls: [88, 120],
+    },
+  },
+  {
+    objective: "W4",
+    result: "achieved",
+    tier: "T1",
+    cost: { calls: 31, seconds: 9.5 },
+    evidence: {
+      summary: "Edited dist/index.js; the edited file ran and set the marker.",
+      recovered: [],
+      calls: [30],
+    },
+  },
+  ...EXAMPLE_ASSESSMENT.results.filter((result) => result.objective === "W5"),
+];
+const scoredStandIn: Assessment = {
+  ...EXAMPLE_ASSESSMENT,
+  id: "asm_121212121212121212121212",
+  status: "scored",
+  results: decided,
+  rrs: 24,
+  inconclusive_reason: null,
+  inconclusive_code: null,
+  renormalised: false,
+};
+const W3_HINT = "Designate a protected function with Harden's --logic file to assess Logic.";
+
+describe("ReverseResistance — slice 12b, Logic and Tamper", () => {
+  it("shows a scored stand-in run with the meter, the scope line, the stand-in note and all five rows", () => {
+    render(<ReverseResistance assessments={[scoredStandIn]} />);
+    expect(screen.getByTestId("rrs-value").textContent).toBe("24");
+    expect(screen.getByTestId("assessment-scope").textContent).toBe(
+      "Measured by stand-in 0.1.0 · model stand-in · toolbelt 0.1.0 · tier T1",
+    );
+    expect(screen.getByTestId("assessment-stand-in")).toBeTruthy();
+    expect(screen.queryByTestId("assessment-renormalised")).toBeNull();
+    expect(screen.getAllByTestId("objective-row").map((element) => element.getAttribute("data-objective"))).toEqual([
+      "W1",
+      "W2",
+      "W3",
+      "W4",
+      "W5",
+    ]);
+    expect(within(row("W3")).getByTestId("objective-result").textContent).toBe("Not achieved");
+    expect(within(row("W4")).getByTestId("objective-result").textContent).toBe("Achieved at T1");
+  });
+
+  it("names the edited file as W4's evidence, and nothing else", () => {
+    render(<ReverseResistance assessments={[scoredStandIn]} />);
+    const tamper = within(row("W4"));
+    expect(tamper.getByTestId("objective-summary").textContent).toBe(
+      "Edited dist/index.js; the edited file ran and set the marker.",
+    );
+    expect(tamper.queryByTestId("recovered-item")).toBeNull();
+  });
+
+  it("suggests the Logic and Tamper fixes where they were achieved", () => {
+    const logicAchieved: ObjectiveResult = {
+      objective: "W3",
+      result: "achieved",
+      tier: "T1",
+      cost: { calls: 120, seconds: 600 },
+      evidence: { summary: "Reimplemented price-total; 40 of 40 hidden vectors passed.", recovered: [], calls: [119] },
+    };
+    const results = decided.map((result) => (result.objective === "W3" ? logicAchieved : result));
+    render(<ReverseResistance assessments={[{ ...scoredStandIn, results, rrs: 14 }]} />);
+    // One source of truth: the protocol's fix text, as for every Objective.
+    for (const id of ["W3", "W4"]) {
+      const fix = OBJECTIVES.find((objective) => objective.id === id)?.fix;
+      expect(within(row(id)).getByTestId("objective-fix").textContent).toBe(`Fix: ${fix}`);
+    }
+  });
+
+  it("names a missing JavaScript file when Tamper was not attempted for want of one", () => {
+    const noRunnable: ObjectiveResult = {
+      objective: "W4",
+      result: "not_attempted",
+      reason: "no_runnable_file",
+      evidence: { summary: "The artifact has no JavaScript file to run.", recovered: [], calls: [] },
+    };
+    const results = decided.map((result) => (result.objective === "W4" ? noRunnable : result));
+    render(<ReverseResistance assessments={[{ ...scoredStandIn, results }]} />);
+    expect(within(row("W4")).getByTestId("objective-result").textContent).toBe(
+      "Not attempted: no JavaScript file to run",
+    );
+  });
+
+  it("tells how to designate a protected function when Logic was not attempted for want of one", () => {
+    const notDesignated: ObjectiveResult = {
+      objective: "W3",
+      result: "not_attempted",
+      reason: "not_designated",
+      evidence: { summary: "No protected function was designated for this Build.", recovered: [], calls: [] },
+    };
+    const results = decided.map((result) => (result.objective === "W3" ? notDesignated : result));
+    render(
+      <ReverseResistance
+        assessments={[
+          {
+            ...scoredStandIn,
+            status: "inconclusive",
+            results,
+            rrs: null,
+            inconclusive_code: "excluded_over_limit",
+            inconclusive_reason:
+              "25% of the Objective weight was not attempted (W3 Logic: no protected function was designated (add --logic to Harden)); a score needs at most 20%.",
+          },
+        ]}
+      />,
+    );
+    const logic = within(row("W3"));
+    expect(logic.getByTestId("objective-result").textContent).toBe("Not attempted: no protected function designated");
+    expect(logic.getByTestId("objective-hint").textContent).toBe(W3_HINT);
+    expect(logic.getByTestId("objective-hint").querySelector("code")?.textContent).toBe("--logic");
+    // Only W3's want of a designated function gets the hint.
+    for (const id of ["W1", "W2", "W4", "W5"]) expect(within(row(id)).queryByTestId("objective-hint")).toBeNull();
+  });
+});

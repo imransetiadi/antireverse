@@ -48,7 +48,8 @@
 // Verification tokens are never logged.
 // Slice 12a: every App's Builds carry Reverse Assessments (stub-assessments.mjs, checked by a test against the
 // protocol): the newest an inconclusive stand-in run and a failed one, the next two scored runs, the oldest a running
-// one. `POST …/builds/:buildId/assessments` needs the tier and the artifact's files and queues a stand-in run.
+// one. `POST …/builds/:buildId/assessments` takes the tier (and optionally the files) and queues a stand-in run.
+// Slice 12b: the newest Build designates two protected functions (`logic_count` 2), and its latest run is scored.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -299,6 +300,8 @@ function makeBuild(app, spec) {
     ...(spec.leakScan ? { leak_scan: spec.leakScan } : {}),
     ...(spec.canaries ? { canaries: makeCanaries() } : {}),
     ...(spec.beacon ? { beacon: { origins: spec.beacon } } : {}),
+    // Slice 12b: protected functions designated with `harden --logic`, in summary only.
+    ...(spec.logic ? { logic_digest: sha256Hex(`${app.id}:${spec.version}:logic`), logic_count: spec.logic } : {}),
     ...(spec.components
       ? { component_count: spec.components, components_digest: sha256Hex(`${app.id}:${spec.version}:components`) }
       : {}),
@@ -330,6 +333,7 @@ function seedBuilds(app) {
       canaries: true,
       beacon: ["https://shop.example", "https://www.shop.example"],
       components: 412,
+      logic: 2,
     }),
     makeBuild(app, {
       version: "1.3.0",

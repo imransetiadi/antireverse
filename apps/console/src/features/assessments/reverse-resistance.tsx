@@ -25,7 +25,22 @@ const REASON_LABEL: Record<NotAttemptedReason, MessageKey> = {
   sandbox_error: "assessment.reason.sandbox_error",
   budget_exhausted_before_attempt: "assessment.reason.budget_exhausted_before_attempt",
   no_inventory: "assessment.reason.no_inventory",
+  not_designated: "assessment.reason.not_designated",
+  no_runnable_file: "assessment.reason.no_runnable_file",
 };
+
+/** W3 not attempted for want of a designated function: how to designate one, with the flag set as code. */
+function LogicHint() {
+  const MARK = "\u0001";
+  const [before, after] = t("assessment.hint.logic", { flag: MARK }).split(MARK);
+  return (
+    <p data-testid="objective-hint" className="text-fg-muted">
+      {before}
+      <code className="code-3">--logic</code>
+      {after}
+    </p>
+  );
+}
 
 const STATUS_LABEL: Record<AssessmentStatus, MessageKey> = {
   queued: "assessment.status.queued",
@@ -195,6 +210,7 @@ function ObjectiveRows({ results }: { results: readonly ObjectiveResult[] }) {
                       ))}
                     </ul>
                   ) : null}
+                  {result.result === "not_attempted" && result.reason === "not_designated" ? <LogicHint /> : null}
                   {result.result === "achieved" ? (
                     <p data-testid="objective-fix" className="text-fg-muted">
                       {t("assessment.fix", { fix: objective.fix })}

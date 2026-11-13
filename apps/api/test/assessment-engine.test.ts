@@ -74,8 +74,9 @@ describe("Assessment through the real engine", () => {
     const by = Object.fromEntries(done.results.map((result) => [result.objective, result]));
     expect(by.W2).toMatchObject({ result: "achieved", tier: "T1" });
     expect(by.W2?.evidence.recovered).toContainEqual({ kind: "canary", canary_id: canary.id });
-    expect(by.W3).toMatchObject({ result: "not_attempted", reason: "not_supported" });
-    expect(by.W4).toMatchObject({ result: "not_attempted", reason: "not_supported" });
+    // Slice 12b: no logic designated, so W3 is excluded (0.25 > 20 %); W4 is judged by the tamper verifier.
+    expect(by.W3).toMatchObject({ result: "not_attempted", reason: "not_designated" });
+    expect(by.W4?.result).not.toBe("not_attempted");
     expect(by.W1?.result).not.toBe("not_attempted");
     expect(by.W5?.result).not.toBe("achieved");
     // The referenced calls are stored and returned on the detail, never with a Canary value.

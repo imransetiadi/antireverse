@@ -5,6 +5,7 @@ import { BuildBeaconSchema, ManifestBeaconSchema } from "./beacon.ts";
 import { BuildCanarySummarySchema, CANARY_LIMITS, CanarySchema, LeakScanSummarySchema } from "./canaries.ts";
 import { ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
 import { ComponentListSchema, EXPOSURE_LIMITS, FindingsSummarySchema } from "./exposure.ts";
+import { LOGIC_LIMITS, LogicFileSchema } from "./logic.ts";
 import { deepFreeze, isoDateTime, text } from "./shared.ts";
 
 // The Build contract: a Manifest the harden CLI produces and sends with `--register`, and the Build the API
@@ -104,22 +105,31 @@ export const BuildManifestSchema = z.object({
    */
   routes_digest: Sha256Schema.optional(),
   route_count: z.int().min(0).max(ROUTE_LIMITS.routesMax).optional(),
+  /**
+   * The designated protected functions in summary (slice 12b, W3 Logic): `logicDigest` (server entry) of the logic
+   * file sent beside the Manifest, and its number of functions (1–5). The functions, and above all their hidden
+   * vectors, never go into the Manifest or a Build response. Optional, as `leak_scan`.
+   */
+  logic_digest: Sha256Schema.optional(),
+  logic_count: z.int().min(LOGIC_LIMITS.functionsMin).max(LOGIC_LIMITS.functionsMax).optional(),
 });
 export type BuildManifest = z.infer<typeof BuildManifestSchema>;
 
 /**
  * Body of `POST /v1/apps/:appId/builds`: the Manifest the CLI built and, from slice 19, the lockfile's
  * components beside it (at most 5,000; at most `EXPOSURE_LIMITS.componentsBytesMax` serialised, checked by the
- * API); from slice 12a, the route inventory for W1 Map (at most 2,000 routes). When a list and the Manifest's
- * count are both present, they must agree. That `components_digest` equals `componentsDigest(components)` and
- * `routes_digest` equals `routesDigest(routes)` are the API's checks: hashing needs node:crypto, which this
- * isomorphic module must not import.
+ * API); from slice 12a, the route inventory for W1 Map (at most 2,000 routes); from slice 12b, the logic file for
+ * W3 Logic (1–5 functions, at most 1 MB). When a list and the Manifest's count are both present, they must agree.
+ * That `components_digest` equals `componentsDigest(components)`, `routes_digest` equals `routesDigest(routes)` and
+ * `logic_digest` equals `logicDigest(logic)` are the API's checks: hashing needs node:crypto, which this isomorphic
+ * module must not import.
  */
 export const RegisterBuildRequestSchema = z
   .object({
     manifest: BuildManifestSchema,
     components: ComponentListSchema.optional(),
     routes: RouteInventorySchema.optional(),
+    logic: LogicFileSchema.optional(),
   })
   .refine(
     (request) =>
@@ -134,6 +144,13 @@ export const RegisterBuildRequestSchema = z
       request.manifest.route_count === undefined ||
       request.manifest.route_count === request.routes.length,
     { message: "Must list as many routes as the Manifest's route_count.", path: ["routes"] },
+  )
+  .refine(
+    (request) =>
+      request.logic === undefined ||
+      request.manifest.logic_count === undefined ||
+      request.manifest.logic_count === request.logic.functions.length,
+    { message: "Must list as many functions as the Manifest's logic_count.", path: ["logic"] },
   );
 export type RegisterBuildRequest = z.infer<typeof RegisterBuildRequestSchema>;
 

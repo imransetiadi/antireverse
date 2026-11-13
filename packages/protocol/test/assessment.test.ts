@@ -18,6 +18,8 @@ import {
   ID_PATTERNS,
   INCONCLUSIVE_CODES,
   ListAssessmentsResponseSchema,
+  LOGIC_LIMITS,
+  LogicSubmissionSchema,
   NOT_ATTEMPTED_REASONS,
   OBJECTIVE_IDS,
   OBJECTIVES,
@@ -31,6 +33,8 @@ import {
   ScopeStatementSchema,
   STAND_IN_MODEL,
   scoreAssessment,
+  TAMPER_LIMITS,
+  TamperSubmissionSchema,
   TIER_IDS,
   TIERS,
   tierForCost,
@@ -86,6 +90,14 @@ describe("Assessment ids, Objectives and tiers", () => {
     for (const objective of OBJECTIVES) expect(objective.fix.length).toBeGreaterThan(0);
   });
 
+  it("suggests the slice 12b fixes for Logic and Tamper, written without hyphenated words", () => {
+    const fix = (id: string) => OBJECTIVES.find((objective) => objective.id === id)?.fix;
+    expect(fix("W3")).toBe("Move the logic to the server, or harden it further and add a tamper check.");
+    expect(fix("W4")).toBe(
+      "Add Harden's --integrity and checks on the server; the integrity check is a signal, not tamper proofing.",
+    );
+  });
+
   it("has weights that sum to 1 exactly", () => {
     expect(OBJECTIVES.reduce((sum, objective) => sum + objective.weight, 0)).toBe(1);
   });
@@ -115,6 +127,8 @@ describe("Assessment ids, Objectives and tiers", () => {
       "sandbox_error",
       "budget_exhausted_before_attempt",
       "no_inventory",
+      "not_designated",
+      "no_runnable_file",
     ]);
     expect(STAND_IN_MODEL).toBe("stand-in");
   });
@@ -762,5 +776,149 @@ describe("AssessmentResponseSchema calls", () => {
     const many = Array.from({ length: 201 }, (_, index) => ({ ...calls[0], index }));
     expect(fails({ calls: many })).toBe(true);
     expect(fails({ calls, call_totals: undefined })).toBe(true);
+  });
+});
+
+// --- W3 and W4 (slice 12b) --------------------------------------------------------------------------------
+
+describe("W3 and W4 in the score (slice 12b)", () => {
+  it("scores a fully decided W1–W5 run, W3 and W4 included, without renormalising", () => {
+    const list: ObjectiveResult[] = [
+      notAchieved("W1"),
+      achieved("W2", "T1"),
+      notAchieved("W3"),
+      achieved("W4", "T1"),
+      notAchieved("W5"),
+    ];
+    // T1 run: 0.15 × 0.4 + 0.2 × 0 + 0.25 × 0.4 + 0.2 × 0 + 0.2 × 0.4 = 0.24.
+    expect(scoreAssessment(list, "T1")).toEqual({
+      status: "scored",
+      rrs: 24,
+      renormalised: false,
+      excluded_weight: 0,
+      code: null,
+    });
+    const assessment = AssessmentSchema.parse({
+      ...EXAMPLE_ASSESSMENT,
+      status: "scored",
+      results: list,
+      rrs: 24,
+      inconclusive_reason: null,
+      inconclusive_code: null,
+    });
+    expect(assessment.rrs).toBe(24);
+  });
+
+  it("still scores a Build with logic and without routes: W1 no_inventory alone is 15 %, renormalised", () => {
+    const list: ObjectiveResult[] = [
+      notAttempted("W1", "no_inventory"),
+      achieved("W2", "T1"),
+      notAchieved("W3"),
+      achieved("W4", "T1"),
+      notAchieved("W5"),
+    ];
+    // (0.25 × 0.4 + 0.2 × 0.4) / 0.85 = 21.18 % → 21.
+    expect(scoreAssessment(list, "T1")).toMatchObject({
+      status: "scored",
+      rrs: 21,
+      renormalised: true,
+      excluded_weight: 0.15,
+    });
+  });
+
+  it("names no_runnable_file (W4 without a JavaScript file) in the inconclusive reason, excluded from the score", () => {
+    const list: ObjectiveResult[] = [
+      notAchieved("W1"),
+      notAttempted("W2", "sandbox_error"),
+      notAchieved("W3"),
+      notAttempted("W4", "no_runnable_file"),
+      notAchieved("W5"),
+    ];
+    const score = scoreAssessment(list, "T1");
+    if (score.status !== "inconclusive") throw new Error("expected inconclusive");
+    expect(score.reason).toContain("W4 Tamper: no JavaScript file to run (assess the bundled output)");
+    expect(ObjectiveResultSchema.safeParse(notAttempted("W4", "no_runnable_file")).success).toBe(true);
+    const alone = scoreAssessment(
+      [
+        notAchieved("W1"),
+        notAchieved("W2"),
+        notAchieved("W3"),
+        notAttempted("W4", "no_runnable_file"),
+        notAchieved("W5"),
+      ],
+      "T1",
+    );
+    expect(alone).toMatchObject({ status: "scored", renormalised: true, excluded_weight: 0.2 });
+  });
+
+  it("names not_designated with the Harden hint in the inconclusive reason", () => {
+    const list: ObjectiveResult[] = [
+      notAttempted("W1", "no_inventory"),
+      notAchieved("W2"),
+      notAttempted("W3", "not_designated"),
+      notAchieved("W4"),
+      notAchieved("W5"),
+    ];
+    const score = scoreAssessment(list, "T1");
+    if (score.status !== "inconclusive") throw new Error("expected inconclusive");
+    expect(score.reason).toContain(
+      "W1 Map: no route inventory; W3 Logic: no protected function was designated (add --logic to Harden))",
+    );
+    expect(score.reason).not.toContain("Harden.");
+    expect(ObjectiveResultSchema.safeParse(notAttempted("W3", "not_designated")).success).toBe(true);
+  });
+});
+
+describe("LogicSubmissionSchema (W3)", () => {
+  const accepts = (value: unknown) => LogicSubmissionSchema.safeParse(value).success;
+
+  it("takes a designated function's id and a JS function body of at most 64 KB as UTF-8", () => {
+    const body = "return args.length === 1\n\t? a0 * 2\n\t: null;";
+    expect(LogicSubmissionSchema.parse({ function_id: "double", body })).toEqual({ function_id: "double", body });
+    expect(accepts({ function_id: "double", body: "x".repeat(LOGIC_LIMITS.bodyBytesMax) })).toBe(true);
+    expect(accepts({ function_id: "double", body: "x".repeat(LOGIC_LIMITS.bodyBytesMax + 1) })).toBe(false);
+    // 3 bytes each in UTF-8.
+    expect(accepts({ function_id: "double", body: "\u20ac".repeat(LOGIC_LIMITS.bodyBytesMax / 4) })).toBe(true);
+    expect(accepts({ function_id: "double", body: "\u20ac".repeat(LOGIC_LIMITS.bodyBytesMax / 2) })).toBe(false);
+  });
+
+  it("refuses an empty body, a malformed id and missing fields", () => {
+    expect(accepts({ function_id: "double", body: "" })).toBe(false);
+    expect(accepts({ function_id: "Double", body: "return 1;" })).toBe(false);
+    expect(accepts({ function_id: "double" })).toBe(false);
+    expect(accepts({ body: "return 1;" })).toBe(false);
+  });
+});
+
+describe("TamperSubmissionSchema (W4)", () => {
+  const accepts = (value: unknown) => TamperSubmissionSchema.safeParse(value).success;
+
+  it("has the W4 limits of the plan", () => {
+    expect(TAMPER_LIMITS).toEqual({
+      codeBytesMax: 52_428_800,
+      sizeFactorMax: 2,
+      similarityMin: 0.9,
+      timeoutMs: 5000,
+      submissionsMax: 3,
+      nonceHexChars: 16,
+    });
+    expect(Object.isFrozen(TAMPER_LIMITS)).toBe(true);
+  });
+
+  it("takes the path of a .js, .mjs or .cjs artifact file and its modified code", () => {
+    const code = 'globalThis.__airverse_tamper="0123456789abcdef";\nmain();';
+    expect(TamperSubmissionSchema.parse({ path: "dist/index.js", code })).toEqual({ path: "dist/index.js", code });
+    for (const path of ["dist/a.mjs", "b.cjs", "x/y/z.js"]) expect(accepts({ path, code }), path).toBe(true);
+    for (const path of ["dist/a.ts", "dist/a.json", "dist/a.js.map", "", "dist/js", "a\u0000.js"]) {
+      expect(accepts({ path, code }), path).toBe(false);
+    }
+    expect(accepts({ path: `${"d".repeat(253)}.js`, code })).toBe(true);
+    expect(accepts({ path: `${"d".repeat(254)}.js`, code })).toBe(false);
+  });
+
+  it("caps the code at 50 MB as UTF-8 and refuses empty code (the 2x rule is prove's)", () => {
+    expect(accepts({ path: "a.js", code: "" })).toBe(false);
+    expect(accepts({ path: "a.js", code: "x".repeat(TAMPER_LIMITS.codeBytesMax) })).toBe(true);
+    expect(accepts({ path: "a.js", code: "x".repeat(TAMPER_LIMITS.codeBytesMax + 1) })).toBe(false);
   });
 });

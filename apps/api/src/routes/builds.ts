@@ -6,11 +6,12 @@ import {
   type FindingsSummary,
   ID_PATTERNS,
   type ListBuildsResponse,
+  LOGIC_LIMITS,
   type ProblemError,
   RegisterBuildRequestSchema,
   ROUTE_LIMITS,
 } from "@antireverse/protocol";
-import { componentsDigest, routesDigest } from "@antireverse/protocol/server";
+import { componentsDigest, logicDigest, routesDigest } from "@antireverse/protocol/server";
 import { Hono, type MiddlewareHandler } from "hono";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
@@ -19,7 +20,14 @@ import { type IncidentQueue, matchInventory, type OpenedFinding } from "../expos
 import { problem } from "../problem.ts";
 import { findApp } from "../stores/apps.ts";
 import { findBeaconBuild, insertBeacon } from "../stores/beacons.ts";
-import { type BuildTarget, findBuild, insertBuild, insertBuildRoutes, listBuilds } from "../stores/builds.ts";
+import {
+  type BuildTarget,
+  findBuild,
+  insertBuild,
+  insertBuildLogic,
+  insertBuildRoutes,
+  listBuilds,
+} from "../stores/builds.ts";
 import { insertCanaries } from "../stores/canaries.ts";
 import { buildFindingsSummary } from "../stores/findings.ts";
 import { validateJson } from "../validate.ts";
@@ -36,7 +44,12 @@ const ROUTES_BYTES_MAX = ROUTE_LIMITS.routesMax * (ROUTE_LIMITS.methodMax + 1 + 
  * routes by their schema.
  */
 const REGISTER_BODY_BYTES_MAX =
-  BUILD_LIMITS.manifestBytesMax + EXPOSURE_LIMITS.componentsBytesMax + ROUTES_BYTES_MAX + 1024;
+  BUILD_LIMITS.manifestBytesMax +
+  EXPOSURE_LIMITS.componentsBytesMax +
+  ROUTES_BYTES_MAX +
+  // Slice 12b: the logic file, at most 1 MB as UTF-8 JSON (held to that by its schema).
+  LOGIC_LIMITS.fileBytesMax +
+  1024;
 
 /**
  * Holds the Manifest to `BUILD_LIMITS.manifestBytesMax` and the component list to `EXPOSURE_LIMITS.componentsBytesMax`
@@ -112,7 +125,7 @@ export function buildRoutes(deps: {
     async (c) => {
       const { organizationId } = c.var.principal;
       const appId = c.req.param("appId");
-      const { manifest, components, routes: inventory } = c.req.valid("json");
+      const { manifest, components, routes: inventory, logic } = c.req.valid("json");
       // A malformed App id names no App: "not found", before the body is judged against it.
       if (!ID_PATTERNS.app.test(appId)) return problem(c, "not-found");
       if (manifest.app_id !== appId) {
@@ -140,6 +153,19 @@ export function buildRoutes(deps: {
           errors.push({ path: "manifest.routes_digest", message: "Required when routes are sent." });
         } else if (manifest.routes_digest !== routesDigest(inventory)) {
           errors.push({ path: "manifest.routes_digest", message: "Must equal the digest of the routes sent." });
+        }
+        if (errors.length > 0) return problem(c, "validation", errors);
+      }
+      // Slice 12b: the logic file likewise, against `logic_count` and `logic_digest`.
+      if (logic !== undefined) {
+        const errors: ProblemError[] = [];
+        if (manifest.logic_count === undefined) {
+          errors.push({ path: "manifest.logic_count", message: "Required when logic is sent." });
+        }
+        if (manifest.logic_digest === undefined) {
+          errors.push({ path: "manifest.logic_digest", message: "Required when logic is sent." });
+        } else if (manifest.logic_digest !== logicDigest(logic)) {
+          errors.push({ path: "manifest.logic_digest", message: "Must equal the digest of the logic sent." });
         }
         if (errors.length > 0) return problem(c, "validation", errors);
       }
@@ -179,6 +205,10 @@ export function buildRoutes(deps: {
           // Likewise its route inventory (slice 12a): stored for the W1 verifier only, never returned.
           if (inventory !== undefined) {
             await insertBuildRoutes(q, { organizationId, appId, buildId: manifest.build_id, routes: inventory });
+          }
+          // Likewise its logic file (slice 12b): stored for the W3 verifier only, never returned.
+          if (logic !== undefined) {
+            await insertBuildLogic(q, { organizationId, appId, buildId: manifest.build_id, logic });
           }
           if (components === undefined) return { build, opened: [] };
           // Likewise its inventory and Findings: a refused registration leaves neither.

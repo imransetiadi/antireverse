@@ -2,7 +2,8 @@
 import { z } from "zod";
 import { LEAK_RULES, type LeakRuleId } from "./canaries.ts";
 import { ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
-import { deepFreeze, isoDateTime, text } from "./shared.ts";
+import { LOGIC_LIMITS, LogicFunctionIdSchema } from "./logic.ts";
+import { deepFreeze, isoDateTime, text, utf8Bytes } from "./shared.ts";
 
 // The Reverse Assessment contract (slice 12a, SDD §5.4 and §12.1, D-067, D-073). An adversary agent works on a
 // registered Build's protected artifact inside a tier's budget; verifiers, never the agent, decide which
@@ -72,14 +73,14 @@ export const OBJECTIVES = deepFreeze([
     key: "logic",
     name: "Logic",
     weight: 0.25,
-    fix: "Move the protected logic to the server, or raise the protection profile so the function cannot be lifted and run elsewhere.",
+    fix: "Move the logic to the server, or harden it further and add a tamper check.",
   },
   {
     id: "W4",
     key: "tamper",
     name: "Tamper",
     weight: 0.2,
-    fix: "Enable the integrity pass and enforce Attestation so that a modified bundle is refused.",
+    fix: "Add Harden's --integrity and checks on the server; the integrity check is a signal, not tamper proofing.",
   },
   {
     id: "W5",
@@ -124,7 +125,9 @@ export type AssessmentStatus = (typeof ASSESSMENT_STATUSES)[number];
 
 /**
  * Why an Objective was not attempted. `not_supported`: the Objective has no verifier yet (W3 and W4 in 12a);
- * `no_inventory`: W1 without a route inventory registered with the Build. Not attempted is not resistance.
+ * `no_inventory`: W1 without a route inventory registered with the Build; `not_designated` (slice 12b): W3 without
+ * a protected function designated with `harden --logic`; `no_runnable_file` (owner, 2026-11-13): W4 when the
+ * artifact has no .js, .mjs or .cjs file to run. Not attempted is not resistance.
  */
 export const NOT_ATTEMPTED_REASONS = [
   "not_supported",
@@ -133,6 +136,8 @@ export const NOT_ATTEMPTED_REASONS = [
   "sandbox_error",
   "budget_exhausted_before_attempt",
   "no_inventory",
+  "not_designated",
+  "no_runnable_file",
 ] as const;
 export type NotAttemptedReason = (typeof NOT_ATTEMPTED_REASONS)[number];
 
@@ -143,6 +148,8 @@ const REASON_TEXT: Record<NotAttemptedReason, string> = {
   sandbox_error: "sandbox error",
   budget_exhausted_before_attempt: "budget exhausted before the attempt",
   no_inventory: "no route inventory",
+  not_designated: "no protected function was designated (add --logic to Harden)",
+  no_runnable_file: "no JavaScript file to run (assess the bundled output)",
 };
 
 /** Why an Assessment is inconclusive, as a machine code beside the English reason. */
@@ -618,6 +625,59 @@ export const ListAssessmentsResponseSchema = z.object({
   assessments: z.array(AssessmentSchema).max(ASSESSMENT_LIMITS.listed),
 });
 export type ListAssessmentsResponse = z.infer<typeof ListAssessmentsResponseSchema>;
+
+// --- Submissions (W3 Logic, W4 Tamper; slice 12b) ---------------------------------------------------------
+
+export const TAMPER_LIMITS = deepFreeze({
+  /** Bytes of a W4 submission's code as UTF-8 (50 MB). */
+  codeBytesMax: 52_428_800,
+  /** A W4 submission is at most this many times the original file's size. Enforced by prove, which has the file. */
+  sizeFactorMax: 2,
+  /** Common prefix plus common suffix, as a share of the original, for the run code to still be the original. */
+  similarityMin: 0.9,
+  /** Milliseconds a W4 submission may run in the sandbox. Enforced by prove. */
+  timeoutMs: 5000,
+  /** W4 submissions per run. Enforced by prove. */
+  submissionsMax: 3,
+  /** Hex characters of a run's tamper nonce. */
+  nonceHexChars: 16,
+} as const);
+
+/**
+ * The agent's W3 submission: a designated function's id and a reimplementation as a JS function body (at most
+ * 64 KB as UTF-8), whose parameters are the vector's input spread as `a0..aN` and also `args`. Whether the id is one
+ * of the Build's functions, and the vectors' verdict, are prove's.
+ */
+export const LogicSubmissionSchema = z.object({
+  function_id: LogicFunctionIdSchema,
+  body: z
+    .string()
+    .min(1)
+    .refine(
+      (body) => utf8Bytes(body, LOGIC_LIMITS.bodyBytesMax) <= LOGIC_LIMITS.bodyBytesMax,
+      "The body must be at most 64 KB as UTF-8.",
+    ),
+});
+export type LogicSubmission = z.infer<typeof LogicSubmissionSchema>;
+
+/**
+ * The agent's W4 submission: the path of one `.js`, `.mjs` or `.cjs` artifact file and its modified code (at most
+ * 50 MB as UTF-8). That the path is one of the artifact's files and the code at most `TAMPER_LIMITS.sizeFactorMax`
+ * times the original's size are prove's checks: this module does not have the artifact.
+ */
+export const TamperSubmissionSchema = z.object({
+  path: text(256)
+    .min(1)
+    .refine((path) => /\.(?:js|mjs|cjs)$/.test(path), "Must be a .js, .mjs or .cjs file."),
+  code: z
+    .string()
+    .min(1)
+    .refine(
+      (code) => utf8Bytes(code, TAMPER_LIMITS.codeBytesMax) <= TAMPER_LIMITS.codeBytesMax,
+      "The code must be at most 50 MB as UTF-8.",
+    ),
+});
+export type TamperSubmission = z.infer<typeof TamperSubmissionSchema>;
 
 // --- Route inventory (W1) ---------------------------------------------------------------------------------
 

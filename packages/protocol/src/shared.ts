@@ -78,3 +78,26 @@ export function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+/**
+ * The UTF-8 byte length of a string without encoding it, as `TextEncoder` would produce: a lone surrogate counts as
+ * its replacement character (3 bytes). Stops counting once `max` is exceeded and returns `max + 1`.
+ */
+export function utf8Bytes(value: string, max = Number.POSITIVE_INFINITY): number {
+  if (value.length > max) return max + 1; // Every UTF-16 code unit is at least one byte.
+  let bytes = 0;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index++;
+      } else bytes += 3;
+    } else bytes += 3;
+    if (bytes > max) return max + 1;
+  }
+  return bytes;
+}

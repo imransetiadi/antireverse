@@ -3,7 +3,8 @@
 // Only node:crypto is imported, so that the test can load this module as it is.
 //
 // Seed of each Organization's App, Builds newest first:
-//   newest  an inconclusive T1 run of the stand-in agent (W2 achieved through the Build's decoy key Canary, W3
+//   newest  a scored T1 run of the stand-in agent with all five Objectives decided (slice 12b: W3 against its two
+//           designated functions, W4 by a marker edit of its first file); before it, an inconclusive T1 run of 12a (W2 achieved through the Build's decoy key Canary, W3
 //           and W4 not supported), and an older failed T1 run that kept its W2 result;
 //   next    a scored, renormalised T2 run (W4 not attempted) and an older scored T1 run, both by a model agent,
 //           so that the RRS meter can be looked at before 12b makes a score reachable;
@@ -12,7 +13,8 @@
 // run of the next Build has had its artifact deleted already.
 // `POST …/assessments` takes the tier and, optionally, the artifact's files (nothing is decoded). Without files it
 // reassesses the Build's kept artifact, or answers 409 `artifact-required` when none is kept. It answers 202 with a
-// queued run, which runs 2 s after it was created and turns inconclusive 30 s later.
+// queued run, which runs 2 s after it was created and finishes 30 s later as the slice 12b stand-in decides it:
+// scored for a Build with designated functions (`logic_count`), inconclusive without (W3 `not_designated`).
 
 import { randomBytes } from "node:crypto";
 
@@ -32,6 +34,7 @@ const REASONS = {
   sandbox_error: "sandbox error",
   budget_exhausted_before_attempt: "budget exhausted before the attempt",
   no_inventory: "no route inventory",
+  not_designated: "no protected function was designated (add --logic to Harden)",
 };
 const R_TENTHS = { achieved: { T1: 0, T2: 4, T3: 7 }, not_achieved: { T1: 4, T2: 7, T3: 10 } };
 const QUEUED_MS = 2_000;
@@ -130,6 +133,48 @@ function standInResults(build) {
       },
     },
   ];
+}
+
+/**
+ * Slice 12b: what the stand-in agent finds once W3 and W4 have verifiers. W3 is a lookup over the public examples of
+ * the first designated function, which fails the hidden vectors, or not attempted without a designated function. W4
+ * is a marker edit of the first artifact file; its evidence names the file, never code.
+ */
+function decidedResults(build) {
+  const [w1, w2, , , w5] = standInResults(build);
+  const file = build.artifacts?.[0]?.path ?? "the bundle";
+  const logic =
+    build.logic_count === undefined
+      ? {
+          objective: "W3",
+          result: "not_attempted",
+          reason: "not_designated",
+          evidence: { summary: "No protected function was designated for this Build.", recovered: [], calls: [] },
+        }
+      : {
+          objective: "W3",
+          result: "not_achieved",
+          cost: { calls: 150, seconds: 840 },
+          evidence: {
+            summary: "Submitted a lookup over the public examples of price-total; 2 of 40 hidden vectors passed.",
+            recovered: [],
+            calls: [88, 120],
+          },
+        };
+  const tamper = {
+    objective: "W4",
+    result: "achieved",
+    tier: "T1",
+    cost: { calls: 31, seconds: 9.5 },
+    evidence: {
+      summary: build.transform?.integrity
+        ? `Edited ${file} and its integrity check; the edited payload ran and set the marker.`
+        : `Edited ${file}; it has no integrity check, and the edited file ran and set the marker.`,
+      recovered: [],
+      calls: [30],
+    },
+  };
+  return [w1, w2, logic, tamper, w5];
 }
 
 /** A model agent's T2 run: Map achieved within T2 limits, Tamper not attempted, the rest held. */
@@ -250,7 +295,7 @@ export function createAssessmentStore({ now = () => Date.now() } = {}) {
     delete base.build;
     if (at < created + QUEUED_MS) return base;
     if (at < created + QUEUED_MS + RUN_MS) return { ...base, status: "running", started_at: iso(created + QUEUED_MS) };
-    const results = standInResults(record.build);
+    const results = decidedResults(record.build);
     return {
       ...base,
       ...score(results, record.tier),
@@ -317,6 +362,7 @@ export function createAssessmentStore({ now = () => Date.now() } = {}) {
         results: standInResults(newest).slice(1, 2),
       });
       add(organizationId, finished(newest, "T1", STAND_IN, standInResults(newest), at - 40 * MINUTE, 118_000));
+      add(organizationId, finished(newest, "T1", STAND_IN, decidedResults(newest), at - 10 * MINUTE, 131_000));
     }
     if (next) {
       add(organizationId, {

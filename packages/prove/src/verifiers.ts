@@ -31,6 +31,14 @@ function at(submission: Submission): AchievedAt {
   return { callIndex: submission.callIndex, cost: { ...submission.cost } };
 }
 
+/** Thrown by a verifier when the judging budget ran out before it could decide (review 12b F4). */
+export class JudgingTimeError extends Error {
+  constructor() {
+    super("The judging budget ran out.");
+    this.name = "JudgingTimeError";
+  }
+}
+
 /** Indexes of calls whose output showed a value (the Toolbelt's `callsShowing`). */
 export type CallsShowing = (value: string) => number[];
 
