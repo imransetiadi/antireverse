@@ -31,6 +31,11 @@
 //     protected output files (exactly the Manifest's artifacts) are uploaded only after a successful registration.
 //     Output over the 25 MB / 1,000-file limits is registered and written as usual, and the upload is skipped (never
 //     sent) with the reason. A skipped or failed upload exits 1 but the Build stays registered (and --out is written).
+//   - CI gate (slice 13): `--min-rrs <0–100>` needs --assess and is validated with it (with `--wait` and `--on-no-score`,
+//     which need --min-rrs), before any work. After the Assessment is queued the run polls it until it finishes or the
+//     wait ends: exit 5 below the threshold, 6 with no score (unless `--on-no-score pass`). When the findings gate (4)
+//     also fails, 4 wins and both gates are reported. `antireverse gate --assessment <asm_id>` does the same for an
+//     Assessment queued by an earlier step. Only Objective names and results are printed — never evidence, never the key.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -65,6 +70,23 @@ import { beaconEndpointUrl } from "./beacon.ts";
 import { readComponents } from "./components.ts";
 import { type BundleLeakScan, hardenBundle } from "./engine.ts";
 import { checkEquivalence } from "./equivalence.ts";
+import {
+  defaultWaitSeconds,
+  endpointHasCredentials,
+  evaluateRrsGate,
+  MIN_RRS_RANGE,
+  ON_NO_SCORE,
+  type OnNoScore,
+  parseBoundedInt,
+  type RrsGate,
+  readAdminKey,
+  rrsGateExit,
+  rrsGateLines,
+  rrsGateMessage,
+  WAIT_RANGE,
+  type WaitIo,
+  waitForAssessment,
+} from "./gate.ts";
 import { DEFAULT_ALLOWLIST_PATH, type LeakFinding, loadAllowlist } from "./leaks/scan.ts";
 import { readLogic } from "./logic.ts";
 import { buildManifest } from "./manifest.ts";
@@ -79,6 +101,30 @@ export interface CliIo {
   stderr: (s: string) => void;
   /** The working directory the default allowlist and `--leak-allow` resolve against. Default: process.cwd(). */
   cwd?: string;
+  /** The fetch the RRS gate polls with (slice 13). Default: the global fetch, looked up at call time. */
+  fetch?: typeof globalThis.fetch;
+  /** The clock of the RRS gate's wait, in milliseconds. Default: Date.now. */
+  now?: () => number;
+  /** The RRS gate's backoff sleep. Default: a timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** The abort signal of one RRS gate poll. Default: AbortSignal.timeout. */
+  timeout?: (ms: number) => AbortSignal;
+}
+
+/**
+ * The wait loop's I/O from the CLI's, with the real fetch, clock, timer and timeout as defaults. Progress goes to
+ * stderr only (every 60 s), so `--json` on stdout stays clean.
+ */
+function waitIo(io: CliIo, command: string, id: string): WaitIo {
+  return {
+    fetch: io.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+    // Monotonic: a wall-clock step (NTP, a VM resume) never stretches or cuts the wait.
+    now: io.now ?? (() => performance.now()),
+    sleep: io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
+    timeout: io.timeout ?? ((ms) => AbortSignal.timeout(ms)),
+    onProgress: (status, elapsed) =>
+      io.stderr(`${command}: waiting for assessment ${id}: ${status ?? "no answer yet"}, ${elapsed} s elapsed\n`),
+  };
 }
 
 /** Exit code of a run stopped by the leak scan (distinct from other failures). */
@@ -86,6 +132,8 @@ export const EXIT_LEAKS = 3;
 
 /** Exit code of a registered Build whose open findings reach the `--fail-on` level (slice 19). */
 export const EXIT_FINDINGS = 4;
+
+export { EXIT_NO_SCORE, EXIT_RRS_BELOW } from "./gate.ts";
 
 /** The `--fail-on` levels, lowest first. `unknown` severity is not a level and never counts towards one. */
 const FAIL_ON_LEVELS = ["low", "medium", "high", "critical"] as const;
@@ -103,11 +151,13 @@ const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".next", "coverage", 
 const SCAN_SKIP_DIRS = new Set(["node_modules", ".git"]);
 
 const HELP = `antireverse harden <dir> — defensive build-time protection for a bundle you own.
+antireverse gate — fail a CI step when a Build's Reverse Resistance Score is below your threshold.
 
 Responsible use: Harden protects software you own and never changes its behaviour (the equivalence gate proves it); it is not for evading detection or protecting software you do not own.
 
 Usage:
   antireverse harden <dir> --profile <light|balanced|maximum> [options]
+  antireverse gate --assessment <asm_id> --min-rrs <0-100> --endpoint <url> --key-env <VAR> [--wait <s>] [--on-no-score <fail|pass>] [--json]
 
 Options:
   --profile <p>        Protection profile (default: balanced). light = mangle; balanced/maximum = mangle + string encryption.
@@ -161,7 +211,29 @@ Reverse Assessment (needs --register):
                        (AR_CONSOLE_URL, default ${DEFAULT_CONSOLE_URL}). Output over the limits is registered and written but not uploaded. A skipped or failed request exits 1;
                        the Build stays registered.
 
-Exit codes: 0 ok · 1 failure · 2 usage or input error · 3 leak scan · 4 findings at or above --fail-on.
+CI gate on the Reverse Resistance Score (needs --assess, or use antireverse gate for an earlier Assessment):
+  --min-rrs <0-100>    Wait for the Assessment and exit 5 when its RRS is below this integer (at or above: exit 0).
+                       Prints the score, the threshold, the status and the two weakest Objectives.
+  --wait <s>           Seconds to wait for the Assessment to finish, 1–86,400 (default: the tier's seconds plus 300).
+                       Polls GET /v1/assessments/:id with backoff 2 s doubling to 30 s until the wait ends, with a
+                       last poll at its end; each poll is aborted after 15 s or the time left (at least 2 s), so a
+                       run may exceed --wait by up to 2 s. Network errors, timeouts, 408, 429 and 5xx are retried
+                       within the wait (a Retry-After on 429 or 503 is honoured, up to the end of the wait); any other
+                       4xx, a different Assessment, or a request that can never be made stops with exit 1. The wait
+                       follows a monotonic clock. A progress line goes to stderr every 60 s. --out is written before
+                       the wait.
+  --on-no-score <fail|pass>
+                       No score — inconclusive, failed, or unfinished when the wait ends — exits 6 (fail, the
+                       default), or passes with a warning and the gate reported as skipped (pass).
+  antireverse gate --assessment <asm_id> --min-rrs <0-100> --endpoint <url> --key-env <VAR> does the same for an
+  Assessment queued by an earlier step (with --wait, --on-no-score and --json as above).
+  --json reports the gate (gate in antireverse gate, rrs_gate in harden): result passed | failed | no_score | skipped,
+  rrs, threshold, status, reason and the weakest Objectives; in harden, result error with a reason when the gate
+  could not be evaluated (exit 1). The key is never printed; --endpoint must not carry credentials.
+
+Exit codes: 0 ok · 1 failure · 2 usage or input error · 3 leak scan · 4 findings at or above --fail-on ·
+5 RRS below --min-rrs · 6 no score (inconclusive, failed, or the wait ended). When 4 and 5 or 6 both apply, 4 wins
+and both gates are reported.
 `;
 
 interface Flags {
@@ -191,6 +263,12 @@ interface Flags {
   logic?: string | null | undefined;
   /** `--assess`: absent = no Assessment; `null` = the flag was given without a value. */
   assess?: string | null | undefined;
+  /** `--min-rrs`: absent = no RRS gate; `null` = the flag was given without a value. */
+  minRrs?: string | null | undefined;
+  /** `--wait`: absent = the default; `null` = the flag was given without a value. */
+  wait?: string | null | undefined;
+  /** `--on-no-score`: absent = fail; `null` = the flag was given without a value. */
+  onNoScore?: string | null | undefined;
 }
 
 function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
@@ -258,6 +336,15 @@ function parseFlags(args: string[]): { dir: string | undefined; flags: Flags } {
         break;
       case "--assess":
         flags.assess = args[++i] ?? null;
+        break;
+      case "--min-rrs":
+        flags.minRrs = args[++i] ?? null;
+        break;
+      case "--wait":
+        flags.wait = args[++i] ?? null;
+        break;
+      case "--on-no-score":
+        flags.onNoScore = args[++i] ?? null;
         break;
       default:
         if (arg && !arg.startsWith("--") && dir === undefined) dir = arg;
@@ -353,6 +440,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     io.stdout(HELP);
     return 0;
   }
+  if (argv[0] === "gate") return runGate(argv.slice(1), io);
   if (argv[0] !== "harden") {
     io.stderr(`unknown command: ${argv[0]}\n`);
     return 2;
@@ -389,12 +477,16 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       io.stderr(`harden: --register needs --endpoint, --key-env, --app, --environment, --build-version\n`);
       return 2;
     }
-    const keyEnv = flags.keyEnv as string;
-    registerKey = io.env[keyEnv];
-    if (!registerKey) {
-      io.stderr(`harden: environment variable ${keyEnv} is not set (the admin key is read only from it)\n`);
+    if (endpointHasCredentials(flags.endpoint as string)) {
+      io.stderr("harden: --endpoint must not contain credentials (user:pass@); the key is read from --key-env\n");
       return 2;
     }
+    const read = readAdminKey("harden", flags.keyEnv, io.env);
+    if ("error" in read) {
+      io.stderr(`${read.error}\n`);
+      return 2;
+    }
+    registerKey = read.key;
     if (!(ENVIRONMENTS as readonly string[]).includes(flags.environment as string)) {
       io.stderr(`harden: unknown --environment "${flags.environment}" (expected ${ENVIRONMENTS.join(", ")})\n`);
       return 2;
@@ -435,6 +527,13 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       return 2;
     }
     assessTier = flags.assess as AssessmentTier;
+  }
+
+  // The RRS gate (slice 13), validated with --assess, before any work.
+  const rrsGateArgs = rrsGateFlagsProblem("harden", flags, assessTier !== undefined, "--assess");
+  if ("error" in rrsGateArgs) {
+    io.stderr(`${rrsGateArgs.error}\n`);
+    return 2;
   }
 
   // The Clone Beacon's origins (slice 10), validated with the --register arguments, before any work.
@@ -712,12 +811,9 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
           };
   }
 
-  // The findings gate is decided after a successful register; the files are still written (the Build is
-  // registered, so it is watched) and the run then exits 4.
-  const gate = failOn ? evaluateGate(failOn, findings) : null;
-
   // Write the protected files only when an output directory is given, and only after a successful register
-  // (review F5): a Build that failed to register leaves nothing behind that could be deployed unwatched.
+  // (review F5): a Build that failed to register leaves nothing behind that could be deployed unwatched. They are
+  // written before the RRS gate waits (slice 13), so a CI job killed during a long wait still has its output.
   if (flags.out) {
     for (const [rel, code] of Object.entries(protectedFiles)) {
       const dest = join(flags.out, rel);
@@ -725,6 +821,35 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
       writeFileSync(dest, code, "utf8");
     }
   }
+
+  // The RRS gate (slice 13): wait for the queued Assessment, then compare its score with --min-rrs. A gate that cannot
+  // be evaluated — the Assessment was not queued, or a poll stopped the wait (a 4xx other than 408 or 429, a response
+  // that is not this Assessment, a request that can never be made) — is reported as an error: exit 1.
+  let rrsGate: RrsGate | RrsGateError | null = null;
+  if (rrsGateArgs.minRrs !== undefined && assessment && "error" in assessment) {
+    rrsGate = { result: "error", reason: `the Assessment was not queued: ${assessment.error}` };
+  } else if (rrsGateArgs.minRrs !== undefined && assessment && "id" in assessment && assessTier) {
+    const waited = await waitForAssessment(
+      {
+        endpoint: flags.endpoint as string,
+        key: registerKey as string,
+        id: assessment.id,
+        waitSeconds: rrsGateArgs.waitSeconds ?? defaultWaitSeconds(assessTier),
+      },
+      waitIo(io, "harden", assessment.id),
+    );
+    if ("error" in waited) {
+      rrsGate = { result: "error", reason: `cannot read the Assessment: ${waited.error}` };
+    } else {
+      rrsGate = evaluateRrsGate(waited, rrsGateArgs.minRrs, rrsGateArgs.onNoScore);
+      const final = "finished" in waited ? waited.finished : waited.last;
+      if (final) assessment.finalStatus = final.status;
+    }
+  }
+
+  // The findings gate is decided after a successful register; the files are still written (the Build is
+  // registered, so it is watched) and the run then exits 4.
+  const gate = failOn ? evaluateGate(failOn, findings) : null;
 
   const fileReports = result.files.map((f) => ({
     path: f.path,
@@ -756,23 +881,195 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     routes,
     logic,
     assessment,
+    rrsGate,
   });
   if (assessment && "error" in assessment) {
     const buildId = (registered as { build_id: string }).build_id;
     const what = assessment.skipped ? "assessment skipped" : "assessment request failed";
     io.stderr(`harden: ${what}: ${assessment.error}; the Build stays registered (${buildId})\n`);
   }
+  // A gate that was not evaluated because the poll stopped (the not-queued case was reported just above).
+  if (rrsGate?.result === "error" && !(assessment && "error" in assessment)) {
+    const buildId = (registered as { build_id: string }).build_id;
+    io.stderr(`harden: ${rrsGate.reason}; the Build stays registered (${buildId})\n`);
+  }
+  // Every gate's verdict is printed before the exit code is chosen, so both gates are reported.
+  let findingsFailed = false;
   // Fail closed (Jev: fail_closed_unknown_excluded, 0.94): a gate that could not be evaluated fails too.
   if (gate?.noSummary) {
     io.stderr(`harden: findings gate could not be evaluated: ${NO_SUMMARY}\n`);
-    return EXIT_FINDINGS;
-  }
-  if (gate && gate.count > 0) {
+    findingsFailed = true;
+  } else if (gate && gate.count > 0) {
     io.stderr(`harden: findings gate failed: ${gateCount(gate)} at or above ${gate.level}\n`);
-    return EXIT_FINDINGS;
+    findingsFailed = true;
   }
+  const rrsMessage = rrsGate && rrsGate.result !== "error" ? rrsGateMessage(rrsGate, "harden") : null;
+  if (rrsMessage !== null) io.stderr(`${rrsMessage}\n`);
+  // The lowest non-zero gate code wins: 4 (findings) before 5 or 6 (RRS). An error is 1, as before slice 13.
+  if (findingsFailed) return EXIT_FINDINGS;
   if (assessment && "error" in assessment) return 1;
+  if (rrsGate?.result === "error") return 1;
+  if (rrsGate) return rrsGateExit(rrsGate);
   return 0;
+}
+
+/** An RRS gate that could not be evaluated (exit 1). */
+type RrsGateError = { result: "error"; reason: string };
+
+/** The parsed RRS gate flags, or the usage error. `needs` names the flag --min-rrs requires. */
+type RrsGateArgs = { minRrs?: number; waitSeconds?: number; onNoScore: OnNoScore } | { error: string };
+
+function rrsGateFlagsProblem(
+  command: string,
+  flags: {
+    minRrs?: string | null | undefined;
+    wait?: string | null | undefined;
+    onNoScore?: string | null | undefined;
+  },
+  hasSource: boolean,
+  needs: string,
+): RrsGateArgs {
+  if (flags.minRrs === undefined) {
+    if (flags.wait !== undefined) return { error: `${command}: --wait needs --min-rrs` };
+    if (flags.onNoScore !== undefined) return { error: `${command}: --on-no-score needs --min-rrs` };
+    return { onNoScore: "fail" };
+  }
+  if (!hasSource) return { error: `${command}: --min-rrs needs ${needs} (the score comes from the Assessment)` };
+  const minRrs = parseBoundedInt(flags.minRrs, MIN_RRS_RANGE);
+  if (minRrs === null) return { error: `${command}: --min-rrs must be an integer from 0 to 100` };
+  let waitSeconds: number | undefined;
+  if (flags.wait !== undefined) {
+    const parsed = parseBoundedInt(flags.wait, WAIT_RANGE);
+    if (parsed === null) return { error: `${command}: --wait must be an integer from 1 to 86,400 (seconds)` };
+    waitSeconds = parsed;
+  }
+  if (flags.onNoScore !== undefined && !(ON_NO_SCORE as readonly (string | null)[]).includes(flags.onNoScore)) {
+    return { error: `${command}: --on-no-score must be fail or pass` };
+  }
+  return {
+    minRrs,
+    ...(waitSeconds !== undefined ? { waitSeconds } : {}),
+    onNoScore: (flags.onNoScore ?? "fail") as OnNoScore,
+  };
+}
+
+/**
+ * `antireverse gate --assessment <asm_id> --min-rrs <n> --endpoint <url> --key-env <VAR> [--wait <s>]
+ * [--on-no-score fail|pass] [--json]`: the RRS gate for an Assessment queued by an earlier step. Every argument is
+ * validated before any request (exit 2); the key is read only from the named variable and never printed.
+ */
+async function runGate(args: string[], io: CliIo): Promise<number> {
+  const flags: {
+    assessment?: string | null;
+    minRrs?: string | null;
+    endpoint?: string | null;
+    keyEnv?: string | null;
+    wait?: string | null;
+    onNoScore?: string | null;
+    json: boolean;
+  } = { json: false };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const value = () => args[++i] ?? null;
+    switch (arg) {
+      case "--assessment":
+        flags.assessment = value();
+        break;
+      case "--min-rrs":
+        flags.minRrs = value();
+        break;
+      case "--endpoint":
+        flags.endpoint = value();
+        break;
+      case "--key-env":
+        flags.keyEnv = value();
+        break;
+      case "--wait":
+        flags.wait = value();
+        break;
+      case "--on-no-score":
+        flags.onNoScore = value();
+        break;
+      case "--json":
+        flags.json = true;
+        break;
+      default:
+        io.stderr(`gate: unknown argument ${JSON.stringify(arg)}\n`);
+        return 2;
+    }
+  }
+  const missing = (
+    [
+      ["--assessment", flags.assessment],
+      ["--min-rrs", flags.minRrs],
+      ["--endpoint", flags.endpoint],
+      ["--key-env", flags.keyEnv],
+    ] as const
+  )
+    .filter(([, v]) => v === undefined)
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    io.stderr(`gate: missing ${missing.join(", ")} (needs --assessment, --min-rrs, --endpoint and --key-env)\n`);
+    return 2;
+  }
+  if (typeof flags.assessment !== "string" || !ID_PATTERNS.asm.test(flags.assessment)) {
+    io.stderr("gate: --assessment must be an Assessment id (asm_<24 hex>)\n");
+    return 2;
+  }
+  const parsed = rrsGateFlagsProblem("gate", flags, true, "--assessment");
+  if ("error" in parsed) {
+    io.stderr(`${parsed.error}\n`);
+    return 2;
+  }
+  const minRrs = parsed.minRrs as number;
+  if (endpointHasCredentials(flags.endpoint ?? "")) {
+    io.stderr("gate: --endpoint must not contain credentials (user:pass@); the key is read from --key-env\n");
+    return 2;
+  }
+  let endpointOk = false;
+  try {
+    const url = new URL(flags.endpoint ?? "");
+    endpointOk = url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    endpointOk = false;
+  }
+  if (!endpointOk) {
+    io.stderr("gate: --endpoint must be an http(s) URL\n");
+    return 2;
+  }
+  const read = readAdminKey("gate", flags.keyEnv, io.env);
+  if ("error" in read) {
+    io.stderr(`${read.error}\n`);
+    return 2;
+  }
+  const key = read.key;
+
+  const id = flags.assessment;
+  const waited = await waitForAssessment(
+    { endpoint: flags.endpoint as string, key, id, waitSeconds: parsed.waitSeconds },
+    waitIo(io, "gate", id),
+  );
+  if ("error" in waited) {
+    if (flags.json) io.stdout(`${JSON.stringify({ assessment: { id }, gate: null, error: waited.error }, null, 2)}\n`);
+    io.stderr(`gate: cannot read the Assessment: ${waited.error}\n`);
+    return 1;
+  }
+  const gate = evaluateRrsGate(waited, minRrs, parsed.onNoScore);
+  const final = "finished" in waited ? waited.finished : waited.last;
+  if (flags.json) {
+    const report = {
+      assessment: final
+        ? { id, status: final.status, tier: final.tier, rrs: final.rrs }
+        : { id, status: null, tier: null, rrs: null },
+      gate,
+    };
+    io.stdout(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    io.stdout(`${rrsGateLines(gate, id, final?.tier ?? null).join("\n")}\n`);
+  }
+  const message = rrsGateMessage(gate, "gate");
+  if (message !== null) io.stderr(`${message}\n`);
+  return rrsGateExit(gate);
 }
 
 /**
@@ -780,7 +1077,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
  * error, or (`skipped`) the upload limit the output exceeds, in which case nothing was sent.
  */
 type AssessmentReport =
-  | { id: string; status: string; tier: AssessmentTier; url: string }
+  | { id: string; status: string; tier: AssessmentTier; url: string; finalStatus?: string }
   | { error: string; skipped?: boolean };
 
 interface GateResult {
@@ -951,6 +1248,8 @@ interface ReportInput {
   /** The logic file (never printed: only its function count). */
   logic: LogicFile | null;
   assessment: AssessmentReport | undefined;
+  /** The RRS gate (slice 13): null without --min-rrs; `{ error }` when the wait stopped with an error. */
+  rrsGate: RrsGate | RrsGateError | null;
 }
 
 function emitReport(io: CliIo, input: ReportInput): void {
@@ -986,9 +1285,10 @@ function emitReport(io: CliIo, input: ReportInput): void {
             assessment:
               "error" in input.assessment
                 ? { error: input.assessment.error }
-                : { id: input.assessment.id, status: input.assessment.status },
+                : { id: input.assessment.id, status: input.assessment.finalStatus ?? input.assessment.status },
           }
         : {}),
+      ...(input.rrsGate ? { rrs_gate: input.rrsGate } : {}),
     };
     io.stdout(`${JSON.stringify(report, null, 2)}\n`);
     return;
@@ -1020,6 +1320,11 @@ function emitReport(io: CliIo, input: ReportInput): void {
   }
   lines.push(...findingsLines(input));
   lines.push(...assessmentLines(input));
+  if (input.rrsGate?.result === "error") {
+    lines.push(`✗ RRS gate not evaluated: ${input.rrsGate.reason}`);
+  } else if (input.rrsGate && input.assessment && "id" in input.assessment) {
+    lines.push(...rrsGateLines(input.rrsGate, input.assessment.id, input.assessment.tier));
+  }
   io.stdout(`${lines.join("\n")}\n`);
 }
 

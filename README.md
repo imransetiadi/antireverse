@@ -170,6 +170,10 @@ Add `--logic logic.json` to designate up to 5 protected functions with hidden te
 
 - **Honest limits:** the agent is a scripted stand-in until a real model is configured, so results measure the pipeline, not real resistance. Untrusted code runs in a child process under Node's permission model, not a separate hosted account; a further adversarial review is pending before a real model agent is enabled. Harden's integrity check is a tamper signal, not tamper-proofing.
 
+### CI gate
+
+Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the score and fail the step when it is lower: exit 5 below the threshold, exit 6 when there is no score (inconclusive, failed, or `--wait` ran out) unless you pass `--on-no-score pass`. For a separate pipeline step use `antireverse gate --assessment <asm_id> --min-rrs <n> --endpoint <url> --key-env <VAR>`. `--out` is written before the wait; progress goes to stderr every minute.
+
 ## Clone Beacon
 
 Tell Harden where your frontend is served, and it plants a small Clone Beacon beside the Canaries:

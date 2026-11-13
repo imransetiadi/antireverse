@@ -252,6 +252,7 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-074 | Slice 12a: W2 on Canaries only; W1 needs coverage ≥ 60 % and precision ≥ 50 % with submissions capped at 2 × the inventory; only evidence-referenced calls stored (≤ 200); each Assessment runs in its own worker with a hard deadline; preflights are never replays | Jev 0.91 / 0.70 / 0.96; independent review F1–F3 | accepted |
 | D-075 | Slice 12b: W3 via a `--logic` file (hidden vectors, all must pass); W4 counts as achieved on a Build without an integrity check (no check, no resistance) | Jev 1.0 on W3; owner chose W4 after Jev 0.33 (2026-11-13) | accepted |
 | D-076 | W4 with no runnable JavaScript file is not attempted (`no_runnable_file`); all Prove sandboxes run in a child process under `node --permission` with no grants | Owner after Jev 0.36; Jev 1.0 after review F1 (escape via import() in node:vm) | accepted |
+| D-077 | Slice 13: the RRS gate is a CLI flag (`--min-rrs`, exit 5) and an `antireverse gate` subcommand; no score exits 6 unless `--on-no-score pass`; a per-App threshold in the Console comes later | Jev 0.41 + 0.43 for CLI-now (both options), 0.89 fail-closed (2026-11-13) | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -551,3 +552,4 @@ Next step for whoever continues:
 | 2026-11-13 | Slice 06b built; decision D-072; email alerts over SMTP |
 | 2026-11-13 | Slice 12a built; decision D-074; Reverse Assessment v1 (stand-in agent) |
 | 2026-11-13 | Slice 12b built; decisions D-075–D-076; W3 Logic and W4 Tamper, sandbox in a permission-limited child process |
+| 2026-11-13 | Slice 13 built; decision D-077; CI gate on the RRS |

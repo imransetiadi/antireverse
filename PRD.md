@@ -463,7 +463,7 @@ Each slice cuts through every layer and is demoable on its own. "Blocked by" lis
 | 10 | Clone Beacon: protected bundle served from an unauthorized origin raises an Incident — **done 2026-11-11** | 05, 06 |
 | 11 | Policy simulation: replay the last 24 h against a draft rule — **done 2026-11-11** | 02, 06 |
 | 12 | Reverse Assessment v1: Build → sandboxed assessment → RRS with evidence on the Build page — **done 2026-11-13** (12a W1, W2, W5; 12b W3, W4; stand-in agent) | 05 |
-| 13 | CI gate: pipeline fails when RRS is under threshold | 12 |
+| 13 | CI gate: pipeline fails when RRS is under threshold — **done 2026-11-13** | 12 |
 | 14 | Verified Target and Rules of Engagement flow — **done 2026-11-13** | 01 |
 | 15 | Pentest Campaign (beta) against `ar-range` staging → Findings with retest | 14 |
 | 16 | Onboarding wizard and docs reaching G1 | 02, 03, 05 |
