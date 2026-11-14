@@ -20,3 +20,4 @@ export * from "./problem.ts";
 export * from "./prove.ts";
 export * from "./retention.ts";
 export * from "./signature.ts";
+export * from "./usage.ts";

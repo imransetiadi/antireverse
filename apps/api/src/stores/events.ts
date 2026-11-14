@@ -1,6 +1,7 @@
 import type { Environment, ShieldEvent, StoredEvent } from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
 import type { ReplayEvent } from "../simulate/replay.ts";
+import { addRequests } from "./usage.ts";
 
 /** Where a batch comes from and when it arrived. Every member is taken from the Shield key or the clock. */
 export interface EventOrigin {
@@ -14,6 +15,8 @@ export interface EventOrigin {
  * Stores a batch in one statement. An Event whose `(organization, event_id)` is already stored, or that
  * repeats inside the batch, is skipped. Returns the identifiers that were newly stored.
  * `events` must be validated Events: each one is stored whole as the payload, and nothing else is.
+ * The newly stored Events are metered as protected requests (slice 17a) in the same transaction, from the insert's
+ * RETURNING count: a batch sent again adds nothing. Tenant transaction (the origin's Organization).
  */
 export async function insertEvents(q: Queryable, origin: EventOrigin, events: ShieldEvent[]): Promise<Set<string>> {
   const records = events.map((event) => ({ event_id: event.event_id, ts: event.ts, type: event.type, payload: event }));
@@ -25,6 +28,7 @@ export async function insertEvents(q: Queryable, origin: EventOrigin, events: Sh
      RETURNING event_id`,
     [origin.organizationId, origin.appId, origin.environment, origin.receivedAt.toISOString(), JSON.stringify(records)],
   );
+  await addRequests(q, origin, rows.length);
   return new Set(rows.map((row) => row.event_id));
 }
 

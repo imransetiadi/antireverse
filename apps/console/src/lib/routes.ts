@@ -158,6 +158,9 @@ export const ROUTES = {
   /** The NDJSON export of the audit log, through the Console's route handler that checks the session. */
   auditExport: "/api/audit/export",
   dataControls,
+  /** Settings → Usage (slice 17a): the current UTC month, or `month` (`YYYY-MM`). */
+  usage: (month?: string): string =>
+    month === undefined ? "/settings/usage" : `/settings/usage?month=${encodeURIComponent(month)}`,
   /** The NDJSON export of the whole Organization (slice 18b), through a route handler that checks the session. */
   dataExport: "/api/data/export",
   /** The NDJSON export of one actor hash (slice 18b): a form POST to a route handler that checks the session. */

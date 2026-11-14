@@ -6,6 +6,9 @@ import {
   type AttestResponse,
   ChallengeRequestSchema,
   type ChallengeResponse,
+  USAGE_COUNTED_VERDICTS,
+  USAGE_DEVICE_DAILY_CAP,
+  usageMonthOf,
   verdictFor,
 } from "@antireverse/protocol";
 import { deviceSubject, jwkThumbprint } from "@antireverse/protocol/server";
@@ -16,8 +19,11 @@ import { createNonceStore } from "../attestation/nonces.ts";
 import type { AppEnv } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
+import { consoleLogger, type Logger, redacting } from "../log.ts";
 import { addressPrefix } from "../prefix.ts";
 import { ATTEST_BODY_BYTES_MAX, problem } from "../problem.ts";
+import { deviceRef, recordDevice } from "../stores/usage.ts";
+import { createUsageSalts, type UsageSalts } from "../usage/salts.ts";
 import { validateJson } from "../validate.ts";
 import type { ClientAddress } from "./beacon.ts";
 
@@ -59,6 +65,12 @@ export interface AttestDeps {
   now?: (() => Date) | undefined;
   /** Prefixes and Apps whose minute is counted at once (each). Default `LIMIT_KEYS_MAX`. */
   limitKeysMax?: number | undefined;
+  /** Receives the kind of a failure to meter a Guard device; never an identifier. */
+  logger?: Logger | undefined;
+  /** The month salts of the device references (slice 17a). Default: salts in memory. */
+  usageSalts?: UsageSalts | undefined;
+  /** New device references per App and UTC day at most. Default `USAGE_DEVICE_DAILY_CAP`. */
+  usageDeviceDailyCap?: number | undefined;
 }
 
 /**
@@ -73,6 +85,10 @@ export function attestRoutes(deps: AttestDeps): Hono<AppEnv> {
   const { db, attestation, clientAddress } = deps;
   const now = deps.now ?? (() => new Date());
   const limitKeysMax = deps.limitKeysMax ?? LIMIT_KEYS_MAX;
+  const logger = redacting(deps.logger ?? consoleLogger);
+  const usageSalts = deps.usageSalts ?? createUsageSalts();
+  const deviceCap = deps.usageDeviceDailyCap ?? USAGE_DEVICE_DAILY_CAP;
+  const counted: readonly string[] = USAGE_COUNTED_VERDICTS;
   const nonces = createNonceStore({ max: NONCES_MAX, ttlMs: ATTESTATION_LIMITS.nonceS * 1_000 });
   const byPrefix = createWindowLimiter({
     limit: ATTEST_PER_PREFIX_PER_MINUTE,
@@ -126,7 +142,7 @@ export function attestRoutes(deps: AttestDeps): Hono<AppEnv> {
     return c.json({ nonce, expires_at: new Date(expiresAt).toISOString() } satisfies ChallengeResponse, 200);
   });
 
-  routes.post("/v1/attest", ...guard, validateJson(AttestRequestSchema), (c) => {
+  routes.post("/v1/attest", ...guard, validateJson(AttestRequestSchema), async (c) => {
     const request = c.req.valid("json");
     const appId = request.app_id;
     const ms = now().getTime();
@@ -143,10 +159,26 @@ export function attestRoutes(deps: AttestDeps): Hono<AppEnv> {
     const iat = Math.floor(ms / 1_000);
     const exp = iat + ATTESTATION_LIMITS.ttlS;
     const { verdict, risk } = verdictFor(request.signals);
+    const sub = deviceSubject(appId, request.device);
+    // Slice 17a: a device with a counted verdict (trusted or suspect) is metered as a monthly active Guard device: its
+    // reference is HMAC-SHA-256 under the UTC month's salt (kept by this process, never in the database) of `sub`,
+    // recorded once per App and month, at most `deviceCap` new ones per App and UTC day (then the day is flagged).
+    // One short transaction; a failure to record never fails the attestation, and only its kind is logged.
+    if (counted.includes(verdict)) {
+      try {
+        const at = new Date(ms);
+        const ref = deviceRef(usageSalts.saltFor(usageMonthOf(at)), sub);
+        await db.tx("none", (q) => recordDevice(q, appId, ref, at, deviceCap));
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        const sqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? ` sqlstate=${code}` : "";
+        logger.warn(`usage device record error ${(error as Error)?.name ?? "Error"}${sqlState}`);
+      }
+    }
     const claims: AttestationClaims = {
       iss: ISSUER,
       aud: appId,
-      sub: deviceSubject(appId, request.device),
+      sub,
       iat,
       exp,
       jti: randomBytes(16).toString("hex"),

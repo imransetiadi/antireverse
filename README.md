@@ -4,7 +4,7 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion) and retention (18c). Not built yet: Pentest Campaigns (15), usage metering and billing (17), and the rest of GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c) and usage metering (17a). Not built yet: Pentest Campaigns (15), plans and billing (17b), and the rest of GA hardening (18).
 
 ## What works today
 
@@ -201,6 +201,17 @@ Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the
 ## Audit log
 
 Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
+
+## Usage
+
+**Settings → Usage** (and `GET /v1/usage?month=YYYY-MM`) shows a month's usage per App, for the current month and the 13 before it:
+
+- **Protected requests:** Events stored by the API, counted when they are stored. A resent batch adds nothing, and the count stays exact after retention removes the Events. Requests Shield drops before they reach Airverse, and batches the API refuses, are not counted.
+- **Monthly active Guard devices:** distinct devices whose Attestation Token had a trusted or suspect verdict. At most 50,000 new devices are counted per App per day; past that the count is shown as a lower bound. Devices are counted by a keyed reference under a random salt per month. The salt is kept only in `usage-salts.json` beside the data directory, never in the database, and is deleted when the month is rolled up, so devices cannot be linked across months.
+- **Prove sandbox minutes:** the run time of each Assessment, recorded once when it ends. An interrupted run counts at most its tier's budget plus grace.
+- **Also shown:** the Apps count and the Event retention. Seats are not applicable until member accounts exist.
+
+There are no prices, plans or limits yet (slice 17b, after the pricing decision).
 
 ## Data controls
 

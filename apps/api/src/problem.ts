@@ -136,7 +136,8 @@ const PROBLEMS = {
     status: 429,
     type: "too-many-requests",
     title: "Too many requests",
-    detail: "Too many audit verifications and exports for this Organization. Try again after the time in Retry-After.",
+    // Shared by audit verifications and exports, Organization exports and usage reads (slice 17a): a neutral text.
+    detail: "Too many reads for this Organization. Try again after the time in Retry-After.",
   },
   // Slice 18b: every key of an Organization whose deletion is pending, except on the deletion status, its
   // cancellation and the export.

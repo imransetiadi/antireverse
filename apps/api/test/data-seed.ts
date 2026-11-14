@@ -302,6 +302,15 @@ export async function seedOrganization(api: TestApi, name: string, options: Seed
       now(),
       JSON.stringify({ events: 1 }),
     ]);
+    // Usage (slice 17a): a Guard device reference of the current month (written through the attest route's definer) and
+    // a rolled-up month (written by the owner-only rollup). The requests were metered by the ingest above.
+    // (The reference is an HMAC the API computes under a month salt it keeps outside the database: any 32 bytes here.)
+    await q.query("SELECT usage_record_device($1, $2, $3, 50000)", [appId, randomBytes(32), now()]);
+    await q.query(
+      `INSERT INTO usage_monthly_devices (organization_id, app_id, month, devices)
+       VALUES ($1, $2, date_trunc('month', $3::timestamptz AT TIME ZONE 'UTC')::date - interval '1 month', 4)`,
+      [organizationId, appId, now()],
+    );
     // The set-up record (slice 18c): written by the owner-only sweep.
     await q.query(
       `INSERT INTO setup_milestones (organization_id, app_id, environment, shield_first_at, guard_first_at)

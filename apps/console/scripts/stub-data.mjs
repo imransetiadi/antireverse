@@ -7,7 +7,7 @@
 // bodies are validated with the protocol's schemas before the reason is checked; manifests carry `consistency` and
 // the Organization export the signed audit head; audit entries name a subject by `auditSubjectRef`, never by its
 // hash; the Organization export takes from a per-Organization budget of 20 a minute that audit verification and the
-// audit export share (`takeRead`), answering 429 too-many-audit-reads with Retry-After when it is spent.
+// audit export share (`takeRead`), answering 429 too-many-requests with Retry-After when it is spent.
 // Slice 18c: the Event retention (`GET`/`PUT /v1/organization/retention`), 30 days for a new Organization; the body is
 // validated first, then a shortening needs the reason, as in the API. No retention job runs here: the last run is the
 // one given to `recordRetentionRun`, else null.
@@ -143,6 +143,9 @@ export function createDataStore({ now = () => Date.now(), auditHead, tables, sub
   return {
     takeRead,
 
+    /** The Organization's Event retention in days (slice 17a: usage reports it). */
+    eventRetentionDays: (organizationId) => retentionBody(organizationId).retention.event_retention_days,
+
     /** The public half of the key that signs export end lines. */
     publicKey: () => ({ key_id: keyId, algorithm: "Ed25519", public_key: publicRaw.toString("base64url") }),
 
@@ -253,9 +256,8 @@ export function createDataStore({ now = () => Date.now(), auditHead, tables, sub
         const taken = takeRead(organizationId);
         if (!taken.allowed) {
           return {
-            ...problem(429, "too-many-audit-reads", "Too many requests", {
-              detail:
-                "Too many audit verifications and exports for this Organization. Try again after the time in Retry-After.",
+            ...problem(429, "too-many-requests", "Too many requests", {
+              detail: "Too many reads for this Organization. Try again after the time in Retry-After.",
             }),
             headers: { "retry-after": String(taken.retryAfterS) },
           };

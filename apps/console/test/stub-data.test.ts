@@ -196,7 +196,11 @@ describe("stub data controls", () => {
     expect(call("GET", "/v1/organization/export").status).toBe(200);
     const refused = call("GET", "/v1/organization/export");
     expect(refused.status).toBe(429);
-    expect(problemType(refused)).toBe("https://antireverse.dev/problems/too-many-audit-reads");
+    // As the API answers it (review 17a, I1): the type and the neutral text shared by every read of the budget.
+    expect(problemType(refused)).toBe("https://antireverse.dev/problems/too-many-requests");
+    expect((refused.body as { detail?: string }).detail).toBe(
+      "Too many reads for this Organization. Try again after the time in Retry-After.",
+    );
     expect(Number(refused.headers?.["retry-after"])).toBeGreaterThanOrEqual(1);
     expect(refused.audit).toBeUndefined();
     expect(data.takeRead(ORG.id).allowed).toBe(false);

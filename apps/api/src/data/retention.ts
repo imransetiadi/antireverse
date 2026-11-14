@@ -1,3 +1,4 @@
+import { USAGE_DEVICE_DAILY_CAP, usageMonthOf } from "@antireverse/protocol";
 import type { OwnedDb } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
 import {
@@ -6,14 +7,18 @@ import {
   type SweepCounts,
   sweepRetention,
 } from "../stores/retention.ts";
+import { rollupUsage } from "../stores/usage.ts";
+import type { UsageSalts } from "../usage/salts.ts";
 
 // The daily retention job (slice 18c): makes the SECURITY §8 periods true for the data Airverse holds. Each run takes
 // one instant `at` and calls the owner-only `retention_sweep` (migration 0035) — one owner transaction per call, each
 // step bounded by `batch` rows shared fairly over a rotating window of Organizations — until a series of calls in
 // which no Organization used its whole share has covered every Organization, or `maxCallsPerRun` calls were made; a
 // run cut short continues at the next run and is logged as a warning. Then it expires the protected artifacts past
-// their keep date (counted per Organization), and
-// records one run row per Organization it swept (every Organization whose deletion is not pending, with its counts,
+// their keep date (counted per Organization), rolls up usage (slice 17a: closes the months that ended, deleting their
+// device references, and removes usage older than 13 months; called until done within a budget of its own, then the
+// closed months' salts are forgotten),
+// and records one run row per Organization it swept (every Organization whose deletion is not pending, with its counts,
 // none included, so that each sees when the job last ran), keeping the 30 most recent. Runs in process on a timer:
 // first `firstRunMs` after the start, then every `everyMs`. It holds nothing per Organization in memory. Log lines
 // carry counts and error kinds only, never an identifier.
@@ -39,6 +44,12 @@ export const RETENTION_CLASSES: Readonly<Record<string, RetentionClass>> = Objec
   artifacts: { rule: "30 days after the last Assessment that used them (the artifact expiry of 0026/0028)" },
   artifact_files: { rule: "with their artifact (cascade)" },
   retention_runs: { rule: "the 30 most recent runs per Organization are kept" },
+  usage_daily: { rule: "13 months of usage history: days before the 13th month before the current one" },
+  usage_device_days: { rule: "with its month's rollup, once the month is closed (slice 17a)" },
+  usage_devices: {
+    rule: "the device references of a month, once the month is closed and its distinct count rolled up (slice 17a)",
+  },
+  usage_monthly_devices: { rule: "13 months of usage history: months before the 13th month before the current one" },
   setup_milestones: {
     reason:
       "one row per App Environment: when its Shield and Guard set-up steps were first done, kept once the Events are gone",
@@ -76,6 +87,13 @@ export const RETENTION_DEFAULTS = Object.freeze({
   batch: 1000,
   /** Calls per run; the rest waits for the next run. */
   maxCallsPerRun: 200,
+  /** Device references (and old usage rows) per usage rollup call. */
+  usageBatch: 5_000,
+  /**
+   * Usage rollup calls per run, its own budget (review M2): enough for one App's month at the daily cap (31 days of
+   * `USAGE_DEVICE_DAILY_CAP` new references) in one run.
+   */
+  usageMaxCallsPerRun: Math.ceil((USAGE_DEVICE_DAILY_CAP * 31) / 5_000),
 });
 
 export interface RetentionResult {
@@ -98,6 +116,10 @@ export interface RetentionOptions {
   firstRunMs?: number;
   batch?: number;
   maxCallsPerRun?: number;
+  /** The month salts of the Guard device references: the closed months' are forgotten after the rollup. */
+  usageSalts?: UsageSalts | undefined;
+  usageBatch?: number;
+  usageMaxCallsPerRun?: number;
   /** Default: `setTimeout`, unref'd so that the timer never keeps the process alive. */
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
@@ -143,6 +165,11 @@ export function createRetentionJob(options: RetentionOptions): RetentionJob {
   const firstRunMs = options.firstRunMs ?? RETENTION_DEFAULTS.firstRunMs;
   const batch = Math.max(1, Math.floor(options.batch ?? RETENTION_DEFAULTS.batch));
   const maxCallsPerRun = Math.max(1, Math.floor(options.maxCallsPerRun ?? RETENTION_DEFAULTS.maxCallsPerRun));
+  const usageBatch = Math.max(1, Math.floor(options.usageBatch ?? RETENTION_DEFAULTS.usageBatch));
+  const usageMaxCallsPerRun = Math.max(
+    1,
+    Math.floor(options.usageMaxCallsPerRun ?? RETENTION_DEFAULTS.usageMaxCallsPerRun),
+  );
   const setTimer = options.setTimer ?? defaultSetTimer;
   const clearTimer = options.clearTimer ?? defaultClearTimer;
 
@@ -179,6 +206,21 @@ export function createRetentionJob(options: RetentionOptions): RetentionJob {
     } catch (error) {
       result.failed++;
       logger.warn(`retention artifact expiry error ${errorName(error)}`);
+    }
+    try {
+      // Usage (slice 17a): the monthly rollup and the 13-month sweep, until a call leaves nothing, within its own
+      // budget. Its first call writes the closed months' counts, so their salts can go after it (review M3).
+      let more = true;
+      for (let call = 0; more && call < usageMaxCallsPerRun; call++) {
+        const rolled = await db.owner((q) => rollupUsage(q, at, usageBatch));
+        addCounts(counts, rolled.rows);
+        more = rolled.saturated;
+      }
+      if (more) result.complete = false;
+      options.usageSalts?.forgetBefore(usageMonthOf(new Date(at.getTime() - 3_600_000)));
+    } catch (error) {
+      result.failed++;
+      logger.warn(`retention usage rollup error ${errorName(error)}`);
     }
     try {
       await db.owner((q) => recordRetentionRun(q, at, counts, result.complete));

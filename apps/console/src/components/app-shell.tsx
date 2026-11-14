@@ -18,6 +18,7 @@ export type ShellSection =
   | "alerts"
   | "allowlist"
   | "audit"
+  | "usage"
   | "data";
 
 // The current entry is carried by `aria-current`, its weight and a solid underline — not by colour alone.
@@ -100,6 +101,7 @@ export function AppShell({ organization, deletion, width = "wide", current, chil
               <NavLink section="alerts" current={current} href={ROUTES.alerts()} label={t("nav.alerts")} />
               <NavLink section="allowlist" current={current} href={ROUTES.allowlist()} label={t("nav.allowlist")} />
               <NavLink section="audit" current={current} href={ROUTES.audit()} label={t("nav.audit")} />
+              <NavLink section="usage" current={current} href={ROUTES.usage()} label={t("nav.usage")} />
               <NavLink section="data" current={current} href={ROUTES.dataControls()} label={t("nav.data")} />
             </nav>
             <form action={signOutAction}>

@@ -42,7 +42,9 @@ import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
 import { proveRoutes } from "./routes/prove.ts";
 import { type SimulationOptions, simulateRoutes } from "./routes/simulate.ts";
+import { usageRoutes } from "./routes/usage.ts";
 import { createSigner, type Signer } from "./signer.ts";
+import type { UsageSalts } from "./usage/salts.ts";
 
 export interface AppDeps {
   db: Db;
@@ -131,6 +133,13 @@ export interface AppDeps {
    * Default `AUDIT_READS_PER_MINUTE`. The audit key also signs the Organization export and the deletion reports.
    */
   auditReadsPerMinute?: number;
+  /**
+   * The month salts of the Guard device references (slice 17a, review M3). Default: salts in memory (`startApi` passes
+   * those of `usage-salts.json` beside the data directory, which its retention job also forgets month by month).
+   */
+  usageSalts?: UsageSalts;
+  /** New Guard device references per App and UTC day at most. Default `USAGE_DEVICE_DAILY_CAP`. */
+  usageDeviceDailyCap?: number;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -218,7 +227,18 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/", allowlistRoutes(deps));
   // Public: no key. Outside every key middleware (each route above requires its own).
   app.route("/", beaconRoutes({ recorder: beacon, clientAddress }));
-  app.route("/", attestRoutes({ db: deps.db, attestation, clientAddress, now: deps.now }));
+  app.route(
+    "/",
+    attestRoutes({
+      db: deps.db,
+      attestation,
+      clientAddress,
+      now: deps.now,
+      logger,
+      usageSalts: deps.usageSalts,
+      usageDeviceDailyCap: deps.usageDeviceDailyCap,
+    }),
+  );
   app.route(
     "/",
     alertChannelRoutes({
@@ -240,6 +260,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const auditReads = createAuditReadLimiter(deps.auditReadsPerMinute);
   app.route("/", auditRoutes({ db: deps.db, signer: auditSigner, now: deps.now, reads: auditReads }));
   app.route("/", dataControlRoutes({ db: deps.db, signer: auditSigner, reads: auditReads, now: deps.now }));
+  // Usage reads (slice 17a) take from the same budget.
+  app.route("/", usageRoutes({ db: deps.db, reads: auditReads, now: deps.now }));
 
   app.notFound((c) => problem(c, "not-found"));
   app.onError((error, c) => {

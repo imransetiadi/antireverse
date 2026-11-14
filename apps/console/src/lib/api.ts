@@ -122,6 +122,8 @@ import {
   type UpdateRetentionRequest,
   type UpdateRetentionResponse,
   UpdateRetentionResponseSchema,
+  type UsageResponse,
+  UsageResponseSchema,
   type VerifyTargetResponse,
   VerifyTargetResponseSchema,
 } from "@antireverse/protocol";
@@ -1008,4 +1010,17 @@ export function updateRetention(
     body: { event_retention_days: request.event_retention_days },
     reason: options.reason,
   });
+}
+
+// ── Usage (slice 17a) ─────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `GET /v1/usage?month=YYYY-MM` — a month's protected requests, Guard devices and sandbox minutes, per App and per
+ * day. Without a month the API answers for the current UTC month. The month is sent as given: the API refuses one that
+ * is malformed, in the future or older than `USAGE_HISTORY_MONTHS` (ValidationError on `month`). Reads share the
+ * Organization's budget of audit reads (RateLimitedError).
+ */
+export function getUsage(key: string, month?: string): Promise<UsageResponse> {
+  const query = month === undefined ? "" : `?month=${encodeURIComponent(month)}`;
+  return call(`/v1/usage${query}`, UsageResponseSchema, { key });
 }

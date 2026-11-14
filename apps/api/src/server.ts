@@ -25,6 +25,7 @@ import { type Authorize, createAuthorize } from "./prove/authorize.ts";
 import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { createRecheckJob, type RecheckOptions } from "./prove/recheck.ts";
 import { createSigner, type Signer } from "./signer.ts";
+import { createUsageSalts, type UsageSalts } from "./usage/salts.ts";
 
 export interface Listening {
   server: Server;
@@ -109,7 +110,7 @@ export interface StartApiOptions {
   /** Settings of the daily purge of deleted Organizations (slice 18b). Default: `PURGE_DEFAULTS`. */
   purge?: Omit<PurgeOptions, "db" | "signer" | "now" | "logger">;
   /** Settings of the daily retention job (slice 18c). Default: `RETENTION_DEFAULTS`. */
-  retention?: Omit<RetentionOptions, "db" | "now" | "logger">;
+  retention?: Omit<RetentionOptions, "db" | "now" | "logger" | "usageSalts">;
 }
 
 export interface RunningApi extends Listening {
@@ -147,6 +148,8 @@ export const ATTESTATION_KEY_FILE = "attestation-keys.json";
 export const AUDIT_KEY_FILE = "audit-key.json";
 /** The file name of the secret that keys the per-address count of confirmation mails (slice 06b), beside the others. */
 export const ADDRESS_KEY_FILE = "mail-hash-key.json";
+/** The file name of the month salts of the Guard device references (slice 17a, review M3), beside the others. */
+export const USAGE_SALTS_FILE = "usage-salts.json";
 
 /** Opens the database, builds the app and listens: the whole API in one call, for `main.ts` and for tests. */
 export async function startApi(options: StartApiOptions = {}): Promise<RunningApi> {
@@ -169,6 +172,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   let auditSigner: Signer;
   let attestation: AttestationKeys;
   let addressHasher: AddressHasher;
+  let usageSalts: UsageSalts;
   try {
     // After the database: its lock makes this process the only one that can create or rewrite the key files.
     signer =
@@ -186,6 +190,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     addressHasher = createAddressHasher(
       dataDir === undefined ? {} : { file: join(dirname(dataDir), ADDRESS_KEY_FILE) },
     );
+    usageSalts = createUsageSalts(dataDir === undefined ? {} : { file: join(dirname(dataDir), USAGE_SALTS_FILE) });
   } catch (error) {
     await db.close();
     throw error;
@@ -221,6 +226,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   };
   if (email !== undefined) deps.email = email;
   deps.addressHasher = addressHasher;
+  deps.usageSalts = usageSalts;
   const network = proveNetwork(options.prove);
   deps.prove = network;
   if (options.logger !== undefined) deps.logger = options.logger;
@@ -262,7 +268,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     },
   });
   const stopPurge = purge.start();
-  const retention = createRetentionJob({ ...options.retention, db, now: options.now, logger });
+  const retention = createRetentionJob({ ...options.retention, db, now: options.now, logger, usageSalts });
   const stopRetention = retention.start();
   // Fails the Assessments a previous process left running, then takes the queued ones.
   await assessments.start();

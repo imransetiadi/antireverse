@@ -72,6 +72,10 @@ export const EXPORT_TABLES: readonly string[] = Object.freeze([
   "rules_of_engagement",
   "retention_runs",
   "setup_milestones",
+  "usage_daily",
+  "usage_device_days",
+  "usage_devices",
+  "usage_monthly_devices",
 ]);
 
 /** Columns that hold a secret in clear: exported as the SHA-256 (hex) of the value, under `<column>_sha256`. */

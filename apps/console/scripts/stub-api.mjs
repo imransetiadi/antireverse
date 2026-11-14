@@ -66,6 +66,8 @@
 // does. No purge runs: `GET /v1/deletions/:id/report` is always 404.
 // Slice 18c: the Event retention (stub-data.mjs), a shortening with a reason. No retention job runs:
 // `POST /__stub/retention-run` (with the admin key) records a sample run for the Organization, to see the last run.
+// Slice 17a: `GET /v1/usage?month=` (stub-usage.mjs, checked by a test against the protocol) with made-up figures per
+// App and day; the month is validated as in the API and reads share the budget of the Organization export.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -82,6 +84,7 @@ import { createDataStore } from "./stub-data.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
+import { createUsageStore } from "./stub-usage.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -164,6 +167,13 @@ const dataControls = createDataStore({
       };
     },
   },
+});
+
+// Slice 17a: usage, made up per App and day; reads take from the budget of the Organization export.
+const usage = createUsageStore({
+  apps: (organizationId) => apps.get(organizationId) ?? [],
+  eventRetentionDays: (organizationId) => dataControls.eventRetentionDays(organizationId),
+  takeRead: (organizationId) => dataControls.takeRead(organizationId),
 });
 
 /** Writes an answer of the data-control store: a problem document with its own type, NDJSON, or JSON (slice 18b). */
@@ -1422,13 +1432,18 @@ const server = http.createServer(async (req, res) => {
       return sendData(res, {
         status: 429,
         body: {
-          type: "https://antireverse.dev/problems/too-many-audit-reads",
+          type: "https://antireverse.dev/problems/too-many-requests",
           title: "Too many requests",
           status: 429,
+          detail: "Too many reads for this Organization. Try again after the time in Retry-After.",
         },
         headers: { "retry-after": String(taken.retryAfterS) },
       });
     }
+  }
+  if (path === "/v1/usage") {
+    const answer = usage.handle(organization.id, req.method, path, url.searchParams);
+    if (answer) return sendData(res, answer);
   }
   if (path.startsWith("/v1/audit")) {
     const answer = audits.handle(organization.id, req.method, path, url.searchParams);
