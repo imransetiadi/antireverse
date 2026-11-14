@@ -90,7 +90,7 @@ Cross-origin scripts with CORS, the `verify --url` deploy check, and any change 
 ## Honest limits
 
 - **A wrong file can still be reported on one kind of origin:** one with an endpoint that serves or echoes the marker's text at a URL ending like the first file's path, where the echo does not come from the URL itself (a combining handler, for example), on a page where the true file is not a counted script.
-- **A Build hardened with `--integrity` is not watched.** The wrapper embeds the planted file as a string, so the marker's literal is not in the served bytes. The Harden report says so; watching such Builds is a follow-up (D-104, provisional).
+- **A Build hardened with `--integrity` is not watched.** The wrapper embeds the planted file as a string, so the marker's literal is not in the served bytes. The Harden report says so; watching such Builds is a follow-up (D-104, confirmed by the owner).
 - **Coverage is partial by design.** Nothing is sent when the Build is on another origin, inlined, or has its marker stripped; when a candidate cannot be examined; when two copies qualify; or when the page gives no Resource Timing entries (Firefox `resistFingerprinting`, Tor Browser, pages that clear the buffer).
 - **A script already on the page can suppress detection** (a fifth namesake, a second copy). The earlier claim that it "cannot make Guard report a wrong file" was wrong for commit 86e3a7c and is now true only up to the first limit above.
 - **A minifier run after Harden keeps the marker.** A minified copy is reported with its own hash, so such a Build is never watched; serving raw and minified copies of a watched Build opens an Incident.
