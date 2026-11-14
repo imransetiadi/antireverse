@@ -1,6 +1,6 @@
 # Guard
 
-Guard is a small browser library: plain ES modules, no dependency, no build step, about 17 KB gzip. It gets a short-lived Attestation Token from Airverse and lets your frontend send it with API calls. Shield, on your server, verifies the token offline and records the result for every request. Guard reports; Shield decides.
+Guard is a small browser library: plain ES modules, no dependency, no build step, about 19 KB gzip. It gets a short-lived Attestation Token from Airverse and lets your frontend send it with API calls. Shield, on your server, verifies the token offline and records the result for every request. Guard reports; Shield decides.
 
 `@antireverse/guard` is not published to npm yet. Its files are in `packages/guard/src` of this repository.
 
@@ -88,7 +88,7 @@ When you harden a bundle with `--register`, Harden plants an [integrity marker](
 **What Guard does.** About 30 seconds after the first token, while the tab is visible and the browser is idle, Guard:
 
 1. reads the marker;
-2. looks for the listed files among the scripts the browser loaded from the page's own origin;
+2. finds the Build's first file among the scripts the browser loaded from the page's own origin, by its content (see below), and from it the other listed files;
 3. fetches each of them again, one at a time, with `fetch(url, { cache: "force-cache", credentials: "same-origin" })` (normally answered from the HTTP cache) and computes the SHA-256 of the bytes. What is hashed is what this second request receives; if the server answers it differently from the first (a file replaced between the two, a cache that varies), the hash is of the second answer;
 4. sends the result with one extra attestation, made right then if the tab is still visible.
 
@@ -96,14 +96,34 @@ When you harden a bundle with `--register`, Harden plants an [integrity marker](
 
 If Resource Timing is there but its list is empty, nothing counts and **nothing is reported**. That is the case in Firefox with `privacy.resistFingerprinting`, in Tor Browser, and on a page that calls `performance.clearResourceTimings()` before the check.
 
-**How a file is matched.** Guard finds the one base of the Build: the URL path under which its files are served, so that a file is at exactly *base + its path*. With the marker listing `main.js` and `chunks/a.js`, and the page loading `/app/main.js` and `/app/chunks/a.js`, the base is `/app/`. The query string is ignored; when the page loaded one path with several query strings, the first one seen is used.
+**How the Build's files are found.** Guard never guesses from file names where a Build lives. Harden plants the marker in the first file the marker lists, and the marker's own text (`b:"<Build ID>",f:[`) is in that file. So Guard:
 
-A Build is hashed only when the page points to **exactly one base**. Guard takes the base only from loaded scripts that end like exactly one of the listed paths. A script that ends like two of them tells nothing: `/assets/utils/index.js` could be `utils/index.js` under `/assets/` or `index.js` under `/assets/utils/`, so it is used only once another file has settled the base. If those scripts point to two bases, or to none, the Build is ambiguous and **nothing is sent for it** on this page: a missing report is better than the hash of the wrong file, which would open a false Incident. This happens when:
+1. takes the loaded scripts whose URL path ends with `/` and the path of that first file. These are the candidates, one per path; when the page loaded one path with several query strings, the first one seen is used;
+2. fetches every candidate and looks for the marker's text in its bytes. The one that holds it is the Build's first file. The bare Build ID is not enough;
+3. takes the rest of that URL's path as the base. Every other listed file is the loaded script at exactly *base + its path*. With the marker listing `main.js` and `chunks/a.js` and the first file found at `/app/main.js`, the base is `/app/` and the other file is `/app/chunks/a.js`, nothing else.
 
-- another script with the same name lives elsewhere on the origin (`/app/main.js` and `/legacy/main.js`), however many other files either directory explains;
-- the only files of the Build the page loaded are ones whose path ends like another listed path (a Build listing `index.js` and `utils/index.js`, on a page that loaded nothing but `/assets/utils/index.js`).
+**Query strings.** Another listed file is hashed only when the page loaded exactly one URL with its path, and that URL has the same query string as the first file's (none on both counts as the same). `/app/main.js?dpl=7` goes with `/app/chunks/a.js?dpl=7`. If the chunk was loaded as `?dpl=6`, or as both, it counts as skipped: a different query string may be a different deployment's bytes.
 
-When two registered Builds on one page would both name the same URL, that file is hashed for neither and counts as skipped in both.
+A script that merely has the same name (`/legacy/main.js`) does not hold the marker and is never reported. A changed copy of the first file that still holds the marker is reported, with the hash of what it is now: that is the point.
+
+**Nothing is sent for a Build** on a page where its first file cannot be settled this way. Guard fails closed:
+
+- **The Build is served from another origin** (a CDN host). Guard reads same-origin files only.
+- **The bundle is inlined in the HTML**, or its first file was not loaded as a script on this page, was loaded after the check, or is not in Resource Timing.
+- **The marker was removed** from the first file. The other files are then not looked at either.
+- **More than 4 same-origin scripts** end like the first file's path. Guard fetches none of them.
+- **A candidate could not be examined**: it answered with an error or a redirect, is over 2 MB, is not served as JavaScript, or the browser's Resource Timing buffer was full and has no entry for it. One such candidate is enough, even when another one holds the marker.
+- **Two candidates hold the marker** (the Build deployed twice on the origin and both copies loaded).
+- **The time ran out** before every candidate was read.
+
+**A minifier keeps the marker.** Running a minifier after Harden does not remove the marker's text. The minified first file is found and reported with its own hash, which is not the registered one. Such a Build never matches, so it is never watched and opens no Incident (see [Harden](harden.md#integrity-marker)). But if a watched Build is served raw to some visitors and minified to others (a CDN's "auto-minify" switched on later, or only at some edges), the minified copies are reported as a mismatch and open an Incident.
+
+**What this rests on.** A wrong file can still be reported if the origin itself serves the marker's text somewhere else. Two things are assumed about your origin:
+
+1. No other same-origin URL whose path ends like the first file's path serves that file's content. A combining endpoint (`/min/f=js/jquery.js,app/main.js`) that returns the whole planted file inside a bundle is such a URL.
+2. If there is one, the true file is also a counted script on the page, so that both are candidates and Guard sees two that hold the marker and sends nothing. When the true file is not counted (inlined, loaded another way) and only the combined URL is, the combined file is taken for the Build's first file and its hash is reported.
+
+When a file of this Build also ends like a path that another registered Build on the same page lists, it could belong to either, so it is hashed for neither and counts as skipped.
 
 **What leaves the browser.** One object in the body of `POST /v1/attest`:
 
@@ -117,7 +137,7 @@ The list of positions does show which of the Build's files this visit loaded, fo
 
 **Content Security Policy.** Guard fetches the files from your own origin, so `connect-src` must allow `'self'`, next to the Airverse API you already allow for attestation. A file that CSP blocks counts as skipped; nothing breaks.
 
-**Scripts on another origin** (a CDN host, for example) are skipped: Guard hashes same-origin files only. A Build whose files are all served from another origin sends no report and is never watched.
+**Scripts on another origin** (a CDN host, for example) are skipped: Guard hashes same-origin files only. A Build whose first file is served from another origin sends no report and is never watched, even if the site has scripts of the same name on its own origin.
 
 **Turning it off.**
 
@@ -132,18 +152,19 @@ With `integrity: false` Guard reads no marker and fetches no file.
 | Limit | Value |
 |---|---|
 | When | Once per page view, about 30 s after the first token. A hidden tab waits until it is visible. A visit that ends earlier reports nothing. |
-| Per device | One report per App and Build in 24 hours, remembered in `localStorage` under `ar.integrity` (the App ID, the Build ID and a time; at most 64 entries). The memo is per Build, not per file: if the first report covered only some files, the others are not reported by this device that day. |
+| Per device | Normally one report per App and Build in 24 hours, remembered in `localStorage` under `ar.integrity` (the App ID, the Build ID and a time; at most 64 entries). The memo is per Build, not per file: if the first report covered only some files, the others are not reported by this device that day. It can be more than one: without usable `localStorage`, in private windows, after the user clears site data, when two tabs finish at the same moment, or when a device reported more than 64 Builds in a day. It can be none: see "Nothing is sent" above. |
 | Without `localStorage` | Nothing can be remembered: every page view that lasts 30 s hashes and reports again (once per page, however many Guards it creates). |
-| Several tabs | A tab that starts hashing a Build keeps the others from doing the same for a minute. |
+| Several tabs | A tab that starts hashing a Build keeps the others from doing the same for a minute, and for up to five minutes while its report waits to be sent. A report that waited is dropped if another tab reported the Build meanwhile. |
 | File size | A file over 2 MB is skipped; Guard stops downloading once it has read that much. |
-| Time | 5 s for all files together; what is not hashed by then is skipped. |
+| Time | 5 s for everything Guard fetches; what is not hashed by then is skipped. |
+| Page size | At most 8 Builds are read (from the first 64 marker entries), and at most 500 distinct URLs of the page are looked at. |
 | Files | At most 32 per Build, as the marker lists them. |
 | Save-Data | When the browser asks for reduced data use, Guard does nothing. |
 | Extra traffic | One attestation, at most 4 KB, plus the file requests (from the cache when the files are cacheable). |
 | Several bundles on one page | One Build per attestation: the first registered Build not reported in the last 24 hours goes with the extra attestation, the next with the regular re-attestation about four minutes later, and so on. This keeps every request small. |
 | `stop()` | Ends a running check at once, including its request in flight. A later `start()` or `attest()` runs it again. |
 
-A failed fetch, an opaque response, a redirected one (a login page), an answer whose `Content-Type` is not JavaScript (the HTML page a single-page app serves for unknown paths) and an oversized file all count as skipped. Serve the files with a JavaScript content type, as browsers already require for modules. So does a script element the browser's Resource Timing buffer had no room to record (the buffer holds 250 entries by default). If the extra attestation fails, or the tab is hidden when the files have been hashed, the current token stays valid, the regular schedule goes on, and the report goes with the next attestation.
+For the files other than the first: a failed fetch, an answer with a status other than 200 (a 206 partial answer too), an opaque response, a redirected one (a login page), an answer whose `Content-Type` is not JavaScript (the HTML page a single-page app serves for unknown paths) and an oversized file all count as skipped. **Classic scripts served with another content type are not hashed**: a browser runs `<script src>` whatever the type says (`text/plain`, `application/octet-stream`), but Guard does not hash it. Serve the files with a JavaScript content type, as browsers already require for modules. So does a script element the browser's Resource Timing buffer had no room to record (the buffer holds 250 entries by default). If the extra attestation fails, or the tab is hidden when the files have been hashed, the current token stays valid, the regular schedule goes on, and the report goes with the next attestation.
 
 Browsers differ in what Resource Timing records. Chromium lists the modules a script imports; a browser that does not will report only the files named by `<script>` and `<link rel="modulepreload">` elements, so it may report fewer files.
 
@@ -158,7 +179,7 @@ The live feed's **Client** column shows, for each request, the verdict Shield ve
 - Signing stops replay and tampering, not automation: a script driving a real browser with Guard signs genuine requests.
 - Proxies that rewrite the path, content type or body break signatures.
 - Tamper detection catches changes that do not adapt to it. Whoever changes your files can also remove the marker, remove Guard or report the registered hashes. It tells you about accidents and crude tampering: a CDN that rewrites scripts, a compromised deploy, an injected snippet.
-- Tamper detection finds a Build's files by their URL paths. A page on which a second directory holds a script that ends like exactly one of the Build's listed paths is ambiguous and reports nothing. Files that are inlined into HTML, run in a worker or load after the check are not hashed.
+- Tamper detection finds a Build by the marker in its first file. A page where that file is on another origin, inlined, stripped of its marker or not loaded reports nothing for the Build. Files that are inlined into HTML, run in a worker or load after the check are not hashed.
 - The attestation endpoints rate-limit by caller address; behind a reverse proxy the API sees one address for everyone.
 
 See also: [Getting started](getting-started.md), [Shield](shield.md).

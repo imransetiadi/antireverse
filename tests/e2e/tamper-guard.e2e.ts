@@ -319,6 +319,11 @@ test("Guard reports the files a browser received: an untouched Build becomes wat
   // The last byte (the end of the planted marker statement, or a line end) becomes a space: the module still runs.
   expect([0x0a, 0x3b]).toContain(tampered[last]);
   tampered[last] = 0x20;
+  // The changed byte is not part of the Build id, which Guard looks for in this file (the marker's first) to know
+  // that it is the Build's: the id is still there, before and after.
+  expect(files[0]).toBe(target);
+  expect(registered.includes(buildId)).toBe(true);
+  expect(tampered.includes(buildId)).toBe(true);
   writeFileSync(join(out, target), tampered);
   expect(sha256Hex(tampered)).not.toBe(sha256Hex(registered));
 

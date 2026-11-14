@@ -6,7 +6,7 @@ doc: TICKET
 slice: 21
 version: 0.1.0
 status: done
-updated: 2026-11-14
+updated: 2026-11-15
 language: en
 tags:
   - anti-reverse
@@ -32,10 +32,11 @@ Collector
 
 - [x] **When it runs:** only after the first Attestation Token exists, in idle time. The first handshake's body carries no report, and the first token is not delayed.
 - [x] **What it reads:** the marker registry under `globalThis[Symbol.for("ar.build")]`, read lazily, so load order does not matter. A missing, malformed or hostile registry is ignored without throwing.
-- [x] **Which files it fetches (as built, D-102):** only same-origin URLs the browser loaded as a script.
+- [x] **Which files it fetches (as built, D-103):** only same-origin URLs the browser loaded as a script.
   - A `<script>` counts only with an empty, JavaScript or `module` type, and, where Resource Timing works, only with an entry for its URL.
-  - The Build's base is taken only from URLs that end like exactly one listed path. Exactly one base must result, or the Build is skipped.
-  - Each file is the script at exactly base + path. A URL two Builds would name is used by neither.
+  - **Anchor by content.** Candidates for the first listed file (the file Harden planted the marker in) are the loaded scripts whose path ends like it, at most 4. A candidate qualifies only if its bytes hold the marker's literal `b:"<Build id>",f:[`.
+  - Exactly one candidate must qualify, and every candidate must be examinable. Otherwise nothing is sent for the Build.
+  - Every other file is the single loaded script at exactly base + path whose query string equals the anchor's.
   - No other URL is ever fetched.
 - [x] **How it hashes:** one file at a time, `fetch(url, { cache: "force-cache", credentials: "same-origin" })`, then `arrayBuffer()`, then SHA-256 with `crypto.subtle`, as canonical base64url.
 - [x] **Budgets:**
@@ -69,32 +70,30 @@ Cross-origin scripts with CORS, the `verify --url` deploy check, and any change 
 
 | Criteria | Proven by |
 |---|---|
-| Collector: timing, registry, matching, hashing, budgets, failures, wire content, early re-attest, memo, opt-out, several markers | `packages/guard/test/integrity.test.ts` (306 Guard tests in all) |
-| Size and synchronous cost | `packages/guard/test/package.test.ts`: 19.8 KB gzip for all Guard sources against 35 KB (JS as shipped about 17 KB; 10.2 KB before this slice). `plan()` takes 2–3 ms on a large page and about 10 ms on a hostile one, on a desktop |
+| Collector: timing, registry, anchoring, hashing, budgets, failures, wire content, early re-attest, memo, opt-out, several markers | `packages/guard/test/integrity.test.ts` (349 Guard tests in all), including a seeded differential test against a plain reference (5 seeds × 4,000 pages) |
+| The marker's literal survives a minifier | A test builds a real marker statement, minifies it with esbuild and finds the needle in both forms |
+| Size and synchronous cost | `packages/guard/test/package.test.ts`: 21.4 KB gzip for all Guard sources against 35 KB (JS as shipped about 19 KB; 10.2 KB before this slice). `plan()` takes about 2 ms on a large page and under 10 ms on hostile ones, on a desktop |
 | End to end in a browser | `tests/e2e/tamper-guard.e2e.ts`: the untouched Build becomes watched with no Incident; one byte changed opens a High "Tampered Build" Incident in the Console about 30 s after page load. Every request to the shop origin is logged and matched exactly, and every attest body is checked key by key |
-| Quality | `npm run gate:release` on 2026-11-14: verify 8,466 tests in 324 files, Playwright 27/27, matrices, stand-in RRS 24, bench and load smoke all pass; verdict `blocked`, exit 2 |
+| Quality | `npm run gate:release` on 2026-11-15: verify 8,509 tests in 324 files, Playwright 27/27, matrices, stand-in RRS 24, bench and load smoke all pass; verdict `blocked`, exit 2 |
 
-**Independent reviews:** two, each reproducing what it reported. All findings were fixed test-first.
+**Independent reviews:** four, each reproducing what it reported. All findings were fixed test-first.
 
-- **First review** (1 HIGH, 2 MEDIUM, 9 LOW):
-  - Suffix matching hashed the wrong file, which would open a false High Incident.
-  - The 2 MB cap did not bound the download.
-  - Guard fetched URLs the browser never loaded, with the user's credentials.
-  - `stop()` did not stop a running collection; two Guards both reported; the early re-attest went out from a hidden tab.
-- **Second review, of the rewrite** (3 MEDIUM, 7 LOW, one test gap):
-  - "Most files wins" still picked another directory.
-  - A 200 answer that was not the script (a SPA fallback page) was hashed.
-  - Two Apps on one page reported the Build under the wrong App.
-  - A chunk that was not a `Uint8Array` was hashed as zeros; a listener stayed after `stop()`; the monotonic budget check was untested.
+- **First** (1 HIGH, 2 MEDIUM, 9 LOW): suffix matching hashed the wrong file; the 2 MB cap did not bound the download; Guard fetched URLs the browser never loaded.
+- **Second** (3 MEDIUM, 7 LOW): "most files wins" still picked another directory; a 200 answer that was not the script was hashed; two Apps on one page reported under the wrong App.
+- **Third, of commit 86e3a7c** (1 HIGH, 2 MEDIUM, 5 LOW): the name-based rule was still unsound. A foreign same-origin script with a listed name was hashed as the Build's file whenever the Build's own files were not visible (CDN origin, imported module, lazy load after a full buffer, inlined bundle, 500 padded tags). Name-based inference was dropped for the content anchor (D-103).
+- **Fourth, of the content anchor** (1 MEDIUM, 1 LOW–MEDIUM, 2 LOW): no false mismatch on honest origins in its own ground-truth fuzz (30,000 pages, 20,208 hashes, all correct). Two cases remained on unusual origins and were closed by failing closed, matching the marker's literal instead of the bare id, and the query rule.
 
-**Not independently reviewed:** the fixes after the second review, including the final base rule (D-102). They are covered by the slice's own tests and the gate only.
+**Not independently reviewed:** the fixes after the fourth review (fail closed, the literal needle, the query rule). They are covered by the slice's tests and the gate only. Commit 86e3a7c, which was pushed before the third review, carried the unsound name-based rule.
 
 ## Honest limits
 
-- **Coverage is partial by design.** A Build is skipped when its base is ambiguous, when the page gives no Resource Timing entries (Firefox `resistFingerprinting`, Tor Browser, pages that clear the buffer), or when its scripts come from another origin.
-- **What is hashed is what a refetch receives,** not the bytes that ran. With `no-store` scripts that is the server's current answer.
+- **A wrong file can still be reported on one kind of origin:** one with an endpoint that serves the whole planted file at a URL ending like the first file's path (a combining handler), on a page where the true file is not a counted script.
+- **Coverage is partial by design.** Nothing is sent when the Build is on another origin, inlined, or has its marker stripped; when a candidate cannot be examined; when two copies qualify; or when the page gives no Resource Timing entries (Firefox `resistFingerprinting`, Tor Browser, pages that clear the buffer).
+- **A script already on the page can suppress detection** (a fifth namesake, a second copy). The earlier claim that it "cannot make Guard report a wrong file" was wrong for commit 86e3a7c and is now true only up to the first limit above.
+- **A minifier run after Harden keeps the marker.** A minified copy is reported with its own hash, so such a Build is never watched; serving raw and minified copies of a watched Build opens an Incident.
+- **What is hashed is what a refetch receives,** not the bytes that ran.
 - **The file indexes reveal which chunks a visitor loaded,** and they travel with the device identifier.
 - **The 24 h memo is per App and Build,** so a partial first report is not completed that day. Without usable storage, every page view of 30 s hashes again.
+- **Two Builds on one page that share file names** lose those files from their reports.
 - **Non-Chromium browsers may report fewer files;** the browser test runs Chromium only.
 - **PB-06 was measured on a desktop,** not on a throttled phone profile.
-- **A script already on the page can suppress detection** (for example by making the base ambiguous). It cannot make Guard report a wrong file.

@@ -137,18 +137,23 @@ describe("constants pinned to the protocol", () => {
       filesMax: 32,
       pathMax: 256,
       urlMax: 2048,
-      markersMax: 64,
+      entriesMax: 64,
+      markersMax: 8,
       buildsMax: 4,
       scanMax: 500,
       memoMax: 64,
+      candidatesMax: 4,
       timingFull: 250,
       fileMaxBytes: 2 * 1024 * 1024,
       budgetMs: 5_000,
       delayMs: 30_000,
       memoMs: 24 * 3_600_000,
       claimMs: 60_000,
+      pendingMs: 300_000,
     });
     expect(Object.isFrozen(constants.INTEGRITY)).toBe(true);
+    // A waiting report's claim outlasts the token: the next re-attest, which carries it, comes before it ends.
+    expect(constants.INTEGRITY.pendingMs).toBeGreaterThanOrEqual(constants.GUARD_LIMITS.ttlS * 1000);
   });
 
   it("device storage key", () => {

@@ -3,12 +3,13 @@
 // an entry for every element the tests add, as a browser's does for what it loaded; the files come from a stubbed
 // global fetch, the attestation from the fake service (which validates with the protocol's schemas).
 import { createHash, webcrypto } from "node:crypto";
+import { transformSync } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { markerStatement } from "../../harden/src/marker.ts";
 import { AttestRequestSchema, IntegrityReportSchema } from "../../protocol/src/index.ts";
 import { INTEGRITY } from "../src/constants.js";
 import { createGuard, type GuardCrypto, type GuardFetch, type GuardOptions } from "../src/index.js";
-import { collect, plan } from "../src/integrity.js";
+import { collect, locate, plan, remember } from "../src/integrity.js";
 import {
   APP_ID,
   ATTEST_URL,
@@ -32,8 +33,28 @@ const CLAIMS = Symbol.for("ar.integrity");
 const registry = globalThis as unknown as Record<symbol, unknown>;
 const MB = 1024 * 1024;
 
-const bytes = (text: string) => new TextEncoder().encode(text);
+/** A file without any Build id: someone else's script. */
+const plain = (text: string) => new TextEncoder().encode(text);
+/** What Guard looks for in a Build's first file: the marker's own literal, as Harden writes it. */
+const needle = (build: string) => `b:"${build}",f:[`;
+/**
+ * A file as Harden leaves the planted one: it holds the marker statement (here of both test Builds, so that any file
+ * can be a Build's first). Only a marker's first file is searched for it; in any other file it changes nothing.
+ */
+const bytes = (text: string) => plain(`${markerStatement(BUILD, ["x.js"])}${markerStatement(OTHER, ["x.js"])}${text}`);
 const hashOf = (body: Uint8Array) => createHash("sha256").update(body).digest("base64url");
+
+/**
+ * The files a Build maps to once its first file is known to be the candidate at `anchor` (a path; default: the only
+ * candidate): what collect() does after it found the Build id in that file.
+ */
+function mapped(anchor?: string, skip: (build: string) => boolean = () => false) {
+  const [planned] = plan(skip);
+  const candidate = planned?.candidates.find((script) => anchor === undefined || script.url === `${ORIGIN}${anchor}`);
+  const first = planned?.paths[0];
+  if (!planned || !candidate || typeof first !== "string") return [];
+  return locate(planned, candidate);
+}
 
 /** Plants a marker exactly as a hardened bundle does. */
 function plant(build: string, files: string[]) {
@@ -230,10 +251,10 @@ describe("when the collector runs and what it sends", () => {
     const main = bytes("console.log('main')");
     const chunk = bytes("export const a = 1;\n");
     plant(BUILD, ["src/main.js", "src/chunk.js", "src/never-loaded.js"]);
-    script("/assets/src/main.js");
+    script("/assets/src/main.js?v=3");
     script("/assets/src/chunk.js?v=3");
     const page = pageFetch({
-      [`${ORIGIN}/assets/src/main.js`]: main,
+      [`${ORIGIN}/assets/src/main.js?v=3`]: main,
       [`${ORIGIN}/assets/src/chunk.js?v=3`]: chunk,
     });
     const { guard, service } = setup();
@@ -251,7 +272,7 @@ describe("when the collector runs and what it sends", () => {
     // Only the listed files the page loaded, with the exact URL the page used, one request each.
     expect(page.calls).toEqual([
       {
-        url: `${ORIGIN}/assets/src/main.js`,
+        url: `${ORIGIN}/assets/src/main.js?v=3`,
         init: expect.objectContaining({ cache: "force-cache", credentials: "same-origin" }),
       },
       {
@@ -418,7 +439,7 @@ describe("which files are fetched", () => {
     script("/other.js"); // not listed
     preload("/v2/src/b.js");
     timing([
-      { name: `${ORIGIN}/v2/src/c.js?x=1`, initiatorType: "script" },
+      { name: `${ORIGIN}/v2/src/c.js`, initiatorType: "script" },
       { name: `${ORIGIN}/v2/src/d.js`, initiatorType: "fetch" }, // not a script the page ran
       { name: `${ORIGIN}/v2/src/main.js`, initiatorType: "script" }, // already known
       { name: "https://cdn.example/src/e.js", initiatorType: "script" },
@@ -427,12 +448,12 @@ describe("which files are fetched", () => {
     const page = pageFetch({
       [`${ORIGIN}/v2/src/main.js`]: body,
       [`${ORIGIN}/v2/src/b.js`]: body,
-      [`${ORIGIN}/v2/src/c.js?x=1`]: body,
+      [`${ORIGIN}/v2/src/c.js`]: body,
     });
     const { guard, service } = setup();
     await guard.attest();
     await advance(INTEGRITY.delayMs);
-    expect(page.urls()).toEqual([`${ORIGIN}/v2/src/main.js`, `${ORIGIN}/v2/src/b.js`, `${ORIGIN}/v2/src/c.js?x=1`]);
+    expect(page.urls()).toEqual([`${ORIGIN}/v2/src/main.js`, `${ORIGIN}/v2/src/b.js`, `${ORIGIN}/v2/src/c.js`]);
     expect(reports(service)).toEqual([
       {
         build: BUILD,
@@ -587,7 +608,7 @@ describe("a missing, malformed or hostile registry", () => {
   });
 
   it("good entries among bad ones still count; an index is the position in the marker's list", async () => {
-    registry[KEY] = [null, { b: "nope", f: ["main.js"] }, { b: BUILD, f: [7, "main.js", null, "lib.js"] }];
+    registry[KEY] = [null, { b: "nope", f: ["main.js"] }, { b: BUILD, f: ["main.js", 7, null, "lib.js"] }];
     script("/main.js");
     script("/lib.js");
     const body = bytes("x");
@@ -599,7 +620,7 @@ describe("a missing, malformed or hostile registry", () => {
       {
         build: BUILD,
         files: [
-          { i: 1, h: hashOf(body) },
+          { i: 0, h: hashOf(body) },
           { i: 3, h: hashOf(body) },
         ],
         skipped: 0,
@@ -608,12 +629,17 @@ describe("a missing, malformed or hostile registry", () => {
     guard.stop();
   });
 
+  it("a marker whose first path is not a string has no anchor: nothing is sent for it", () => {
+    registry[KEY] = [{ b: BUILD, f: [7, "main.js"] }];
+    script("/main.js");
+    expect(plan(() => false)).toEqual([]);
+  });
+
   it("more than 32 files: only the first 32 are considered", () => {
     const files = Array.from({ length: 40 }, (_, i) => `f${i}.js`);
     registry[KEY] = [{ b: BUILD, f: files }];
     for (const file of files) script(`/${file}`);
-    const [only] = plan(() => false);
-    expect(only?.files.map((file) => file.i)).toEqual(Array.from({ length: 32 }, (_, i) => i));
+    expect(mapped().map((file) => file.i)).toEqual(Array.from({ length: 32 }, (_, i) => i));
   });
 
   it("a Build registered twice is read once (its first marker)", () => {
@@ -622,7 +648,9 @@ describe("a missing, malformed or hostile registry", () => {
       { b: BUILD, f: ["other.js", "main.js"] },
     ];
     script("/main.js");
-    expect(plan(() => false)).toEqual([{ build: BUILD, files: [{ i: 0, url: `${ORIGIN}/main.js`, size: 0 }] }]);
+    script("/other.js");
+    expect(plan(() => false).map((planned) => [planned.build, planned.paths])).toEqual([[BUILD, ["main.js"]]]);
+    expect(mapped()).toEqual([{ i: 0, url: `${ORIGIN}/main.js`, size: 0 }]);
   });
 });
 
@@ -752,14 +780,14 @@ describe("the 24-hour memo", () => {
     await advance(INTEGRITY.delayMs);
     guard.stop();
     expect(page.urls()).toHaveLength(1);
-    // What storage holds is the short claim of the collection, not a report: it is over after `claimMs`.
+    // What storage holds is the claim of the waiting report, not a report: it is over after `pendingMs`.
     const claim = JSON.parse(storage.data.get("ar.integrity") ?? "{}")[memoKey(BUILD)];
-    expect(claim).toBe(T0 + INTEGRITY.delayMs + INTEGRITY.claimMs - INTEGRITY.memoMs);
+    expect(claim).toBe(T0 + INTEGRITY.delayMs + INTEGRITY.pendingMs - INTEGRITY.memoMs);
 
     // Another page view of this device, once the claim is over: the Build is collected and reported.
     delete registry[CLAIMS];
     down = false;
-    vi.setSystemTime(T0 + INTEGRITY.delayMs + INTEGRITY.claimMs);
+    vi.setSystemTime(T0 + INTEGRITY.delayMs + INTEGRITY.pendingMs);
     const next = setup({ storage });
     await next.guard.attest();
     await advance(INTEGRITY.delayMs);
@@ -921,7 +949,8 @@ describe("synchronous cost (PB-06)", () => {
     }
     console.info(`guard integrity plan(): ${elapsed.toFixed(2)} ms for 5000 scripts, 5000 timings, 50 markers`);
     expect(planned.length).toBeLessThanOrEqual(INTEGRITY.buildsMax);
-    expect(planned[0]?.files).toHaveLength(32);
+    expect(planned[0]?.candidates.map((script) => script.url)).toEqual([names[0]]);
+    expect(mapped()).toHaveLength(32);
     // PB-06 allows no single task over 25 ms on a mid-tier phone. This is a desktop measurement (about 2 ms): a
     // tripwire for a regression, not the lab metric on a throttled device profile.
     expect(elapsed).toBeLessThan(25);
@@ -930,88 +959,193 @@ describe("synchronous cost (PB-06)", () => {
 
 // The findings of the independent review of slice 21b.
 
-describe("one base per Build (review F1, F14)", () => {
-  it("'index.js' is never hashed from /assets/utils/index.js: two bases explain one file each, so nothing is sent", async () => {
-    plant(BUILD, ["index.js", "utils/index.js"]);
-    script("/assets/utils/index.js");
-    const page = pageFetch({ [`${ORIGIN}/assets/utils/index.js`]: bytes("utils") });
-    expect(plan(() => false)).toEqual([]);
-    const { guard, service } = setup();
-    await guard.attest();
-    await advance(240_000);
-    expect(page.fetch).not.toHaveBeenCalled();
-    expect(reports(service)).toEqual([]);
-    guard.stop();
-  });
+describe("the content anchor: a Build's first file is the one that holds its id", () => {
+  const LEGACY = plain("/* the site's own, unhardened main.js */");
 
-  it("two places a Build's only loaded file could be: the Build is ambiguous and nothing is sent for it", async () => {
-    plant(BUILD, ["main.js"]);
-    script("/legacy/vendor/main.js"); // another bundle of the site
-    script("/app/main.js");
-    const page = pageFetch({
-      [`${ORIGIN}/legacy/vendor/main.js`]: bytes("theirs"),
-      [`${ORIGIN}/app/main.js`]: bytes("ours"),
-    });
-    expect(plan(() => false)).toEqual([]);
-    const { guard, service } = setup();
-    await guard.attest();
-    await advance(240_000);
-    expect(page.fetch).not.toHaveBeenCalled();
-    expect(reports(service)).toEqual([]);
-    guard.stop();
-  });
-
-  it("one base explains every loaded file: each is taken from it exactly; unrelated scripts do not matter", () => {
-    plant(BUILD, ["main.js", "chunks/a.js", "chunks/b.js"]);
-    script("/legacy/vendor/other.js");
-    script("/app/main.js?v=1");
-    script("/app/chunks/a.js");
-    expect(plan(() => false)).toEqual([
-      {
-        build: BUILD,
-        files: [
-          { i: 0, url: `${ORIGIN}/app/main.js?v=1`, size: 0 },
-          { i: 1, url: `${ORIGIN}/app/chunks/a.js`, size: 0 },
-        ],
-      },
-    ]);
-  });
-
-  it("a second base that explains even one listed file skips the Build, however many files it explains (R1)", async () => {
-    plant(BUILD, ["main.js", "polyfills.js", "runtime.js"]);
-    script("/a/main.js"); // the Build
-    script("/b/main.js"); // another app of the site…
-    script("/b/polyfills.js"); // …which would explain more files
-    const page = pageFetch({
-      [`${ORIGIN}/a/main.js`]: bytes("a"),
-      [`${ORIGIN}/b/main.js`]: bytes("b"),
-      [`${ORIGIN}/b/polyfills.js`]: bytes("p"),
-    });
-    expect(plan(() => false)).toEqual([]);
-    const { guard, service } = setup();
-    await guard.attest();
-    await advance(240_000);
-    expect(page.fetch).not.toHaveBeenCalled();
-    expect(reports(service)).toEqual([]);
-    guard.stop();
-  });
-
-  it("a URL that ends like two listed paths gives no evidence: the base comes from the other files", async () => {
-    plant(BUILD, ["index.js", "utils/index.js", "app.js"]);
-    script("/assets/utils/index.js"); // 'utils/index.js' under /assets/, or 'index.js' under /assets/utils/
-    script("/assets/app.js"); // only 'app.js' under /assets/
-    const utils = bytes("utils");
-    const app = bytes("app");
-    const page = pageFetch({ [`${ORIGIN}/assets/utils/index.js`]: utils, [`${ORIGIN}/assets/app.js`]: app });
+  it("a single-file bundle is reported", async () => {
+    plant(BUILD, ["bundle.js"]);
+    script("/dist/bundle.js");
+    const bundle = bytes("everything");
+    const page = pageFetch({ [`${ORIGIN}/dist/bundle.js`]: bundle });
     const { guard, service } = setup();
     await guard.attest();
     await advance(INTEGRITY.delayMs);
-    expect(page.urls()).toEqual([`${ORIGIN}/assets/utils/index.js`, `${ORIGIN}/assets/app.js`]);
-    // index.js was not loaded: absent, neither hashed nor skipped.
+    expect(page.urls()).toEqual([`${ORIGIN}/dist/bundle.js`]); // fetched once: its bytes are searched and hashed
+    expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(bundle) }], skipped: 0 }]);
+    guard.stop();
+  });
+
+  it("a script that only shares the name is fetched, found without the id, and nothing is sent", async () => {
+    plant(BUILD, ["main.js", "vendor.js"]);
+    script("/js/main.js");
+    script("/js/vendor.js");
+    const page = pageFetch({ [`${ORIGIN}/js/main.js`]: LEGACY, [`${ORIGIN}/js/vendor.js`]: plain("vendor") });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(page.urls()).toEqual([`${ORIGIN}/js/main.js`]);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("the real first file among namesakes settles the base; every other file is taken from exactly base + path", async () => {
+    plant(BUILD, ["main.js", "chunks/a.js", "chunks/b.js", "polyfills.js"]);
+    script("/legacy/main.js");
+    script("/legacy/polyfills.js"); // ends like a listed path, under the wrong base
+    script("/legacy/chunks/a.js");
+    script("/app/main.js");
+    script("/app/chunks/a.js");
+    const main = bytes("main");
+    const a = plain("a");
+    const page = pageFetch({
+      [`${ORIGIN}/legacy/main.js`]: LEGACY,
+      [`${ORIGIN}/legacy/polyfills.js`]: plain("legacy polyfills"),
+      [`${ORIGIN}/legacy/chunks/a.js`]: plain("legacy a"),
+      [`${ORIGIN}/app/main.js`]: main,
+      [`${ORIGIN}/app/chunks/a.js`]: a,
+    });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    expect(page.urls()).toEqual([`${ORIGIN}/legacy/main.js`, `${ORIGIN}/app/main.js`, `${ORIGIN}/app/chunks/a.js`]);
+    // chunks/b.js and polyfills.js were not loaded under /app/: absent.
     expect(reports(service)).toEqual([
       {
         build: BUILD,
         files: [
+          { i: 0, h: hashOf(main) },
+          { i: 1, h: hashOf(a) },
+        ],
+        skipped: 0,
+      },
+    ]);
+    guard.stop();
+  });
+
+  it("a changed first file that still holds the id is reported: the mismatch reaches the wire", async () => {
+    plant(BUILD, ["main.js", "lib.js"]);
+    script("/app/main.js");
+    script("/app/lib.js");
+    const tampered = bytes("main(); stealCards();");
+    const lib = plain("lib");
+    pageFetch({ [`${ORIGIN}/app/main.js`]: tampered, [`${ORIGIN}/app/lib.js`]: lib });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    expect(reports(service)).toEqual([
+      {
+        build: BUILD,
+        files: [
+          { i: 0, h: hashOf(tampered) },
+          { i: 1, h: hashOf(lib) },
+        ],
+        skipped: 0,
+      },
+    ]);
+    guard.stop();
+  });
+
+  it("a first file whose marker was stripped anchors nothing: nothing is sent, the other files are not fetched", async () => {
+    plant(BUILD, ["main.js", "lib.js"]);
+    script("/app/main.js");
+    script("/app/lib.js");
+    const page = pageFetch({ [`${ORIGIN}/app/main.js`]: plain("main();"), [`${ORIGIN}/app/lib.js`]: plain("lib") });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(page.urls()).toEqual([`${ORIGIN}/app/main.js`]);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("the id of another Build does not anchor this one", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/app/main.js");
+    pageFetch({ [`${ORIGIN}/app/main.js`]: plain(`${markerStatement(OTHER, ["main.js"])} main();`) });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("two copies that both hold the id (/a/ and /b/): the Build is skipped", async () => {
+    plant(BUILD, ["main.js", "lib.js"]);
+    for (const base of ["/a/", "/b/"]) for (const name of ["main.js", "lib.js"]) script(`${base}${name}`);
+    const page = pageFetch({
+      [`${ORIGIN}/a/main.js`]: bytes("a"),
+      [`${ORIGIN}/b/main.js`]: bytes("b"),
+      [`${ORIGIN}/a/lib.js`]: plain("lib"),
+      [`${ORIGIN}/b/lib.js`]: plain("lib"),
+    });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(page.urls()).toEqual([`${ORIGIN}/a/main.js`, `${ORIGIN}/b/main.js`]);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("five candidates for the first file: the Build is skipped and nothing is fetched", async () => {
+    plant(BUILD, ["main.js"]);
+    const served: Record<string, Uint8Array> = {};
+    for (const base of ["/1/", "/2/", "/3/", "/4/", "/5/"]) {
+      script(`${base}main.js`);
+      served[`${ORIGIN}${base}main.js`] = bytes(base);
+    }
+    const page = pageFetch(served);
+    expect(plan(() => false)).toEqual([]);
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(page.fetch).not.toHaveBeenCalled();
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("four candidates are read; one path with several query strings is one candidate (the first seen)", async () => {
+    plant(BUILD, ["main.js"]);
+    for (const base of ["/1/", "/2/", "/3/"]) script(`${base}main.js`);
+    script("/4/main.js?v=1");
+    script("/4/main.js?v=2");
+    const real = bytes("real");
+    const page = pageFetch({
+      [`${ORIGIN}/1/main.js`]: LEGACY,
+      [`${ORIGIN}/2/main.js`]: LEGACY,
+      [`${ORIGIN}/3/main.js`]: LEGACY,
+      [`${ORIGIN}/4/main.js?v=1`]: real,
+    });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    expect(page.urls()).toEqual(
+      ["/1/", "/2/", "/3/"].map((base) => `${ORIGIN}${base}main.js`).concat(`${ORIGIN}/4/main.js?v=1`),
+    );
+    expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(real) }], skipped: 0 }]);
+    guard.stop();
+  });
+
+  it("nested names map exactly: index.js, utils/index.js and app.js under the base the first file gives", async () => {
+    plant(BUILD, ["index.js", "utils/index.js", "app.js"]);
+    script("/assets/utils/index.js"); // 'utils/index.js' under /assets/; also a candidate for 'index.js'
+    script("/assets/index.js");
+    script("/assets/app.js");
+    const index = bytes("index");
+    const utils = plain("utils");
+    const app = plain("app");
+    pageFetch({
+      [`${ORIGIN}/assets/index.js`]: index,
+      [`${ORIGIN}/assets/utils/index.js`]: utils,
+      [`${ORIGIN}/assets/app.js`]: app,
+    });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    expect(reports(service)).toEqual([
+      {
+        build: BUILD,
+        files: [
+          { i: 0, h: hashOf(index) },
           { i: 1, h: hashOf(utils) },
           { i: 2, h: hashOf(app) },
         ],
@@ -1021,77 +1155,307 @@ describe("one base per Build (review F1, F14)", () => {
     guard.stop();
   });
 
-  it("a Build that lists index.js and utils/index.js and loads both, with a third file, reports all three", () => {
+  it("nested names without the first file loaded: nothing is sent", async () => {
     plant(BUILD, ["index.js", "utils/index.js", "app.js"]);
-    script("/assets/index.js");
     script("/assets/utils/index.js");
     script("/assets/app.js");
-    expect(plan(() => false)[0]?.files).toEqual([
-      { i: 0, url: `${ORIGIN}/assets/index.js`, size: 0 },
-      { i: 1, url: `${ORIGIN}/assets/utils/index.js`, size: 0 },
-      { i: 2, url: `${ORIGIN}/assets/app.js`, size: 0 },
-    ]);
+    pageFetch({ [`${ORIGIN}/assets/utils/index.js`]: plain("utils"), [`${ORIGIN}/assets/app.js`]: plain("app") });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
   });
 
-  it("a second copy of the Build under the colliding directory makes two bases: skipped", () => {
-    plant(BUILD, ["index.js", "utils/index.js", "app.js"]);
-    script("/assets/utils/index.js");
-    script("/assets/app.js");
-    script("/assets/utils/app.js");
+  it.each<[string, Served]>([
+    ["is not found", { status: 404 }],
+    ["is redirected", { body: plain("x"), redirected: true }],
+    ["is not served as JavaScript", { body: plain("x"), contentType: "text/html" }],
+    ["is too large", { body: new Uint8Array(2 * MB + 1) }],
+  ])("a candidate that %s was not examined: nothing is sent for the Build (fail closed)", async (_name, served) => {
+    plant(BUILD, ["main.js"]);
+    script("/odd/main.js");
+    script("/app/main.js");
+    pageFetch({ [`${ORIGIN}/odd/main.js`]: served, [`${ORIGIN}/app/main.js`]: bytes("main") });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    await advance(240_000);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("a candidate Resource Timing could not vouch for (its buffer may be full) is not examined: nothing is fetched", async () => {
+    // A combining endpoint serves the planted file at a URL that ends like its path; the true file is only an element.
+    plant(BUILD, ["app/main.js"]);
+    timing(Array.from({ length: 249 }, (_, k) => ({ name: `${ORIGIN}/img/${k}.png`, initiatorType: "img" })));
+    script("/min/f=js/jquery.js,app/main.js");
+    script("/app/main.js", { loaded: false });
+    expect(entries.length).toBe(250);
+    const page = pageFetch({
+      [`${ORIGIN}/min/f=js/jquery.js,app/main.js`]: bytes("jquery + main"),
+      [`${ORIGIN}/app/main.js`]: bytes("main"),
+    });
+    expect(plan(() => false)).toEqual([]);
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(page.fetch).not.toHaveBeenCalled();
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("a candidate Resource Timing says is over 2 MB is not examined either", () => {
+    plant(BUILD, ["main.js"]);
+    script("/big/main.js");
+    script("/app/main.js");
+    timing([{ name: `${ORIGIN}/big/main.js`, initiatorType: "script", decodedBodySize: 2 * MB + 1 }]);
     expect(plan(() => false)).toEqual([]);
   });
 
-  it("a URL two Builds would both name is hashed for neither: it counts as skipped in both (R1)", async () => {
-    plant(BUILD, ["main.js", "a.js"]);
-    plant(OTHER, ["main.js", "b.js"]);
-    for (const name of ["main.js", "a.js", "b.js"]) script(`/app/${name}`);
+  it("the bare Build id is not the marker: a JSONP answer that echoes it anchors nothing", async () => {
+    plant(BUILD, ["main.js"]);
+    script(`/api/jsonp/main.js?callback=${BUILD}`);
+    pageFetch({ [`${ORIGIN}/api/jsonp/main.js?callback=${BUILD}`]: plain(`/**/${BUILD}({"ok":true});`) });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(240_000);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("the needle is what Harden's marker statement holds, also after esbuild --minify", () => {
+    const statement = markerStatement(BUILD, ["main.js", "chunk.js"]);
+    expect(statement).toContain(needle(BUILD));
+    const minified = transformSync(`const app = 1;\n${statement}\nconsole.log(app);`, { minify: true }).code;
+    expect(minified).not.toBe(statement);
+    expect(minified).toContain(needle(BUILD));
+    // The two shapes, pinned: what Harden writes, and what esbuild 's minifier makes of it.
+    expect(statement).toBe(
+      `;(function(){try{var s=Symbol.for("ar.build"),g=globalThis;(g[s]||(g[s]=[])).push({b:"${BUILD}",f:["main.js","chunk.js"]})}catch(e){}})();`,
+    );
+    expect(minified).toContain(`.push({b:"${BUILD}",f:["main.js","chunk.js"]})`);
+  });
+
+  it("when the budget ends before every candidate was read, the Build is undecided: nothing is sent", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/app/main.js");
+    script("/slow/main.js");
+    pageFetch({ [`${ORIGIN}/app/main.js`]: bytes("main"), [`${ORIGIN}/slow/main.js`]: { hang: true } });
+    const { guard, service, storage } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs + INTEGRITY.budgetMs);
+    // The Build was not decided: its claims are given back, so that another collection may take it.
+    expect(Object.keys((registry[CLAIMS] ?? {}) as object)).toEqual([]);
+    expect(Object.keys(JSON.parse(storage.data.get("ar.integrity") ?? "{}"))).toEqual([]);
+    await advance(240_000);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+
+  it("stop() while a file is hashed starts no further request", async () => {
+    plant(BUILD, ["a.js", "b.js", "c.js"]);
+    for (const name of ["a.js", "b.js", "c.js"]) script(`/${name}`);
+    const a = bytes("a");
+    const page = pageFetch({ [`${ORIGIN}/a.js`]: a, [`${ORIGIN}/b.js`]: plain("b"), [`${ORIGIN}/c.js`]: plain("c") });
+    const spy = spyCrypto();
+    let stop: (() => void) | undefined;
+    const crypto: GuardCrypto = {
+      getRandomValues: spy.crypto.getRandomValues,
+      subtle: {
+        ...(spy.crypto.subtle as NonNullable<GuardCrypto["subtle"]>),
+        digest: async (algorithm, data) => {
+          if (data.byteLength === a.byteLength) stop?.(); // while a.js is hashed
+          return (spy.crypto.subtle as NonNullable<GuardCrypto["subtle"]>).digest(algorithm, data);
+        },
+      },
+    };
+    const { guard, service } = setup({ crypto });
+    await guard.attest();
+    stop = () => guard.stop();
+    await advance(INTEGRITY.delayMs);
+    await advance(10_000);
+    expect(page.urls()).toEqual([`${ORIGIN}/a.js`]);
+    expect(reports(service)).toEqual([]);
+  });
+
+  describe("other files and query strings", () => {
+    function served(urls: string[]) {
+      const files: Record<string, Uint8Array> = {};
+      for (const url of urls) {
+        script(url);
+        files[`${ORIGIN}${url}`] = url.includes("main.js") ? bytes(url) : plain(url);
+      }
+      return pageFetch(files);
+    }
+    async function report() {
+      const { guard, service } = setup();
+      await guard.attest();
+      await advance(INTEGRITY.delayMs);
+      guard.stop();
+      return reports(service)[0] as { files: { i: number; h: string }[]; skipped: number } | undefined;
+    }
+
+    it("every file loaded with the anchor's query string is reported", async () => {
+      plant(BUILD, ["main.js", "chunk.js"]);
+      const page = served(["/app/main.js?dpl=x", "/app/chunk.js?dpl=x"]);
+      expect(await report()).toEqual({
+        build: BUILD,
+        files: [
+          { i: 0, h: hashOf(bytes("/app/main.js?dpl=x")) },
+          { i: 1, h: hashOf(plain("/app/chunk.js?dpl=x")) },
+        ],
+        skipped: 0,
+      });
+      expect(page.urls()).toEqual([`${ORIGIN}/app/main.js?dpl=x`, `${ORIGIN}/app/chunk.js?dpl=x`]);
+    });
+
+    it("a chunk loaded only with another query string (an older deployment) is skipped, unfetched", async () => {
+      plant(BUILD, ["main.js", "chunk.js"]);
+      const page = served(["/app/main.js?dpl=new", "/app/chunk.js?dpl=older"]);
+      expect(await report()).toMatchObject({ files: [{ i: 0 }], skipped: 1 });
+      expect(page.urls()).toEqual([`${ORIGIN}/app/main.js?dpl=new`]);
+    });
+
+    it("a chunk loaded with two query strings is skipped, also when one is the anchor's", async () => {
+      plant(BUILD, ["main.js", "chunk.js"]);
+      const page = served(["/app/main.js?dpl=new", "/app/chunk.js?dpl=new", "/app/chunk.js?dpl=older"]);
+      expect(await report()).toMatchObject({ files: [{ i: 0 }], skipped: 1 });
+      expect(page.urls()).toEqual([`${ORIGIN}/app/main.js?dpl=new`]);
+    });
+
+    it("no query string on both sides counts as the same", async () => {
+      plant(BUILD, ["main.js", "chunk.js"]);
+      served(["/app/main.js", "/app/chunk.js"]);
+      expect(await report()).toMatchObject({ files: [{ i: 0 }, { i: 1 }], skipped: 0 });
+    });
+
+    it("the anchor without a query string and a chunk with one: skipped", async () => {
+      plant(BUILD, ["main.js", "chunk.js"]);
+      served(["/app/main.js", "/app/chunk.js?v=2"]);
+      expect(await report()).toMatchObject({ files: [{ i: 0 }], skipped: 1 });
+    });
+  });
+
+  it("a URL of this Build that ends like a listed path of another Build on the page is used by neither", async () => {
+    plant(BUILD, ["a/main.js", "shared.js"]);
+    plant(OTHER, ["b/main.js", "shared.js"]);
+    for (const path of ["/app/a/main.js", "/app/b/main.js", "/app/shared.js"]) script(path);
     const a = bytes("a");
     const b = bytes("b");
     const page = pageFetch({
-      [`${ORIGIN}/app/main.js`]: bytes("m"),
-      [`${ORIGIN}/app/a.js`]: a,
-      [`${ORIGIN}/app/b.js`]: b,
+      [`${ORIGIN}/app/a/main.js`]: a,
+      [`${ORIGIN}/app/b/main.js`]: b,
+      [`${ORIGIN}/app/shared.js`]: plain("shared"),
     });
     const { guard, service } = setup();
     await guard.attest();
     await advance(INTEGRITY.delayMs);
     await advance(240_000);
-    expect(page.urls()).toEqual([`${ORIGIN}/app/a.js`, `${ORIGIN}/app/b.js`]);
+    expect(page.urls()).toEqual([`${ORIGIN}/app/a/main.js`, `${ORIGIN}/app/b/main.js`]);
     expect(reports(service)).toEqual([
-      { build: BUILD, files: [{ i: 1, h: hashOf(a) }], skipped: 1 },
-      { build: OTHER, files: [{ i: 1, h: hashOf(b) }], skipped: 1 },
+      { build: BUILD, files: [{ i: 0, h: hashOf(a) }], skipped: 1 },
+      { build: OTHER, files: [{ i: 0, h: hashOf(b) }], skipped: 1 },
     ]);
     guard.stop();
   });
 
-  it("a URL shared with a Build already reported today is still not used", () => {
-    plant(BUILD, ["main.js", "a.js"]);
-    plant(OTHER, ["main.js", "b.js"]);
-    for (const name of ["main.js", "a.js", "b.js"]) script(`/app/${name}`);
-    expect(plan((build) => build === OTHER)).toEqual([
-      {
-        build: BUILD,
-        files: [
-          { i: 0, url: `${ORIGIN}/app/main.js`, size: Number.POSITIVE_INFINITY },
-          { i: 1, url: `${ORIGIN}/app/a.js`, size: 0 },
-        ],
-      },
+  it("…also when the other Build was already reported today", () => {
+    plant(BUILD, ["a/main.js", "shared.js"]);
+    plant(OTHER, ["b/main.js", "shared.js"]);
+    for (const path of ["/app/a/main.js", "/app/b/main.js", "/app/shared.js"]) script(path);
+    expect(mapped(undefined, (build) => build === OTHER)).toEqual([
+      { i: 0, url: `${ORIGIN}/app/a/main.js`, size: 0 },
+      { i: 1, url: `${ORIGIN}/app/shared.js`, size: Number.POSITIVE_INFINITY },
     ]);
   });
 
   it("a path listed twice names one file: no URL is mapped to two indexes", () => {
-    registry[KEY] = [{ b: BUILD, f: ["main.js", "main.js", "lib.js"] }];
+    registry[KEY] = [{ b: BUILD, f: ["main.js", "main.js", "lib.js", "lib.js"] }];
     script("/main.js");
     script("/lib.js");
-    expect(plan(() => false)[0]?.files.map((file) => file.i)).toEqual([0, 2]);
+    expect(mapped().map((file) => file.i)).toEqual([0, 2]);
   });
 
   it("/x%2Fmain.js is not the Build's main.js; an encoded character inside a segment still matches", () => {
     plant(BUILD, ["main.js", "my file.js"]);
     script("/x%2Fmain.js");
     expect(plan(() => false)).toEqual([]);
+    script("/app/main.js");
     script("/app/my%20file.js");
-    expect(plan(() => false)[0]?.files).toEqual([{ i: 1, url: `${ORIGIN}/app/my%20file.js`, size: 0 }]);
+    expect(mapped()).toEqual([
+      { i: 0, url: `${ORIGIN}/app/main.js`, size: 0 },
+      { i: 1, url: `${ORIGIN}/app/my%20file.js`, size: 0 },
+    ]);
+  });
+});
+
+describe("the Build's own files are not visible (third review F1, F2, F3)", () => {
+  const LEGACY = plain("/* the site's own, unhardened main.js */");
+  /** Nothing is sent, and the foreign file's hash appears nowhere on the wire. */
+  async function expectNothingSent(served: Record<string, Uint8Array>) {
+    pageFetch(served);
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    await advance(240_000);
+    guard.stop();
+    expect(reports(service)).toEqual([]);
+    const wire = JSON.stringify(service.requests.map((request) => request.body));
+    for (const body of Object.values(served)) expect(wire).not.toContain(hashOf(body));
+  }
+
+  it("F1a: the Build is served from a CDN origin; the site has its own same-origin /js/main.js", async () => {
+    plant(BUILD, ["main.js", "vendor.js"]);
+    script("https://cdn.example/app/main.js");
+    script("https://cdn.example/app/vendor.js");
+    script("/js/main.js");
+    await expectNothingSent({ [`${ORIGIN}/js/main.js`]: LEGACY });
+  });
+
+  it("F1b: the Build was imported (initiator 'other', no element); a foreign /legacy/main.js has a tag", async () => {
+    plant(BUILD, ["main.js"]);
+    timing([{ name: `${ORIGIN}/app/main.js`, initiatorType: "other" }]);
+    script("/legacy/main.js");
+    await expectNothingSent({ [`${ORIGIN}/legacy/main.js`]: LEGACY });
+  });
+
+  it("F1c: the Build was lazy-loaded after the 250-entry buffer filled (no entry, no element)", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/legacy/main.js");
+    timing(Array.from({ length: 249 }, (_, k) => ({ name: `${ORIGIN}/img/${k}.png`, initiatorType: "img" })));
+    await expectNothingSent({ [`${ORIGIN}/legacy/main.js`]: LEGACY });
+  });
+
+  it("F1d: the Build is inlined in the HTML; the page also loads /static/main.js", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/static/main.js");
+    await expectNothingSent({ [`${ORIGIN}/static/main.js`]: LEGACY });
+  });
+
+  it("F2: the Build is under /cdn/utils/ (each of its files ends like two listed paths); a foreign /legacy/index.js", async () => {
+    plant(BUILD, ["index.js", "utils/index.js"]);
+    script("/cdn/utils/index.js"); // the Build's index.js, base /cdn/utils/
+    script("/legacy/index.js"); // foreign
+    const real = bytes("the Build's index.js");
+    const foreign = plain("legacy index");
+    pageFetch({ [`${ORIGIN}/cdn/utils/index.js`]: real, [`${ORIGIN}/legacy/index.js`]: foreign });
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    guard.stop();
+    // The Build's own file is found by its content; the foreign one is never reported.
+    expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(real) }], skipped: 0 }]);
+    expect(JSON.stringify(reports(service))).not.toContain(hashOf(foreign));
+  });
+
+  it("F3: 500 padded script elements hide the Build's own tag: the foreign file is not reported", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/legacy/main.js");
+    for (let k = 0; k < 499; k += 1) script(`/legacy/main.js?pad=${k}`, { loaded: k < 249 });
+    script("/app/main.js", { loaded: false }); // the Build's tag, 501st; the buffer was full
+    expect(entries.length).toBe(250);
+    await expectNothingSent({ [`${ORIGIN}/legacy/main.js`]: LEGACY });
   });
 });
 
@@ -1110,7 +1474,9 @@ describe("the 2 MB cap bounds what is downloaded (review F2)", () => {
             if (sent >= chunks) return controller.close();
             sent += 1;
             state.pulled += MB;
-            controller.enqueue(new Uint8Array(MB).fill(sent));
+            const chunk = new Uint8Array(MB).fill(sent);
+            if (sent === 1) chunk.set(plain(needle(BUILD)));
+            controller.enqueue(chunk);
           },
           cancel() {
             state.cancelled = true;
@@ -1145,6 +1511,7 @@ describe("the 2 MB cap bounds what is downloaded (review F2)", () => {
     const expected = new Uint8Array(2 * MB);
     expected.fill(1, 0, MB);
     expected.fill(2, MB);
+    expected.set(plain(needle(BUILD)));
     const report = await collect(APP_ID, webcrypto as unknown as GuardCrypto, cleanNavigator(), null, Date.now, {
       aborted: false,
     });
@@ -1196,14 +1563,14 @@ describe("only what the browser loaded as a script (review F6)", () => {
     plant(BUILD, ["main.js", "late.js"]);
     script("/main.js");
     script("/late.js", { loaded: false });
-    expect(plan(() => false)[0]?.files.map((file) => file.i)).toEqual([0]);
+    expect(mapped().map((file) => file.i)).toEqual([0]);
   });
 
   it("an element whose URL was loaded by a preload (initiator 'link') counts", () => {
     plant(BUILD, ["main.js"]);
     script("/main.js", { loaded: false });
     timing([{ name: `${ORIGIN}/main.js`, initiatorType: "link", decodedBodySize: 10 }]);
-    expect(plan(() => false)[0]?.files).toEqual([{ i: 0, url: `${ORIGIN}/main.js`, size: 10 }]);
+    expect(mapped()).toEqual([{ i: 0, url: `${ORIGIN}/main.js`, size: 10 }]);
   });
 
   it("when the Resource Timing buffer is full, a listed element without an entry counts as skipped, unfetched", async () => {
@@ -1462,7 +1829,8 @@ describe("the 5 s budget does not follow the wall clock (review F11)", () => {
             ok: true,
             type: "basic",
             headers: jsHeaders,
-            arrayBuffer: async () => new ArrayBuffer(1),
+            status: 200,
+            arrayBuffer: async () => bytes("q").buffer,
           }),
         );
       }
@@ -1478,7 +1846,7 @@ describe("the 5 s budget does not follow the wall clock (review F11)", () => {
     expect(signal?.aborted).toBe(false);
     await advance(INTEGRITY.budgetMs - 100);
     expect(signal?.aborted).toBe(true);
-    expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(new Uint8Array(1)) }], skipped: 1 }]);
+    expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(bytes("q")) }], skipped: 1 }]);
     guard.stop();
   });
 });
@@ -1499,7 +1867,7 @@ describe("a hostile registry costs nothing (review F7)", () => {
       });
     registry[KEY] = spying([spying({ b: BUILD, f: spying(["main.js"]) })]);
     script("/main.js");
-    expect(plan(() => false)).toEqual([{ build: BUILD, files: [{ i: 0, url: `${ORIGIN}/main.js`, size: 0 }] }]);
+    expect(mapped()).toEqual([{ i: 0, url: `${ORIGIN}/main.js`, size: 0 }]);
     expect(called).toEqual([]);
   });
 
@@ -1707,7 +2075,7 @@ describe("a Resource Timing that answers oddly (R4)", () => {
       },
     );
     entries.splice(1, 0, hostile as unknown as Entry);
-    expect(plan(() => false)[0]?.files.map((file) => file.i)).toEqual([0, 1]);
+    expect(mapped().map((file) => file.i)).toEqual([0, 1]);
   });
 });
 
@@ -1906,5 +2274,588 @@ describe("bounded work (R6, R10, T1 and the budget)", () => {
     expect(kept).toContain(memoKey(BUILD));
     expect(kept).toContain(`${APP_ID}/bld_${"0".repeat(24)}`); // the newest stay
     guard.stop();
+  });
+});
+
+// The lows of the third review.
+
+describe("the memo across tabs (third review F4, F5)", () => {
+  it("F4: stop() during a collection does not erase what another tab reported meanwhile", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: { hang: true } });
+    const { guard, storage } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs); // the collection started
+    await advance(2_000);
+    remember(storage, memoKey(OTHER), Date.now(), Date.now()); // another tab reports another Build
+    guard.stop();
+    await settle();
+    const memo = JSON.parse(storage.data.get("ar.integrity") ?? "{}");
+    expect(Object.keys(memo)).toEqual([memoKey(OTHER)]); // and this tab's own claim is given back
+  });
+
+  it("F5: a report that waits longer than the collection's claim is still sent by one tab only", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: bytes("x") });
+    const storage = memoryStorage();
+    const serviceA = fakeService({ nowMs: () => Date.now() });
+    let failed = 0;
+    const a = setup(
+      {
+        storage,
+        fetch: vi.fn<GuardFetch>(async (url, init) => {
+          if (url === ATTEST_URL && init.body.includes('"integrity"') && failed++ === 0) throw new Error("offline");
+          return serviceA.fetch(url, init);
+        }),
+      },
+      serviceA,
+    ).guard;
+    await a.attest();
+    await advance(INTEGRITY.delayMs); // A hashed; its early attest failed; the report waits
+    expect(failed).toBe(1);
+    await advance(31_000);
+    delete registry[CLAIMS]; // tab B is another page: it shares localStorage only
+    const b = setup({ storage });
+    await b.guard.attest();
+    await advance(INTEGRITY.delayMs);
+    await advance(240_000);
+    a.stop();
+    b.guard.stop();
+    expect(reports(serviceA).length + reports(b.service).length).toBe(1);
+  });
+
+  it("F5: a waiting report is dropped when another tab reported that App and Build meanwhile", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: bytes("x") });
+    const service = fakeService({ nowMs: () => Date.now() });
+    let down = false;
+    const { guard, storage } = setup({
+      fetch: vi.fn<GuardFetch>(async (url, init) => (down ? response(503, {}) : service.fetch(url, init))),
+    });
+    await guard.attest();
+    down = true;
+    await advance(INTEGRITY.delayMs); // hashed; the early attest failed; the report waits
+    down = false;
+    remember(storage, memoKey(BUILD), Date.now(), Date.now()); // another tab's report
+    await advance(240_000 - INTEGRITY.delayMs); // the regular re-attest
+    expect(service.challenges()).toBe(2);
+    expect(reports(service)).toEqual([]);
+    guard.stop();
+  });
+});
+
+describe("answers and bodies (third review F6, F7)", () => {
+  it("F6: a 206 Partial Content answer is not hashed", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: { status: 206, body: bytes("first half") } });
+    vi.useRealTimers();
+    const report = await collect(APP_ID, webcrypto as unknown as GuardCrypto, cleanNavigator(), null, Date.now, {
+      aborted: false,
+    });
+    expect(report).toBeNull();
+  });
+
+  /** A fetch that answers when told, whatever the signal says, with a body that never ends. */
+  function lateAnswer(cancel: () => unknown = async () => {}) {
+    const state = { cancelled: 0, readers: 0 };
+    let answer: ((value: unknown) => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const give = () =>
+      answer?.({
+        ok: true,
+        status: 200,
+        type: "basic",
+        redirected: false,
+        headers: jsHeaders,
+        body: {
+          getReader: () => {
+            state.readers += 1;
+            return {
+              read: () => new Promise(() => {}),
+              cancel: () => {
+                state.cancelled += 1;
+                return cancel();
+              },
+            };
+          },
+        },
+      });
+    return { state, give };
+  }
+
+  it("F7: an answer that arrives after stop() has its body cancelled", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    const late = lateAnswer();
+    const { guard } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    guard.stop();
+    await settle();
+    late.give();
+    await settle();
+    expect(late.state.cancelled).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ["answers with no promise", () => undefined],
+    [
+      "throws",
+      () => {
+        throw new Error("locked");
+      },
+    ],
+  ])("a reader whose cancel() %s does not throw out of the budget timer or of stop()", async (_name, cancel) => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    const late = lateAnswer(cancel);
+    const { guard, service } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs);
+    late.give();
+    await settle();
+    expect(late.state.readers).toBe(1);
+    await advance(INTEGRITY.budgetMs); // the budget ends the read
+    expect(late.state.cancelled).toBeGreaterThanOrEqual(1);
+    expect(() => guard.stop()).not.toThrow();
+    expect(unhandled).toEqual([]);
+    expect(reports(service)).toEqual([]);
+  });
+});
+
+describe("stop() and a handshake in flight", () => {
+  it("a handshake in flight when stop() is called does not attach a report that became ready before stop()", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: bytes("x") });
+    const service = fakeService({ nowMs: () => Date.now() });
+    let release: (() => void) | undefined;
+    let hold = false;
+    const { guard } = setup({
+      fetch: vi.fn<GuardFetch>(async (url, init) => {
+        if (hold && url === CHALLENGE_URL) await new Promise<void>((resolve) => (release = resolve));
+        return service.fetch(url, init);
+      }),
+    });
+    await guard.attest();
+    await advance(INTEGRITY.delayMs - 1);
+    hold = true;
+    const explicit = guard.attest(); // waits on its challenge
+    await advance(1); // the report is ready and waits for this handshake to end
+    guard.stop();
+    hold = false;
+    release?.();
+    await explicit;
+    await settle();
+    expect(reports(service)).toEqual([]);
+    // It is not lost: the next handshake of this Guard carries it.
+    await guard.attest();
+    expect(reports(service)).toHaveLength(1);
+    guard.stop();
+  });
+});
+
+// A randomized differential test: plan() and locate() against a plain reference of the rule, as the third review ran
+// against the earlier rule. The generator is the reviewer's.
+
+interface RefScript {
+  url: string;
+  /** The query string of the URL, "" for none. */
+  search: string;
+  path: string;
+  size: number;
+  listed: boolean;
+  loaded: boolean;
+}
+
+const JS_TYPES = new Set(["", "module"]);
+for (const a of ["text", "application"]) {
+  for (const x of ["", "x-"]) for (const l of ["java", "ecma"]) JS_TYPES.add(`${a}/${x}${l}script`);
+}
+
+function refDecode(pathname: string): string {
+  try {
+    return pathname
+      .split("/")
+      .map((segment) => (segment.toLowerCase().includes("%2f") ? segment : decodeURIComponent(segment)))
+      .join("/");
+  } catch {
+    return pathname;
+  }
+}
+
+interface RefElement {
+  kind: "script" | "link";
+  attr: string;
+  type?: string;
+}
+
+/** The qualified scripts of a page, in the order they are first seen (Resource Timing, scripts, links). */
+function refScripts(timingList: Entry[] | null, elements: RefElement[]): RefScript[] {
+  const seen: RefScript[] = [];
+  const get = (value: string): RefScript | undefined => {
+    if (value === "" || value.length > 2048) return undefined;
+    let url: URL;
+    try {
+      url = new URL(value, location.href);
+    } catch {
+      return undefined;
+    }
+    if (url.origin !== location.origin || (url.protocol !== "http:" && url.protocol !== "https:")) return undefined;
+    url.hash = "";
+    if (url.href.length > 2048) return undefined;
+    let record = seen.find((item) => item.url === url.href);
+    if (!record) {
+      record = {
+        url: url.href,
+        search: url.search,
+        path: refDecode(url.pathname),
+        size: 0,
+        listed: false,
+        loaded: false,
+      };
+      seen.push(record);
+    }
+    return record;
+  };
+  if (timingList) {
+    for (const entry of timingList) {
+      const record = get(entry.name);
+      if (!record) continue;
+      record.loaded = true;
+      record.size = Math.max(record.size, entry.decodedBodySize ?? 0);
+      if (entry.initiatorType === "script") record.listed = true;
+    }
+  }
+  for (const kind of ["script", "link"] as const) {
+    for (const element of elements) {
+      if (element.kind !== kind) continue;
+      if (kind === "script" && !JS_TYPES.has((element.type ?? "").trim().toLowerCase())) continue;
+      const record = get(element.attr);
+      if (record) record.listed = true;
+    }
+  }
+  const timed = timingList !== null;
+  const full = timed && timingList.length >= 250;
+  const out: RefScript[] = [];
+  for (const record of seen) {
+    if (!record.listed) continue;
+    if (timed && !record.loaded) {
+      if (!full) continue;
+      record.size = Number.POSITIVE_INFINITY;
+    }
+    out.push(record);
+  }
+  return out;
+}
+
+/**
+ * The rule, plainly: per Build the candidates for its first file, and for every candidate the files the Build maps
+ * to if that candidate is the one that holds the marker.
+ */
+function refPlan(markers: { b: unknown; f: unknown }[], scripts: RefScript[], skip: (b: string) => boolean) {
+  const builds: { build: string; first: unknown; listed: Map<string, number> }[] = [];
+  // (d) The first 64 entries are scanned; the first 8 distinct Builds among them are read.
+  for (const marker of markers.slice(0, 64)) {
+    if (builds.length >= 8) break;
+    if (typeof marker.b !== "string" || !/^bld_[0-9a-f]{24}$/.test(marker.b) || !Array.isArray(marker.f)) continue;
+    if (builds.some((build) => build.build === marker.b)) continue;
+    const listed = new Map<string, number>(); // path -> first index
+    (marker.f as unknown[]).slice(0, 32).forEach((path, i) => {
+      if (typeof path === "string" && path.length >= 1 && path.length <= 256 && !listed.has(path)) listed.set(path, i);
+    });
+    builds.push({ build: marker.b, first: (marker.f as unknown[])[0], listed });
+  }
+  const out: { build: string; candidates: string[]; mapped: { i: number; url: string; size: number }[][] }[] = [];
+  for (const build of builds) {
+    if (out.length >= 4 || skip(build.build)) continue;
+    const first = build.first;
+    if (typeof first !== "string" || !build.listed.has(first)) continue;
+    const candidates: RefScript[] = [];
+    for (const script of scripts) {
+      if (script.path.endsWith(`/${first}`) && !candidates.some((taken) => taken.path === script.path)) {
+        candidates.push(script);
+      }
+    }
+    if (candidates.length === 0 || candidates.length > 4) continue;
+    // (a) A candidate that cannot be fetched (not vouched for, or over 2 MB) cannot be examined: fail closed.
+    if (candidates.some((candidate) => candidate.size > 2 * MB)) continue;
+    const others = builds.filter((other) => other.build !== build.build).flatMap((other) => [...other.listed.keys()]);
+    const mapped = candidates.map((candidate) => {
+      const base = candidate.path.slice(0, candidate.path.length - first.length);
+      const files: { i: number; url: string; size: number }[] = [];
+      for (const [path, i] of [...build.listed].sort((x, y) => x[1] - y[1])) {
+        const at = scripts.filter((item) => item.path === base + path);
+        // The first file is the candidate itself; (c) another file is used only when exactly one loaded URL has its
+        // path, with the candidate's query string.
+        const script = path === first ? candidate : at[0];
+        if (!script) continue;
+        const usable = path === first || (at.length === 1 && script.search === candidate.search);
+        const shared = others.some((path2) => script.path.endsWith(`/${path2}`));
+        files.push({ i, url: script.url, size: shared || !usable ? Number.POSITIVE_INFINITY : script.size });
+      }
+      return files;
+    });
+    out.push({ build: build.build, candidates: candidates.map((candidate) => candidate.url), mapped });
+  }
+  return out;
+}
+
+function rng(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const SUBDIRS = ["", "", "utils/", "a/", "a/utils/", "b/", "utils/utils/", "a b/"];
+const NAMES = ["index.js", "main.js", "a.js", "m.mjs", "Main.js", "é.js"];
+const BASES = ["/", "/a/", "/b/", "/a/b/", "/utils/", "/app/utils/", "/A/", "/app/", "/legacy/"];
+const BUILDS = [
+  BUILD,
+  OTHER,
+  "bld_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "bld_bbbbbbbbbbbbbbbbbbbbbbbb",
+  "bld_cccccccccccccccccccccccc",
+];
+
+function generate(random: () => number) {
+  const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)] as T;
+  const chance = (p: number) => random() < p;
+  const markers: { b: unknown; f: unknown }[] = [];
+  const allPaths: string[] = [];
+  const buildCount = 1 + Math.floor(random() * (chance(0.1) ? 5 : 3));
+  for (let n = 0; n < buildCount; n += 1) {
+    const f: unknown[] = [];
+    const count = 1 + Math.floor(random() * 6);
+    for (let k = 0; k < count; k += 1) {
+      if (chance(0.05)) f.push(pick([null, "", 7, "x".repeat(300), "/main.js", "utils/"]));
+      else {
+        const path = pick(SUBDIRS) + pick(NAMES);
+        f.push(path);
+        allPaths.push(path);
+      }
+    }
+    if (chance(0.1) && f.length > 0) f.push(f[0]);
+    markers.push({ b: chance(0.1) ? pick([BUILD, "bld_bad", 3]) : BUILDS[n], f: chance(0.03) ? "nope" : f });
+  }
+  const mode = pick(["timed", "timed", "timed", "timed", "none", "full"] as const);
+  const timingList: Entry[] = [];
+  const elements: RefElement[] = [];
+  const count = Math.floor(random() * 9);
+  for (let k = 0; k < count; k += 1) {
+    let path = pick(BASES) + (chance(0.85) && allPaths.length > 0 ? pick(allPaths) : pick(SUBDIRS) + pick(NAMES));
+    if (chance(0.08)) {
+      const at = Math.floor(random() * path.length);
+      const c = path[at] as string;
+      if (/[a-z.]/i.test(c)) path = `${path.slice(0, at)}%${c.charCodeAt(0).toString(16)}${path.slice(at + 1)}`;
+    }
+    if (chance(0.06)) {
+      const at = path.indexOf("/", 1 + Math.floor(random() * path.length));
+      if (at > 0) path = `${path.slice(0, at)}${pick(["%2F", "%2f"])}${path.slice(at + 1)}`;
+    }
+    if (chance(0.04)) path = path.replace("/", pick(["/%ZZ", "/%E0%A4/", "//", "/./", "/x/../"]));
+    path = path.replace(/ /g, chance(0.5) ? "%20" : " ");
+    let url = (chance(0.08) ? "https://cdn.example" : chance(0.5) ? ORIGIN : "") + path;
+    if (chance(0.2)) url += pick(["?v=1", "?v=2", "?", `?${"q".repeat(2100)}`]);
+    if (chance(0.1)) url += "#frag";
+    const loaded = chance(0.85);
+    const size = chance(0.1) ? 3 * MB : chance(0.5) ? 1234 : undefined;
+    const source = pick(["script", "script", "script", "link", "timing-script", "timing-other", "both"] as const);
+    const name = (() => {
+      try {
+        return new URL(url, location.href).href.replace(/#.*$/, "");
+      } catch {
+        return url;
+      }
+    })();
+    const entry = (initiatorType: string): Entry => ({
+      name,
+      initiatorType,
+      ...(size === undefined ? {} : { decodedBodySize: size }),
+    });
+    if (source === "timing-script") timingList.push(entry("script"));
+    else if (source === "timing-other") timingList.push(entry(pick(["other", "fetch", "link"])));
+    else {
+      const kind = source === "link" ? "link" : "script";
+      const type =
+        kind === "script" && chance(0.3)
+          ? pick([
+              "module",
+              "text/javascript",
+              " Application/X-EcmaScript ",
+              "application/json",
+              "text/plain",
+              "importmap",
+            ])
+          : undefined;
+      elements.push({ kind, attr: url, ...(type === undefined ? {} : { type }) });
+      if (loaded) timingList.push(entry(kind));
+      if (source === "both" && chance(0.5)) timingList.push(entry("script"));
+    }
+  }
+  if (mode === "full") {
+    for (let k = 0; k < 250; k += 1) timingList.push({ name: `${ORIGIN}/img/${k}.png`, initiatorType: "img" });
+  }
+  if (chance(0.3)) timingList.sort(() => random() - 0.5);
+  const skipped = new Set(BUILDS.filter(() => chance(0.15)));
+  return { markers, mode, timingList, elements, skipped };
+}
+
+describe("plan() and locate() against a reference of the rule", () => {
+  const plainJson = (value: unknown) =>
+    JSON.stringify(value, (_key, item) => (item === Number.POSITIVE_INFINITY ? "Infinity" : item));
+
+  for (const seed of [1, 2, 3, 20261114, 0xdecafbad]) {
+    it(`seed ${seed}: 4,000 generated pages`, () => {
+      const random = rng(seed);
+      const disagreements: string[] = [];
+      const stats = { builds: 0, candidates: 0, files: 0, unfetchable: 0, severalCandidates: 0 };
+      for (let n = 0; n < 4_000; n += 1) {
+        const page = generate(random);
+        document.head.innerHTML = "";
+        entries.length = 0;
+        for (const element of page.elements) {
+          const node = document.createElement(element.kind);
+          if (element.kind === "script") {
+            if (element.type !== undefined) node.setAttribute("type", element.type);
+            node.setAttribute("src", element.attr);
+          } else {
+            node.setAttribute("rel", "modulepreload");
+            node.setAttribute("href", element.attr);
+          }
+          document.head.appendChild(node);
+        }
+        entries.push(...page.timingList);
+        const spy = vi.spyOn(performance, "getEntriesByType");
+        if (page.mode === "none") spy.mockImplementation(() => ({ length: 0 }) as unknown as PerformanceEntryList);
+        else {
+          spy.mockImplementation((type) =>
+            type === "resource" ? ([...entries] as unknown as PerformanceEntryList) : [],
+          );
+        }
+        registry[KEY] = page.markers;
+        const skip = (build: string) => page.skipped.has(build);
+        const actual = plan(skip).map((planned) => {
+          return {
+            build: planned.build,
+            candidates: planned.candidates.map((script) => script.url),
+            mapped: planned.candidates.map((script) => locate(planned, script)),
+          };
+        });
+        const expected = refPlan(
+          page.markers,
+          refScripts(page.mode === "none" ? null : page.timingList, page.elements),
+          skip,
+        );
+        for (const build of actual) {
+          stats.builds += 1;
+          stats.candidates += build.candidates.length;
+          if (build.candidates.length > 1) stats.severalCandidates += 1;
+          for (const file of build.mapped.flat()) {
+            stats.files += 1;
+            if (file.size === Number.POSITIVE_INFINITY) stats.unfetchable += 1;
+          }
+        }
+        if (plainJson(actual) !== plainJson(expected)) {
+          disagreements.push(
+            plainJson({ n, page: { ...page, skipped: [...page.skipped] }, actual, expected }).slice(0, 3000),
+          );
+          if (disagreements.length >= 3) break;
+        }
+      }
+      console.info(`differential seed ${seed}: ${JSON.stringify(stats)}`);
+      expect(stats.builds).toBeGreaterThan(500);
+      expect(stats.severalCandidates).toBeGreaterThan(50);
+      expect(disagreements).toEqual([]);
+    }, 120_000);
+  }
+});
+
+describe("worst-case time of plan() (third review F8, PB-06)", () => {
+  it("64 Builds of 32 nested same-name paths, 1,500 long scripts that end like all of them", () => {
+    const nested = Array.from({ length: 32 }, (_, i) => `${"dddddd/".repeat(i)}x.js`);
+    const long = "dddddd/".repeat(280); // ~1.96 KB
+    const names = Array.from({ length: 3 * INTEGRITY.scanMax }, (_, i) => `${ORIGIN}/${long}x.js?${i}`);
+    const third = INTEGRITY.scanMax;
+    vi.spyOn(Document.prototype, "querySelectorAll").mockImplementation(((selector: string) =>
+      (selector.startsWith("script") ? names.slice(third, 2 * third) : names.slice(2 * third)).map((src) => ({
+        src,
+        href: src,
+        getAttribute: () => null,
+      }))) as unknown as typeof document.querySelectorAll);
+    timing(names.map((name) => ({ name, initiatorType: "script" })));
+    const best = (markers: unknown) => {
+      registry[KEY] = markers;
+      let elapsed = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now();
+        const planned = plan(() => false);
+        for (const build of planned) for (const script of build.candidates) locate(build, script);
+        elapsed = Math.min(elapsed, performance.now() - started);
+      }
+      return elapsed;
+    };
+    const build = (n: number) => `bld_${String(n).padStart(24, "0")}`;
+    const a = best(Array.from({ length: 64 }, (_, n) => ({ b: build(n), f: nested })));
+    const b = best(
+      Array.from({ length: 64 }, (_, n) => ({
+        b: build(n),
+        f: ["x.js", ...Array.from({ length: 31 }, (_, i) => `q${i}/x.js`)],
+      })),
+    );
+    console.info(`guard integrity plan(), third review shapes: A ${a.toFixed(2)} ms, B ${b.toFixed(2)} ms`);
+    expect(Math.max(a, b)).toBeLessThan(25);
+  });
+
+  it("at most 8 distinct Builds are read", () => {
+    registry[KEY] = Array.from({ length: 12 }, (_, n) => ({
+      b: `bld_${String(n).padStart(24, "0")}`,
+      f: [`f${n}.js`],
+    }));
+    for (let n = 0; n < 12; n += 1) script(`/f${n}.js`);
+    const reported = new Set<string>();
+    const seen: string[] = [];
+    for (let round = 0; round < 12; round += 1) {
+      const [next] = plan((build) => reported.has(build));
+      if (!next) break;
+      reported.add(next.build);
+      seen.push(next.build);
+    }
+    expect(seen).toHaveLength(8);
+    expect(INTEGRITY.markersMax).toBe(8);
+  });
+
+  it("a Build registered after 8 repeats of another is still read, and the cross-Build rule still applies", () => {
+    const a = { b: BUILD, f: ["a/main.js", "shared.js"] };
+    registry[KEY] = [...Array.from({ length: 8 }, () => a), { b: OTHER, f: ["b/main.js", "shared.js"] }];
+    for (const path of ["/app/a/main.js", "/app/b/main.js", "/app/shared.js"]) script(path);
+    expect(plan(() => false).map((planned) => planned.build)).toEqual([BUILD, OTHER]);
+    expect(mapped()).toEqual([
+      { i: 0, url: `${ORIGIN}/app/a/main.js`, size: 0 },
+      { i: 1, url: `${ORIGIN}/app/shared.js`, size: Number.POSITIVE_INFINITY },
+    ]);
+  });
+
+  it("at most 64 registry entries are scanned", () => {
+    const filler = { b: BUILD, f: ["a/main.js"] };
+    registry[KEY] = [...Array.from({ length: 64 }, () => filler), { b: OTHER, f: ["b/main.js"] }];
+    script("/app/b/main.js");
+    expect(plan(() => false)).toEqual([]);
+    expect(INTEGRITY.entriesMax).toBe(64);
   });
 });

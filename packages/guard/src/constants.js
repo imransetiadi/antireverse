@@ -47,11 +47,14 @@ export const INTEGRITY = Object.freeze({
   pathMax: 256,
   /** A page URL longer than this is not a candidate. */
   urlMax: 2048,
-  /** At most: registry entries read, Builds planned at once, URLs read per source, memo entries kept. */
-  markersMax: 64,
+  /** At most: registry entries scanned, distinct Builds read, Builds planned at once, URLs read per source, memo entries kept. */
+  entriesMax: 64,
+  markersMax: 8,
   buildsMax: 4,
   scanMax: 500,
   memoMax: 64,
+  /** Scripts that may be a Build's first file, at most: with more, the Build is not looked at. */
+  candidatesMax: 4,
   /** Resource Timing entries from which its buffer may be full (the default size). */
   timingFull: 250,
   /** A larger file is not hashed. */
@@ -64,6 +67,8 @@ export const INTEGRITY = Object.freeze({
   memoMs: 86_400_000,
   /** How long a collection keeps other tabs from collecting the same Build. */
   claimMs: 60_000,
+  /** How long a report that waits for a handshake keeps them from it (the next re-attest comes sooner). */
+  pendingMs: 300_000,
 });
 
 /** localStorage key of the device id. */

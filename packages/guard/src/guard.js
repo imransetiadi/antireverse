@@ -12,7 +12,7 @@ import {
   SIGNATURE_HEADER,
 } from "./constants.js";
 import { base64url, createSessionKey, randomDeviceId, sha256, signText, tokenJti } from "./crypto.js";
-import { collect, remember } from "./integrity.js";
+import { collect, remember, reported } from "./integrity.js";
 import {
   bodyBytes,
   callerContentType,
@@ -310,6 +310,20 @@ function build(opts) {
     }
   }
 
+  /** The first-party storage of the device id and the integrity memo, or null. */
+  const store = () => optionOrGlobal(opts.storage, "localStorage");
+
+  /**
+   * Keeps a report for the next handshake. Until then other tabs are kept from collecting its Build: the memo holds
+   * a claim that outlasts the wait (`pendingMs`).
+   * @param {import("./integrity.js").Report} report
+   */
+  function hold(report) {
+    pending = report;
+    const at = now();
+    remember(store(), `${appId}/${report.build}`, at + INTEGRITY.pendingMs - INTEGRITY.memoMs, at);
+  }
+
   /**
    * Runs `task` now, or when the page is next visible. Throws when the page cannot be watched.
    * @param {() => void} task
@@ -345,7 +359,7 @@ function build(opts) {
           appId,
           optionOrGlobal(opts.crypto, "crypto"),
           optionOrGlobal(opts.navigator, "navigator"),
-          optionOrGlobal(opts.storage, "localStorage"),
+          store(),
           now,
           running,
         );
@@ -353,7 +367,7 @@ function build(opts) {
         // A report is kept even when stop() came as the collection ended: its Build stays claimed, so only this
         // Guard can still send it, with its next handshake.
         if (report === null) return;
-        pending = report;
+        hold(report);
         if (!early || started !== generation) return;
         await inFlight;
         if (started !== generation) return;
@@ -393,7 +407,7 @@ function build(opts) {
   async function run(early) {
     const started = generation;
     try {
-      const token = await handshake();
+      const token = await handshake(started);
       if (token !== null) {
         current = token.value;
         signer = { value: token.value, jti: token.jti, privateKey: token.privateKey };
@@ -416,9 +430,10 @@ function build(opts) {
 
   /**
    * challenge → attest. Resolves null or throws on any failure.
+   * @param {number} started The generation the handshake belongs to: after stop() it carries no integrity report.
    * @returns {Promise<{ value: string, lifetimeMs: number, jti: string | null, privateKey: unknown } | null>}
    */
-  async function handshake() {
+  async function handshake(started) {
     const fetch = resolveFetch();
     const crypto = optionOrGlobal(opts.crypto, "crypto");
     if (typeof appId !== "string" || endpoint === "" || fetch === null || crypto === null) return null;
@@ -430,9 +445,14 @@ function build(opts) {
     const signals = collectSignals(optionOrGlobal(opts.navigator, "navigator"));
     const device = deviceId(crypto);
     const { jkt, jwk, pair } = await getSessionKey(crypto);
-    // The waiting integrity report goes with this request, and waits again when the request fails.
-    const report = pending;
-    pending = null;
+    // The waiting integrity report goes with this request, and waits again when the request fails. Not after
+    // stop(): the report then waits for a handshake made after it. And not when another tab reported its Build
+    // meanwhile: then it is dropped.
+    let report = started === generation ? pending : null;
+    if (report !== null) {
+      pending = null;
+      if (reported(store(), `${appId}/${report.build}`, now())) report = null;
+    }
     /** @type {Record<string, unknown>} */
     let answer;
     try {
@@ -445,13 +465,11 @@ function build(opts) {
         ...(report === null ? {} : { integrity: report }),
       });
     } catch (error) {
-      pending ??= report;
+      if (report !== null && pending === null) hold(report);
       throw error;
     }
     delivered = report !== null;
-    if (report !== null) {
-      remember(optionOrGlobal(opts.storage, "localStorage"), `${appId}/${report.build}`, now(), now());
-    }
+    if (report !== null) remember(store(), `${appId}/${report.build}`, now(), now());
 
     const token = answer.token;
     const expiresAt = typeof answer.expires_at === "string" ? Date.parse(answer.expires_at) : Number.NaN;
