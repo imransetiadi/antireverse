@@ -1,0 +1,349 @@
+// The release-gate catalog (slice 18e): one entry per checklist line of QASUITE §16 (release exit criteria) and
+// SECURITY §12 (release security gate). Each entry lists the checks that run today, the parts that cannot be checked
+// yet (with the reason and the slice expected to add the check), and the entries it requires. A test reads both
+// documents and fails on a line without an entry, or an entry without a line.
+
+import { checklist } from "./docs.ts";
+
+export const CHECKS = {
+  verify: {
+    title: "Lint, types, unit, integration and HTTP e2e tests (npm run verify)",
+    slow: true,
+    online: false,
+  },
+  "e2e-browser": { title: "Playwright browser journeys (npm run e2e)", slow: true, online: false },
+  "matrix-audit": {
+    title: "Audit-coverage matrix (every administrative route writes an audit entry)",
+    slow: false,
+    online: false,
+  },
+  "matrix-tenant": { title: "Cross-tenant isolation tests", slow: false, online: false },
+  "matrix-authz": { title: "Authorization tests (key kinds, 401/403)", slow: false, online: false },
+  "matrix-privacy": {
+    title: "Privacy schema tests (Event allowlist, nothing else leaves or is stored)",
+    slow: false,
+    online: false,
+  },
+  "rrs-stand-in": {
+    title: "Stand-in RRS regression: the slice-13 RRS gate on the reference Build at the recorded baseline (D-097)",
+    slow: false,
+    online: false,
+  },
+  "bench-shield": { title: "Shield overhead bench against PB-01 and PB-02", slow: true, online: false },
+  "load-smoke": {
+    title: "Local load smoke of the API against PB-21, SLO-02 and SLO-01 (client-side percentiles)",
+    slow: false,
+    online: false,
+  },
+  "npm-audit": { title: "npm audit: no High or Critical dependency vulnerability", slow: false, online: true },
+} as const satisfies Record<string, { title: string; slow: boolean; online: boolean }>;
+
+export type CheckId = keyof typeof CHECKS;
+export const CHECK_IDS = Object.keys(CHECKS) as CheckId[];
+
+export interface Gap {
+  /** Why this part cannot be checked yet. */
+  reason: string;
+  /** The slice expected to add the check (PRD §18), or `unplanned`. */
+  slice: string;
+}
+
+export interface Criterion {
+  id: string;
+  title: string;
+  /** A checklist line of QASUITE §16 or SECURITY §12, or (doc `gate`) a criterion of the gate's own. */
+  source: { doc: "QASUITE.md" | "SECURITY.md" | "gate"; section: string; text: string };
+  checks: string[];
+  gaps: Gap[];
+  /** Other criteria this one includes (QASUITE "Security release gate complete"). */
+  requires: string[];
+  /** Facts the report shows beside the criterion without changing its state. */
+  notes?: string[];
+  /** The gate's own consistency check: shown and able to block, never counted as a checkable criterion that passed. */
+  integrity?: true;
+}
+
+export const SOURCES = [
+  { doc: "QASUITE.md", section: "16" },
+  { doc: "SECURITY.md", section: "12" },
+] as const;
+
+const qa = (text: string) => ({ doc: "QASUITE.md", section: "16", text }) as const;
+const sec = (text: string) => ({ doc: "SECURITY.md", section: "12", text }) as const;
+
+export const CRITERIA: readonly Criterion[] = [
+  {
+    id: "qa16-gates",
+    title: "Quality gates G0–G4",
+    source: qa("Gates G0–G4 green on the release candidate."),
+    checks: ["verify", "e2e-browser", "matrix-tenant", "matrix-authz", "bench-shield", "load-smoke"],
+    gaps: [
+      {
+        reason:
+          "G0–G4 also need a secret scan, security scans, detection replay, the equivalence corpus, accessibility checks, compatibility matrices, RRS at T2 and T3, a staging Pentest Campaign, fuzzing, a chaos subset, AI evaluations and a full load test; none has a runner yet",
+        slice: "18",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "qa16-resistance",
+    title: "TC-PRV-006 thresholds",
+    source: qa("TC-PRV-006 thresholds met; no Objective regressed by a tier."),
+    checks: [],
+    gaps: [
+      {
+        reason:
+          "TC-PRV-006 needs a real AI agent: real assessments wait for the owner's model provider key and spend caps (D-067); only the stand-in runs locally, and its score is tracked against a baseline instead (gate-rrs-regression, D-097)",
+        slice: "unplanned",
+      },
+      {
+        reason: "'no Objective regressed by a tier' needs the previous release's Assessment results; none are kept",
+        slice: "18",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "qa16-detection",
+    title: "Detection recall and false positives",
+    source: qa("Detection recall ≥ 95 % and false positives ≤ 0.1 % per rule pack."),
+    checks: [],
+    gaps: [
+      {
+        reason: "no labelled attack and benign corpus per rule pack exists to measure recall and false positives",
+        slice: "unplanned",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "qa16-real-browser",
+    title: "Real-browser corpus trusted",
+    source: qa("Real-browser corpus ≥ 99.9 % `trusted`."),
+    checks: [],
+    gaps: [{ reason: "no real-browser corpus or device farm runs Guard attestation at scale", slice: "unplanned" }],
+    requires: [],
+  },
+  {
+    id: "qa16-performance",
+    title: "Performance budgets",
+    source: qa("All performance budgets met; no unaccepted regression."),
+    checks: ["bench-shield", "load-smoke"],
+    gaps: [
+      {
+        reason:
+          "only PB-01, PB-02, PB-21, SLO-01 and SLO-02 are measured here; PB-03–PB-20 and PB-22 need Redis, browsers, mobile profiles, the pipeline under load or the Harden corpus, and regressions need a stored baseline",
+        slice: "18",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "qa16-defects",
+    title: "No open S1/S2, no new High/Critical pentest Finding",
+    source: qa("No open S1 or S2; no new High or Critical Finding from TS-PENTEST."),
+    checks: [],
+    gaps: [
+      { reason: "defects are not tracked in a system the gate can read", slice: "unplanned" },
+      { reason: "TS-PENTEST needs the Pentest Campaign", slice: "15" },
+    ],
+    requires: [],
+  },
+  {
+    id: "qa16-security-gate",
+    title: "Security release gate complete",
+    source: qa("Security release gate (SECURITY.md §12) complete."),
+    checks: [],
+    gaps: [],
+    requires: [
+      "sec12-threat-model",
+      "sec12-vulnerabilities",
+      "sec12-isolation",
+      "sec12-sdk-artifacts",
+      "sec12-rrs-pentest",
+      "sec12-prompt-injection",
+      "sec12-kill-switches",
+      "sec12-audit-events",
+    ],
+  },
+  {
+    id: "qa16-upgrade",
+    title: "Upgrade path from every SDK minor",
+    source: qa("Upgrade path tested from every supported SDK minor."),
+    checks: [],
+    gaps: [{ reason: "no SDK minor has been released, so there is no upgrade path to test", slice: "unplanned" }],
+    requires: [],
+  },
+  {
+    id: "qa16-rollback",
+    title: "Rollback rehearsed",
+    source: qa("Rollback rehearsed."),
+    checks: [],
+    gaps: [{ reason: "there is no staging deployment to rehearse a rollback on", slice: "18" }],
+    requires: [],
+  },
+  {
+    id: "sec12-threat-model",
+    title: "Threat model updated",
+    source: sec("Threat model updated for every changed trust boundary."),
+    checks: [],
+    gaps: [
+      {
+        reason: "a human review of SECURITY §4–§6 against the release's changes; not machine-checkable",
+        slice: "unplanned",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "sec12-vulnerabilities",
+    title: "No open Critical/High vulnerability",
+    source: sec("No open Critical or High vulnerability in code, dependencies or images."),
+    checks: ["npm-audit"],
+    gaps: [{ reason: "no static analysis of our code and no container images to scan exist yet", slice: "18" }],
+    requires: [],
+  },
+  {
+    id: "sec12-isolation",
+    title: "Cross-tenant, authorization and privacy tests",
+    source: sec("Cross-tenant matrix, authorization matrix and privacy schema tests pass."),
+    checks: ["matrix-tenant", "matrix-authz", "matrix-privacy"],
+    gaps: [],
+    requires: [],
+  },
+  {
+    id: "sec12-sdk-artifacts",
+    title: "SDK artifacts reproducible and signed",
+    source: sec("SDK artifacts are reproducible, signed and carry provenance and a bill of materials."),
+    checks: [],
+    gaps: [
+      {
+        reason: "no SDK release pipeline exists (no published artifacts, signatures, provenance or SBOM)",
+        slice: "18",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "sec12-rrs-pentest",
+    title: "Own Builds pass the RRS gate; no new High pentest Finding",
+    source: sec("Our own Builds pass the RRS gate; no new High Finding from the staging Pentest Campaign."),
+    checks: [],
+    gaps: [
+      {
+        reason:
+          "the RRS gate's thresholds need a real AI agent (D-097); the stand-in's score is tracked against a baseline instead (gate-rrs-regression)",
+        slice: "unplanned",
+      },
+      { reason: "the staging Pentest Campaign does not exist yet", slice: "15" },
+    ],
+    requires: [],
+  },
+  {
+    id: "sec12-prompt-injection",
+    title: "Prompt-injection evaluations",
+    source: sec("Prompt-injection evaluations pass."),
+    checks: [],
+    gaps: [
+      {
+        reason: "the AI evaluation suite (TS-AI) needs a real model; only the stand-in agent runs (D-067)",
+        slice: "unplanned",
+      },
+    ],
+    requires: [],
+  },
+  {
+    id: "sec12-kill-switches",
+    title: "Kill switches and rollback exercised in staging",
+    source: sec("Kill switches and rollback were exercised in staging for this release."),
+    checks: [],
+    gaps: [{ reason: "there is no staging environment to exercise them in", slice: "18" }],
+    requires: [],
+  },
+  {
+    id: "sec12-audit-events",
+    title: "Audit events for every administrative action",
+    source: sec("Audit events exist for every new administrative action."),
+    checks: ["matrix-audit"],
+    gaps: [],
+    requires: [],
+  },
+  {
+    id: "gate-rrs-regression",
+    title: "Stand-in RRS does not regress",
+    source: {
+      doc: "gate",
+      section: "D-097",
+      text: "The stand-in agent's RRS on the reference Build stays at or above the baseline in tools/gate/baselines/rrs-stand-in.json.",
+    },
+    checks: ["rrs-stand-in"],
+    gaps: [],
+    requires: [],
+    notes: [
+      "Baseline recorded 2026-11-14: balanced 24, maximum 24 (stand-in, T1).",
+      "W4 Tamper is achieved because an ES module Build gets no integrity check (Harden --integrity refuses ESM input): a Harden follow-up.",
+    ],
+  },
+];
+
+/** Catalog errors: duplicate ids, unknown checks or requirements, empty entries, requirement cycles. */
+export function validateCatalog(criteria: readonly Criterion[], checks: Record<string, unknown>): string[] {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  for (const c of criteria) {
+    if (ids.has(c.id)) errors.push(`duplicate id ${c.id}`);
+    ids.add(c.id);
+    for (const check of c.checks) if (!(check in checks)) errors.push(`${c.id}: unknown check ${check}`);
+    if (c.checks.length + c.gaps.length + c.requires.length === 0) errors.push(`${c.id}: no check, gap or requirement`);
+  }
+  for (const c of criteria)
+    for (const r of c.requires) if (!ids.has(r)) errors.push(`${c.id}: unknown requirement ${r}`);
+  const byId = new Map(criteria.map((c) => [c.id, c]));
+  const visit = (id: string, path: string[]): void => {
+    if (path.includes(id)) {
+      errors.push(`requirement cycle: ${[...path, id].join(" → ")}`);
+      return;
+    }
+    for (const r of byId.get(id)?.requires ?? []) if (byId.has(r)) visit(r, [...path, id]);
+  };
+  for (const c of criteria) visit(c.id, []);
+  return [...new Set(errors)];
+}
+
+/**
+ * The catalog against the documents (review M3): every checklist line of each source maps to exactly one entry, and
+ * every entry of a source is a line of it. Run by the gate itself, so drift fails the release, not only a test.
+ */
+export function catalogDrift(
+  docs: Readonly<Record<string, string>>,
+  criteria: readonly Criterion[] = CRITERIA,
+): string[] {
+  const problems: string[] = [];
+  for (const { doc, section } of SOURCES) {
+    const text = docs[doc];
+    if (text === undefined) {
+      problems.push(`${doc}: not read`);
+      continue;
+    }
+    let lines: string[];
+    try {
+      lines = checklist(text, section).map((l) => l.text);
+    } catch (error) {
+      problems.push(`${doc} §${section}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const own = criteria.filter((c) => c.source.doc === doc);
+    for (const line of lines) {
+      const n = own.filter((c) => c.source.text === line).length;
+      if (n === 0) problems.push(`${doc} §${section}: unmapped line "${line}"`);
+      if (n > 1) problems.push(`${doc} §${section}: line "${line}" has ${n} entries`);
+    }
+    for (const entry of own) {
+      if (!lines.includes(entry.source.text)) {
+        problems.push(`stale entry ${entry.id}: "${entry.source.text}" is not a line of ${doc} §${section}`);
+      }
+    }
+  }
+  return problems;
+}

@@ -4,7 +4,7 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a) and SLO measurement with the operator dashboard (18d). Not built yet: Pentest Campaigns (15), plans and billing (17b), the release-gate runner and synthetic probes, and the rest of GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a) and SLO measurement with the operator dashboard (18d). The release-gate runner (18e) is built too. Not built yet: Pentest Campaigns (15), plans and billing (17b), synthetic probes, and the rest of GA hardening (18).
 
 ## What works today
 
@@ -201,6 +201,18 @@ Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the
 ## Audit log
 
 Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
+
+## Release gate
+
+`npm run gate:release` checks a release candidate against every line of QASUITE §16 and SECURITY §12 and writes a signed report to `reports/gate/` (gitignored).
+
+- **States:** each criterion is `pass`, `fail` or `not-checkable`. The verdict is `releasable` only when every criterion passes; otherwise it is `blocked`.
+- **Exit codes:** 0 releasable, 1 blocked by a failure, 2 blocked only by lines that cannot be checked yet, 3 runner error.
+- **What runs today:** `npm run verify`, the Playwright suite, the audit, tenant, authorization and privacy matrices, the stand-in RRS regression against a recorded baseline, the Shield bench against PB-01 and PB-02, and a local load smoke against PB-21, SLO-01 and SLO-02. A skipped or todo test fails its check.
+- **Options:** `--only <ids>`, `--skip-slow` (reported as not checked) and `--online` (allows `npm audit`, which contacts the registry).
+- **Signature:** the report is signed with an Ed25519 key kept outside the repository (`AR_GATE_KEY_FILE`, default `~/.config/airverse/gate-key.json`). `npm run gate:verify-report -- <dir>` accepts only the local key or `--expect <fingerprint>`.
+
+Today the verdict is `blocked`: 13 lines cannot be checked yet (real-agent RRS, Pentest Campaigns, the browser corpus, SDK signing, staging rehearsals and others), and the Shield bench misses PB-01 on the 100 KB body scenario.
 
 ## Operator SLO dashboard
 

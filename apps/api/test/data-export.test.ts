@@ -222,8 +222,11 @@ describe("organization export rate limit", () => {
 });
 
 describe("export memory", () => {
-  const FILES = 24;
-  const FILE_BYTES = 1_048_576;
+  // 12 files of 256 KiB: more files than the 8-file bound below, so a page of them in one chunk would exceed it, while
+  // the fixture stays small enough to run under a loaded full suite (24 × 1 MiB took 3.8 s alone and timed out at
+  // 30 s with the CPU oversubscribed; slice 18e's gate run).
+  const FILES = 12;
+  const FILE_BYTES = 262_144;
 
   it("holds one artifact file at a time: no chunk near the size of a page of them", async () => {
     const api = await makeTestApi();
@@ -260,6 +263,7 @@ describe("export memory", () => {
         largest = Math.max(largest, value.byteLength);
         total += value.byteLength;
       }
+      expect(FILES).toBeGreaterThan(8);
       expect(total).toBeGreaterThan(FILES * FILE_BYTES);
       expect(largest).toBeLessThan(8 * FILE_BYTES);
     } finally {

@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
 // Vitest 5 has no workspace file: every workspace is an inline project here.
-// Run one project with `npx vitest run --project <name>` (names: protocol, shield-node, guard, harden, prove, api, range, console, e2e).
+// Run one project with `npx vitest run --project <name>` (names: protocol, shield-node, guard, harden, prove, api, range, console, e2e, gate).
 // Vitest 5 no longer excludes build output by default, so every project has an explicit include.
 const include = ["test/**/*.test.{ts,tsx}"];
 const abs = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
@@ -59,6 +59,11 @@ export default defineConfig({
           include,
           setupFiles: ["./test/setup.ts"],
         },
+      },
+      {
+        extends: true,
+        // The release-gate runner (slice 18e): its own unit tests; the gate's real checks run only from `npm run gate:release`.
+        test: { name: "gate", root: "./tools/gate", environment: "node", include },
       },
       {
         extends: true,

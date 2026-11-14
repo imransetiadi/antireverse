@@ -7,3 +7,6 @@ playwright-report
 next-env.d.ts
 .DS_Store
 .env*
+
+# Release-gate reports (slice 18e): signed, local only
+reports/gate/

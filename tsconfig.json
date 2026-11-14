@@ -7,6 +7,7 @@
     { "path": "packages/prove" },
     { "path": "apps/api" },
     { "path": "apps/range" },
-    { "path": "tests/e2e" }
+    { "path": "tests/e2e" },
+    { "path": "tools/gate" }
   ]
 }

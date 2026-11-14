@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ERASE_REPORT, IP_HASH, PENDING } from "./helpers/deletion.ts";
+import { RETENTION } from "./helpers/retention.ts";
 
 // Slice 18b: Settings → Data controls and the deletion banner of the shell, rendered with the Server Actions
 // replaced by fakes.
@@ -8,6 +9,7 @@ vi.mock("@/app/actions.ts", () => ({
   requestDeletionAction: vi.fn(),
   cancelDeletionAction: vi.fn(),
   eraseSubjectAction: vi.fn(),
+  updateRetentionAction: vi.fn(),
   signOutAction: vi.fn(),
 }));
 const guard = vi.hoisted(() => ({ session: null as unknown }));
@@ -23,6 +25,7 @@ import { dataQueryFrom } from "@/features/data-controls/query.ts";
 import { SUBJECT_DRAFT_KEY, SubjectRequest } from "@/features/data-controls/subject-request.tsx";
 import { ROUTES } from "@/lib/routes.ts";
 
+const api = { calls: [] as string[], answer: null as unknown };
 const organization = { id: PENDING.organization_id, name: "Acme", created_at: "2026-11-01T00:00:00.000Z" };
 const ERASED_AFTER = "2026-11-20 09:00:00 UTC";
 
@@ -31,6 +34,21 @@ beforeEach(() => {
   vi.mocked(actions.cancelDeletionAction).mockReset();
   vi.mocked(actions.eraseSubjectAction).mockReset();
   sessionStorage.clear();
+  // No request leaves a unit test: the page's API calls are answered here (the API's default address is the owner's
+  // port 8787, which a test must never reach). A test that expects a call sets `api.answer`.
+  api.calls = [];
+  api.answer = null;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    api.calls.push(url);
+    if (api.answer === null) throw new Error(`unexpected request in a unit test: ${url}`);
+    return new Response(JSON.stringify(api.answer), { status: 200, headers: { "content-type": "application/json" } });
+  });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 describe("routes and the address of Data controls", () => {
@@ -130,7 +148,11 @@ describe("DataNotices", () => {
 
   it("the page claims no pending deletion from `?blocked=1` when none is pending", async () => {
     guard.session = { key: "k", organization, deletion: null };
+    // Without a pending deletion the page reads the retention (slice 18c): answered here, at a test address.
+    vi.stubEnv("AR_API_URL", "http://api.test");
+    api.answer = { retention: RETENTION, last_run: null };
     render(await DataControlsPage({ searchParams: Promise.resolve({ blocked: "1", done: "requested" }) }));
+    expect(api.calls).toEqual(["http://api.test/v1/organization/retention"]);
     expect(screen.queryByTestId("data-blocked")).toBeNull();
     expect(screen.queryByTestId("data-done")).toBeNull();
     expect(screen.queryByTestId("deletion-banner")).toBeNull();

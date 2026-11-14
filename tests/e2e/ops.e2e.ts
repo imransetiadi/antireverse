@@ -44,7 +44,9 @@ test("ops: operator sign-in, ten SLO panels, totals that move, sign-out", async 
   await expect(page.locator('[data-slo-id="SLO-06"] [data-testid="slo-not-measured"]')).toBeVisible();
   await expect(page.locator('[data-slo-id="SLO-08"] [data-testid="slo-status"]')).toHaveText("Not measured");
 
-  // A little traffic: three key-set fetches feed SLO-03 (policy distribution), good and total alike.
+  // A little traffic: three key-set fetches feed SLO-03 (policy distribution), good and total alike. Other specs'
+  // Shields share this API and may fetch the bundle or the key set meanwhile, so the totals rise by at least three,
+  // and every request counted in between was good.
   const before = await countsOf(page, "SLO-03");
   for (let i = 0; i < 3; i++) expect((await fetch(`${API_URL}/v1/signing-key`)).status).toBe(200);
   // The API serves reads from an aggregate up to 15 s old (readCacheMs), and sign-in filled it: Refresh again until
@@ -54,11 +56,13 @@ test("ops: operator sign-in, ten SLO panels, totals that move, sign-out", async 
       async () => {
         await page.getByTestId("ops-refresh").click();
         await page.waitForLoadState("load");
-        return countsOf(page, "SLO-03");
+        const now = await countsOf(page, "SLO-03");
+        const added = now.total - before.total;
+        return { atLeastThree: added >= 3, allGood: now.good - before.good === added };
       },
       { timeout: 30_000, intervals: [2_000] },
     )
-    .toEqual({ good: before.good + 3, total: before.total + 3 });
+    .toEqual({ atLeastThree: true, allGood: true });
   await expect(page.locator('[data-slo-id="SLO-03"]')).toHaveAttribute("data-state", "ok");
   await expect(page.locator('[data-slo-id="SLO-03"] [data-testid="slo-attainment"]')).toHaveText("100.000 %");
 

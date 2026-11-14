@@ -9,7 +9,8 @@
   "workspaces": [
     "packages/*",
     "apps/*",
-    "tests/*"
+    "tests/*",
+    "tools/*"
   ],
   "scripts": {
     "test": "vitest run",
@@ -22,7 +23,9 @@
     "dev": "concurrently --kill-others-on-fail --names api,console \"npm:dev:api\" \"npm:dev:console\"",
     "dev:api": "npm run dev -w @antireverse/api",
     "dev:console": "npm run dev -w @antireverse/console",
-    "dev:range": "npm run dev -w @antireverse/range"
+    "dev:range": "npm run dev -w @antireverse/range",
+    "gate:release": "tsx tools/gate/src/cli.ts",
+    "gate:verify-report": "tsx tools/gate/src/verify-cli.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

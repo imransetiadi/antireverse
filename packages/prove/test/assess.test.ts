@@ -258,14 +258,19 @@ describe("assess: the judging budget", () => {
       },
     ],
   };
-  const SLOW = "const t = Date.now(); while (Date.now() - t < 950) {} return a0 * 3;";
+  // Each vector sleeps 300 ms (Atomics.wait: no CPU, so an oversubscribed machine does not stretch it towards the
+  // 1,000 ms a vector may take and turn it into a judged timeout), and 200 vectors of it are far above any share used
+  // here, so the share always cuts the batch.
+  const SLOW = "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); return a0 * 3;";
 
   it("a fully judged submission decides W3 even when later ones run out of judging time", async () => {
     const outcome = await assess({
       artifact: { "a.js": "var x = 1;" },
       build: { canaries: [], routes: null, logic: slowLogic },
       tier: "T1",
-      judgeBudgetMs: 3_000,
+      // A share of 4 s per submission: the quick one (a sandbox start and 200 trivial vectors) fits even when the
+      // machine is oversubscribed; with a 1 s share it ran out under the full suite (slice 18e gate run).
+      judgeBudgetMs: 12_000,
       agent: scripted(async (toolbelt) => {
         await toolbelt.submit("W3", { function_id: "double", body: "return 0;" });
         for (let i = 0; i < 2; i++) await toolbelt.submit("W3", { function_id: "double", body: SLOW });
@@ -275,7 +280,7 @@ describe("assess: the judging budget", () => {
       result: "not_achieved",
       evidence: { summary: expect.stringMatching(/2 of 3 submissions could not be judged/) },
     });
-  }, 20_000);
+  }, 40_000);
 
   it("is not attempted (sandbox_error) only when no submission could be judged", async () => {
     const outcome = await assess({

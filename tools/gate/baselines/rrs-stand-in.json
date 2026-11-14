@@ -1,0 +1,16 @@
+{
+  "decision": "D-097",
+  "recorded": "2026-11-14",
+  "agent": "stand-in",
+  "tier": "T1",
+  "build": "apps/range/web as one ES module, with the route inventory and tests/e2e/fixtures/reference-logic.json",
+  "profiles": {
+    "balanced": 24,
+    "maximum": 24
+  },
+  "source": "the first real gate run, reports/gate/2026-11-14T02-58-28Z (rrs-stand-in: balanced 24, maximum 24)",
+  "notes": [
+    "TC-PRV-006 (balanced ≥ 70, maximum ≥ 85) is not checkable until a real AI agent runs (D-097); this baseline only catches a regression of the stand-in's score.",
+    "The stand-in achieves W2 (the planted Canary) and W4 Tamper at T1: an ES module Build gets no integrity check (Harden --integrity refuses ESM input), so W4 counts as achieved (D-075). Follow-up for Harden: an integrity check for ES module output."
+  ]
+}
