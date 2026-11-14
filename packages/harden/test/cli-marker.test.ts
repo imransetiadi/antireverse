@@ -194,6 +194,68 @@ describe("the integrity marker in the CLI", () => {
   });
 });
 
+describe("--integrity together with the integrity marker (Guard cannot watch such a Build)", () => {
+  const script = `var out = [];\n${Array.from({ length: 80 }, (_, i) => `out.push("entry number ${i} of the bundled script, value ${createHash("sha256").update(String(i)).digest("hex")}");`).join("\n")}\n`;
+  const NOTE =
+    "! Integrity marker: with --integrity this Build is not watched for tampering (the self-check wrapper hides the marker from Guard)";
+
+  it("the human report says so in one line; the exit code is unchanged", async () => {
+    const d = bundle({ "app.js": script });
+    stubRegister();
+    const r = await run(["harden", d, "--seed", "1", "--integrity", ...register], d);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe("");
+    expect(r.out.split("\n").filter((line) => line.includes("Integrity marker"))).toEqual([NOTE]);
+  });
+
+  it("--json has integrity_marker.watched: false; stderr stays empty", async () => {
+    const d = bundle({ "app.js": script });
+    stubRegister();
+    const r = await run(["harden", d, "--seed", "1", "--integrity", ...register, "--json"], d);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe("");
+    expect(JSON.parse(r.out).integrity_marker).toEqual({
+      files: ["app.js"],
+      planted_in: "app.js",
+      dropped: 0,
+      watched: false,
+    });
+  });
+
+  it("the files written are the same with and without the note's cause being reported: nothing in --out changes", async () => {
+    const d = bundle({ "app.js": script });
+    const out = join(tempDir("harden-out-"), "out");
+    const manifests = stubRegister();
+    const r = await run(["harden", d, "--seed", "1", "--out", out, "--integrity", ...register, "--json"], d);
+    expect(r.code).toBe(0);
+    expect(manifests[0]?.artifacts[0]?.sha256).toBe(sha256(readFileSync(join(out, "app.js"))));
+    // The marker is inside the wrapper's string, escaped: its literal is not in the bytes Guard would read.
+    expect(readFileSync(join(out, "app.js"), "utf8")).not.toContain(`b:"${manifests[0]?.build_id}",f:[`);
+  });
+
+  it.each([
+    ["without --integrity", ["--seed", "1"], "✓ Integrity marker: 1 file in a.mjs"],
+    [
+      "with --no-integrity-marker",
+      ["--seed", "1", "--no-integrity-marker"],
+      "  Integrity marker: off (--no-integrity-marker)",
+    ],
+  ])("no note %s", async (_name, flags, line) => {
+    const d = bundle({ "a.mjs": MODULE });
+    stubRegister();
+    const r = await run(["harden", d, ...flags, ...register], d);
+    expect(r.code).toBe(0);
+    expect(r.out.split("\n").filter((text) => text.includes("Integrity marker"))).toEqual([line]);
+  });
+
+  it("without --integrity the --json report has no `watched` field", async () => {
+    const d = bundle({ "a.mjs": MODULE });
+    stubRegister();
+    const r = await run(["harden", d, "--seed", "1", ...register, "--json"], d);
+    expect(JSON.parse(r.out).integrity_marker).toEqual({ files: ["a.mjs"], planted_in: "a.mjs", dropped: 0 });
+  });
+});
+
 describe("the Manifest's digests are the bytes on disk (what a browser will hash)", () => {
   const BOM = "\uFEFF";
   const body = (note: string) => `${MODULE}\nexport const note = ${JSON.stringify(note)};\n`;

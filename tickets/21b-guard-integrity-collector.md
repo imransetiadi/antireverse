@@ -34,7 +34,7 @@ Collector
 - [x] **What it reads:** the marker registry under `globalThis[Symbol.for("ar.build")]`, read lazily, so load order does not matter. A missing, malformed or hostile registry is ignored without throwing.
 - [x] **Which files it fetches (as built, D-103):** only same-origin URLs the browser loaded as a script.
   - A `<script>` counts only with an empty, JavaScript or `module` type, and, where Resource Timing works, only with an entry for its URL.
-  - **Anchor by content.** Candidates for the first listed file (the file Harden planted the marker in) are the loaded scripts whose path ends like it, at most 4. A candidate qualifies only if its bytes hold the marker's literal `b:"<Build id>",f:[`.
+  - **Anchor by content.** Candidates for the first listed file (the file Harden planted the marker in) are the loaded script URLs whose path ends like it, each URL on its own, at most 4. A candidate whose URL holds the Build id is not examinable. A candidate qualifies only if its bytes hold the marker's literal `b:"<Build id>",f:[`.
   - Exactly one candidate must qualify, and every candidate must be examinable. Otherwise nothing is sent for the Build.
   - Every other file is the single loaded script at exactly base + path whose query string equals the anchor's.
   - No other URL is ever fetched.
@@ -70,24 +70,27 @@ Cross-origin scripts with CORS, the `verify --url` deploy check, and any change 
 
 | Criteria | Proven by |
 |---|---|
-| Collector: timing, registry, anchoring, hashing, budgets, failures, wire content, early re-attest, memo, opt-out, several markers | `packages/guard/test/integrity.test.ts` (349 Guard tests in all), including a seeded differential test against a plain reference (5 seeds × 4,000 pages) |
+| Collector: timing, registry, anchoring, hashing, budgets, failures, wire content, early re-attest, memo, opt-out, several markers | `packages/guard/test/integrity.test.ts` (362 Guard tests in all), including a seeded differential test against a plain reference (5 seeds × 4,000 pages) |
 | The marker's literal survives a minifier | A test builds a real marker statement, minifies it with esbuild and finds the needle in both forms |
-| Size and synchronous cost | `packages/guard/test/package.test.ts`: 21.4 KB gzip for all Guard sources against 35 KB (JS as shipped about 19 KB; 10.2 KB before this slice). `plan()` takes about 2 ms on a large page and under 10 ms on hostile ones, on a desktop |
+| Size and synchronous cost | `packages/guard/test/package.test.ts`: 21.7 KB gzip for all Guard sources against 35 KB (JS as shipped about 19 KB; 10.2 KB before this slice). `plan()` takes about 2 ms on a large page and under 10 ms on hostile ones, on a desktop |
 | End to end in a browser | `tests/e2e/tamper-guard.e2e.ts`: the untouched Build becomes watched with no Incident; one byte changed opens a High "Tampered Build" Incident in the Console about 30 s after page load. Every request to the shop origin is logged and matched exactly, and every attest body is checked key by key |
-| Quality | `npm run gate:release` on 2026-11-15: verify 8,509 tests in 324 files, Playwright 27/27, matrices, stand-in RRS 24, bench and load smoke all pass; verdict `blocked`, exit 2 |
+| Quality | `npm run gate:release` on 2026-11-15: verify 8,528 tests in 324 files, Playwright 27/27, matrices, stand-in RRS 24, bench and load smoke all pass; verdict `blocked`, exit 2 |
 
-**Independent reviews:** four, each reproducing what it reported. All findings were fixed test-first.
+**Independent reviews:** five, each reproducing what it reported. All findings were fixed test-first.
 
 - **First** (1 HIGH, 2 MEDIUM, 9 LOW): suffix matching hashed the wrong file; the 2 MB cap did not bound the download; Guard fetched URLs the browser never loaded.
 - **Second** (3 MEDIUM, 7 LOW): "most files wins" still picked another directory; a 200 answer that was not the script was hashed; two Apps on one page reported under the wrong App.
 - **Third, of commit 86e3a7c** (1 HIGH, 2 MEDIUM, 5 LOW): the name-based rule was still unsound. A foreign same-origin script with a listed name was hashed as the Build's file whenever the Build's own files were not visible (CDN origin, imported module, lazy load after a full buffer, inlined bundle, 500 padded tags). Name-based inference was dropped for the content anchor (D-103).
 - **Fourth, of the content anchor** (1 MEDIUM, 1 LOW–MEDIUM, 2 LOW): no false mismatch on honest origins in its own ground-truth fuzz (30,000 pages, 20,208 hashes, all correct). Two cases remained on unusual origins and were closed by failing closed, matching the marker's literal instead of the bare id, and the query rule.
 
-**Not independently reviewed:** the fixes after the fourth review (fail closed, the literal needle, the query rule). They are covered by the slice's tests and the gate only. Commit 86e3a7c, which was pushed before the third review, carried the unsound name-based rule.
+- **Fifth, of commit 5e74507** (2 MEDIUM, 1 LOW–MEDIUM): honest origins clean again (30,000 pages, 19,655 hashes, none wrong). A Build hardened with `--integrity` was never anchored; a second query string of the first file's path was not examined; an endpoint echoing the marker's text from its URL could anchor.
+
+**Not independently reviewed:** the fixes after the fifth review (candidates per URL, the Build id in a URL, the `--integrity` note). They are covered by the slice's tests and the gate only. Commits 86e3a7c and 5e74507 were pushed before the reviews that found faults in them.
 
 ## Honest limits
 
-- **A wrong file can still be reported on one kind of origin:** one with an endpoint that serves the whole planted file at a URL ending like the first file's path (a combining handler), on a page where the true file is not a counted script.
+- **A wrong file can still be reported on one kind of origin:** one with an endpoint that serves or echoes the marker's text at a URL ending like the first file's path, where the echo does not come from the URL itself (a combining handler, for example), on a page where the true file is not a counted script.
+- **A Build hardened with `--integrity` is not watched.** The wrapper embeds the planted file as a string, so the marker's literal is not in the served bytes. The Harden report says so; watching such Builds is a follow-up (D-104, provisional).
 - **Coverage is partial by design.** Nothing is sent when the Build is on another origin, inlined, or has its marker stripped; when a candidate cannot be examined; when two copies qualify; or when the page gives no Resource Timing entries (Firefox `resistFingerprinting`, Tor Browser, pages that clear the buffer).
 - **A script already on the page can suppress detection** (a fifth namesake, a second copy). The earlier claim that it "cannot make Guard report a wrong file" was wrong for commit 86e3a7c and is now true only up to the first limit above.
 - **A minifier run after Harden keeps the marker.** A minified copy is reported with its own hash, so such a Build is never watched; serving raw and minified copies of a watched Build opens an Incident.

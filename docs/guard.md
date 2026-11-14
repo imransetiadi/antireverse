@@ -98,7 +98,7 @@ If Resource Timing is there but its list is empty, nothing counts and **nothing 
 
 **How the Build's files are found.** Guard never guesses from file names where a Build lives. Harden plants the marker in the first file the marker lists, and the marker's own text (`b:"<Build ID>",f:[`) is in that file. So Guard:
 
-1. takes the loaded scripts whose URL path ends with `/` and the path of that first file. These are the candidates, one per path; when the page loaded one path with several query strings, the first one seen is used;
+1. takes the loaded scripts whose URL path ends with `/` and the path of that first file. These are the candidates. Every URL is a candidate in its own right: `/app/main.js` and `/app/main.js?fmt=dev` are two;
 2. fetches every candidate and looks for the marker's text in its bytes. The one that holds it is the Build's first file. The bare Build ID is not enough;
 3. takes the rest of that URL's path as the base. Every other listed file is the loaded script at exactly *base + its path*. With the marker listing `main.js` and `chunks/a.js` and the first file found at `/app/main.js`, the base is `/app/` and the other file is `/app/chunks/a.js`, nothing else.
 
@@ -111,17 +111,19 @@ A script that merely has the same name (`/legacy/main.js`) does not hold the mar
 - **The Build is served from another origin** (a CDN host). Guard reads same-origin files only.
 - **The bundle is inlined in the HTML**, or its first file was not loaded as a script on this page, was loaded after the check, or is not in Resource Timing.
 - **The marker was removed** from the first file. The other files are then not looked at either.
+- **The Build was hardened with `--integrity`.** The self-check wrapper holds the planted file as a string, in which the marker's text is escaped, so it is not in the bytes Guard reads. Such a Build is never watched (see [Harden](harden.md#integrity-marker)).
 - **More than 4 same-origin scripts** end like the first file's path. Guard fetches none of them.
-- **A candidate could not be examined**: it answered with an error or a redirect, is over 2 MB, is not served as JavaScript, or the browser's Resource Timing buffer was full and has no entry for it. One such candidate is enough, even when another one holds the marker.
-- **Two candidates hold the marker** (the Build deployed twice on the origin and both copies loaded).
+- **A candidate could not be examined**: it answered with an error or a redirect, is over 2 MB, is not served as JavaScript, or the browser's Resource Timing buffer was full and has no entry for it. One such candidate is enough, even when another one holds the marker, and even when it is only another query string of the true file's own path.
+- **A candidate's URL contains the Build ID** (also percent-encoded, also in the query string). An endpoint that echoes its URL would echo the marker too, so such a URL proves nothing and is not fetched.
+- **Two candidates hold the marker**: the Build deployed twice on the origin and both copies loaded, or the first file loaded under two query strings.
 - **The time ran out** before every candidate was read.
 
-**A minifier keeps the marker.** Running a minifier after Harden does not remove the marker's text. The minified first file is found and reported with its own hash, which is not the registered one. Such a Build never matches, so it is never watched and opens no Incident (see [Harden](harden.md#integrity-marker)). But if a watched Build is served raw to some visitors and minified to others (a CDN's "auto-minify" switched on later, or only at some edges), the minified copies are reported as a mismatch and open an Incident.
+**A minifier may keep the marker.** esbuild's minifier keeps the marker's text as it is (this is tested); other tools were not tried. A formatter, or a tool set to write single quotes or to add spaces, rewrites the text (`b: 'bld_…'`), and then Guard does not find the Build at all: nothing is reported for it. Where the text survives, the rewritten first file is found and reported with its own hash, which is not the registered one. Such a Build never matches, so it is never watched and opens no Incident (see [Harden](harden.md#integrity-marker)). But if a watched Build is served raw to some visitors and minified to others (a CDN's "auto-minify" switched on later, or only at some edges), the minified copies are reported as a mismatch and open an Incident.
 
-**What this rests on.** A wrong file can still be reported if the origin itself serves the marker's text somewhere else. Two things are assumed about your origin:
+**What this rests on.** A wrong file can still be reported if the origin itself serves the marker's text somewhere else. The remaining case is an endpoint that serves or echoes the marker's text at a URL ending like the first file's path, where the echo does not come from the URL itself. Two things are assumed about your origin:
 
-1. No other same-origin URL whose path ends like the first file's path serves that file's content. A combining endpoint (`/min/f=js/jquery.js,app/main.js`) that returns the whole planted file inside a bundle is such a URL.
-2. If there is one, the true file is also a counted script on the page, so that both are candidates and Guard sees two that hold the marker and sends nothing. When the true file is not counted (inlined, loaded another way) and only the combined URL is, the combined file is taken for the Build's first file and its hash is reported.
+1. No other same-origin URL whose path ends like the first file's path answers with that file's content or with the marker's text. A combining endpoint (`/min/f=js/jquery.js,app/main.js`) that returns the whole planted file inside a bundle is such a URL; so is an endpoint that prints a stored value (a comment, a profile field) holding the marker's text as JavaScript.
+2. If there is one, the true file is also a counted script on the page. Then both are candidates, Guard sees two that hold the marker, and sends nothing. This holds for another directory and for another query string of the same path alike. When the true file is not counted (on another origin, inlined, loaded another way) and only the other URL is, that URL's answer is taken for the Build's first file and its hash is reported.
 
 When a file of this Build also ends like a path that another registered Build on the same page lists, it could belong to either, so it is hashed for neither and counts as skipped.
 
@@ -161,7 +163,7 @@ With `integrity: false` Guard reads no marker and fetches no file.
 | Files | At most 32 per Build, as the marker lists them. |
 | Save-Data | When the browser asks for reduced data use, Guard does nothing. |
 | Extra traffic | One attestation, at most 4 KB, plus the file requests (from the cache when the files are cacheable). |
-| Several bundles on one page | One Build per attestation: the first registered Build not reported in the last 24 hours goes with the extra attestation, the next with the regular re-attestation about four minutes later, and so on. This keeps every request small. |
+| Several bundles on one page | One Build per attestation: the first registered Build of which a file could be hashed (and that was not reported in the last 24 hours) goes with the extra attestation, the next such Build with the regular re-attestation about four minutes later, and so on. This keeps every request small. |
 | `stop()` | Ends a running check at once, including its request in flight. A later `start()` or `attest()` runs it again. |
 
 For the files other than the first: a failed fetch, an answer with a status other than 200 (a 206 partial answer too), an opaque response, a redirected one (a login page), an answer whose `Content-Type` is not JavaScript (the HTML page a single-page app serves for unknown paths) and an oversized file all count as skipped. **Classic scripts served with another content type are not hashed**: a browser runs `<script src>` whatever the type says (`text/plain`, `application/octet-stream`), but Guard does not hash it. Serve the files with a JavaScript content type, as browsers already require for modules. So does a script element the browser's Resource Timing buffer had no room to record (the buffer holds 250 entries by default). If the extra attestation fails, or the tab is hidden when the files have been hashed, the current token stays valid, the regular schedule goes on, and the report goes with the next attestation.

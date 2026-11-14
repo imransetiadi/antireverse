@@ -1316,6 +1316,9 @@ function emitReport(io: CliIo, input: ReportInput): void {
               files: input.marker.files,
               planted_in: input.marker.files.length > 0 ? input.plantedIn : null,
               dropped: markerDropped(input.marker),
+              // With --integrity the planted file is a string inside the self-check wrapper: Guard cannot find the
+              // marker in the served bytes, so the Build is registered but not watched for tampering.
+              ...(input.integrity && input.marker.files.length > 0 ? { watched: false } : {}),
             },
           }
         : {}),
@@ -1395,6 +1398,13 @@ function markerLines(input: ReportInput): string[] {
   if (listed === 0) {
     return [
       "! Integrity marker: not planted (it does not fit the size budget); this Build cannot be checked for tampering",
+    ];
+  }
+  // With --integrity the planted file is a string inside the self-check wrapper: Guard, which looks for the marker
+  // in the bytes it is served, does not find it there.
+  if (input.integrity) {
+    return [
+      "! Integrity marker: with --integrity this Build is not watched for tampering (the self-check wrapper hides the marker from Guard)",
     ];
   }
   if (listed < wanted) {

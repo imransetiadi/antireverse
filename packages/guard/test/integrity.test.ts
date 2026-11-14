@@ -6,10 +6,11 @@ import { createHash, webcrypto } from "node:crypto";
 import { transformSync } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { markerStatement } from "../../harden/src/marker.ts";
+import { applyIntegrity } from "../../harden/src/passes/integrity.ts";
 import { AttestRequestSchema, IntegrityReportSchema } from "../../protocol/src/index.ts";
 import { INTEGRITY } from "../src/constants.js";
 import { createGuard, type GuardCrypto, type GuardFetch, type GuardOptions } from "../src/index.js";
-import { collect, locate, plan, remember } from "../src/integrity.js";
+import { collect, holds, locate, plan, remember } from "../src/integrity.js";
 import {
   APP_ID,
   ATTEST_URL,
@@ -1103,26 +1104,126 @@ describe("the content anchor: a Build's first file is the one that holds its id"
     guard.stop();
   });
 
-  it("four candidates are read; one path with several query strings is one candidate (the first seen)", async () => {
+  it("four candidates are read, each in its own right", async () => {
     plant(BUILD, ["main.js"]);
-    for (const base of ["/1/", "/2/", "/3/"]) script(`${base}main.js`);
-    script("/4/main.js?v=1");
-    script("/4/main.js?v=2");
+    for (const base of ["/1/", "/2/", "/3/", "/4/"]) script(`${base}main.js`);
     const real = bytes("real");
     const page = pageFetch({
       [`${ORIGIN}/1/main.js`]: LEGACY,
       [`${ORIGIN}/2/main.js`]: LEGACY,
       [`${ORIGIN}/3/main.js`]: LEGACY,
-      [`${ORIGIN}/4/main.js?v=1`]: real,
+      [`${ORIGIN}/4/main.js`]: real,
     });
     const { guard, service } = setup();
     await guard.attest();
     await advance(INTEGRITY.delayMs);
-    expect(page.urls()).toEqual(
-      ["/1/", "/2/", "/3/"].map((base) => `${ORIGIN}${base}main.js`).concat(`${ORIGIN}/4/main.js?v=1`),
-    );
+    expect(page.urls()).toEqual(["/1/", "/2/", "/3/", "/4/"].map((base) => `${ORIGIN}${base}main.js`));
     expect(reports(service)).toEqual([{ build: BUILD, files: [{ i: 0, h: hashOf(real) }], skipped: 0 }]);
     guard.stop();
+  });
+
+  describe("one path, several query strings (fifth review F2)", () => {
+    const direct = () =>
+      collect(APP_ID, webcrypto as unknown as GuardCrypto, cleanNavigator(), null, Date.now, { aborted: false });
+    const truth = bytes("console.log('the registered main.js')");
+    const variant = bytes("console.log('the registered main.js')/* what the origin answers for ?fmt=dev */");
+
+    it("every URL of the path is a candidate: a variant seen first and the true file both hold the marker, nothing is sent", async () => {
+      plant(BUILD, ["main.js"]);
+      script("/app/main.js?fmt=dev");
+      script("/app/main.js");
+      const page = pageFetch({ [`${ORIGIN}/app/main.js?fmt=dev`]: variant, [`${ORIGIN}/app/main.js`]: truth });
+      expect(plan(() => false)[0]?.candidates.map((script) => script.url)).toEqual([
+        `${ORIGIN}/app/main.js?fmt=dev`,
+        `${ORIGIN}/app/main.js`,
+      ]);
+      expect(await direct()).toBeNull();
+      expect(page.urls()).toEqual([`${ORIGIN}/app/main.js?fmt=dev`, `${ORIGIN}/app/main.js`]);
+    });
+
+    it("a variant that does not hold the marker leaves the true file as the one anchor", async () => {
+      plant(BUILD, ["main.js"]);
+      script("/app/main.js?fmt=dev");
+      script("/app/main.js");
+      pageFetch({ [`${ORIGIN}/app/main.js?fmt=dev`]: plain("// a stub"), [`${ORIGIN}/app/main.js`]: truth });
+      expect(await direct()).toEqual({ build: BUILD, files: [{ i: 0, h: hashOf(truth) }], skipped: 0 });
+    });
+
+    it("a second URL of the path that cannot be examined (over 2 MB) fails closed", async () => {
+      plant(BUILD, ["main.js"]);
+      script("/app/main.js?fmt=dev");
+      script("/app/main.js");
+      timing([{ name: `${ORIGIN}/app/main.js`, initiatorType: "script", decodedBodySize: 3 * MB }]);
+      const page = pageFetch({ [`${ORIGIN}/app/main.js?fmt=dev`]: variant });
+      expect(await direct()).toBeNull();
+      expect(page.fetch).not.toHaveBeenCalled();
+    });
+
+    it("five URLs of one path are five candidates: nothing is fetched", async () => {
+      plant(BUILD, ["main.js"]);
+      const served: Record<string, Uint8Array> = {};
+      for (let v = 0; v < 5; v += 1) {
+        script(`/app/main.js?v=${v}`);
+        served[`${ORIGIN}/app/main.js?v=${v}`] = truth;
+      }
+      const page = pageFetch(served);
+      expect(plan(() => false)).toEqual([]);
+      expect(await direct()).toBeNull();
+      expect(page.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a URL that names the Build cannot vouch for its own answer (fifth review F3)", () => {
+    const direct = () =>
+      collect(APP_ID, webcrypto as unknown as GuardCrypto, cleanNavigator(), null, Date.now, { aborted: false });
+
+    it.each([
+      ["the marker's text in the query", (build: string) => `?note=${needle(build)}`],
+      ["the bare Build id in the query", (build: string) => `?callback=${build}`],
+      ["the id percent-encoded", (build: string) => `?n=%62ld_${build.slice(4)}`],
+      ["the id encoded twice over in part", (build: string) => `?n=${encodeURIComponent(needle(build))}`],
+    ])("%s: an endpoint that echoes it anchors nothing, and is not even fetched", async (_name, query) => {
+      plant(BUILD, ["main.js"]); // ran from another origin: none of its files is counted here
+      const src = `/api/echo/main.js${query(BUILD)}`;
+      script(src);
+      const href = new URL(src, location.href).href;
+      const page = pageFetch({ [href]: plain(`/* ${needle(BUILD)} */\nwindow.ok=true;`) });
+      expect(plan(() => false)).toEqual([]);
+      expect(await direct()).toBeNull();
+      expect(page.fetch).not.toHaveBeenCalled();
+    });
+
+    it("such a URL beside the true file fails closed too", async () => {
+      plant(BUILD, ["main.js"]);
+      script("/app/main.js");
+      script(`/api/echo/main.js?note=${BUILD}`);
+      pageFetch({ [`${ORIGIN}/app/main.js`]: bytes("main") });
+      expect(await direct()).toBeNull();
+    });
+
+    it("the id of another Build in the URL does not matter", async () => {
+      plant(BUILD, ["main.js"]);
+      script(`/app/main.js?other=${OTHER}`);
+      const main = bytes("main");
+      pageFetch({ [`${ORIGIN}/app/main.js?other=${OTHER}`]: main });
+      expect(await direct()).toEqual({ build: BUILD, files: [{ i: 0, h: hashOf(main) }], skipped: 0 });
+    });
+  });
+
+  it("a Build hardened with --integrity is not watched: the wrapper holds the planted file as a string (fifth review F1)", async () => {
+    const planted = `var app = 1;\n${markerStatement(BUILD, ["main.js"])}`;
+    const served = plain(applyIntegrity(planted)); // what the CLI writes to --out and registers the hash of
+    new Function(new TextDecoder().decode(served))(); // the wrapper runs and registers the marker, as in a browser
+    expect((registry[KEY] as { b: string }[])[0]?.b).toBe(BUILD);
+    // The marker's literal is escaped inside the wrapper's string: it is not in the served bytes.
+    expect(new TextDecoder().decode(served)).not.toContain(needle(BUILD));
+    script("/app/main.js");
+    const page = pageFetch({ [`${ORIGIN}/app/main.js`]: served });
+    const report = await collect(APP_ID, webcrypto as unknown as GuardCrypto, cleanNavigator(), null, Date.now, {
+      aborted: false,
+    });
+    expect(page.urls()).toEqual([`${ORIGIN}/app/main.js`]);
+    expect(report).toBeNull();
   });
 
   it("nested names map exactly: index.js, utils/index.js and app.js under the base the first file gives", async () => {
@@ -2295,6 +2396,21 @@ describe("the memo across tabs (third review F4, F5)", () => {
     expect(Object.keys(memo)).toEqual([memoKey(OTHER)]); // and this tab's own claim is given back
   });
 
+  it("giving a claim back never erases a report of the same App and Build that another tab made meanwhile", async () => {
+    plant(BUILD, ["main.js"]);
+    script("/main.js");
+    pageFetch({ [`${ORIGIN}/main.js`]: { hang: true } });
+    const { guard, storage } = setup();
+    await guard.attest();
+    await advance(INTEGRITY.delayMs); // collecting: the memo holds this tab's claim
+    await advance(1_000);
+    const reportedAt = Date.now();
+    remember(storage, memoKey(BUILD), reportedAt, reportedAt); // another tab reports this very Build
+    guard.stop();
+    await settle();
+    expect(JSON.parse(storage.data.get("ar.integrity") ?? "{}")).toEqual({ [memoKey(BUILD)]: reportedAt });
+  });
+
   it("F5: a report that waits longer than the collection's claim is still sent by one tab only", async () => {
     plant(BUILD, ["main.js"]);
     script("/main.js");
@@ -2581,13 +2697,19 @@ function refPlan(markers: { b: unknown; f: unknown }[], scripts: RefScript[], sk
     if (out.length >= 4 || skip(build.build)) continue;
     const first = build.first;
     if (typeof first !== "string" || !build.listed.has(first)) continue;
-    const candidates: RefScript[] = [];
-    for (const script of scripts) {
-      if (script.path.endsWith(`/${first}`) && !candidates.some((taken) => taken.path === script.path)) {
-        candidates.push(script);
-      }
-    }
+    // F2: every counted URL whose path ends like the first file's is a candidate in its own right.
+    const candidates = scripts.filter((script) => script.path.endsWith(`/${first}`));
     if (candidates.length === 0 || candidates.length > 4) continue;
+    // F3: a candidate whose URL names the Build (as written, or decoded) cannot be examined: fail closed.
+    const names = (url: string) => {
+      if (url.includes(build.build)) return true;
+      try {
+        return decodeURIComponent(url).includes(build.build);
+      } catch {
+        return false;
+      }
+    };
+    if (candidates.some((candidate) => names(candidate.url))) continue;
     // (a) A candidate that cannot be fetched (not vouched for, or over 2 MB) cannot be examined: fail closed.
     if (candidates.some((candidate) => candidate.size > 2 * MB)) continue;
     const others = builds.filter((other) => other.build !== build.build).flatMap((other) => [...other.listed.keys()]);
@@ -2671,7 +2793,9 @@ function generate(random: () => number) {
     if (chance(0.04)) path = path.replace("/", pick(["/%ZZ", "/%E0%A4/", "//", "/./", "/x/../"]));
     path = path.replace(/ /g, chance(0.5) ? "%20" : " ");
     let url = (chance(0.08) ? "https://cdn.example" : chance(0.5) ? ORIGIN : "") + path;
-    if (chance(0.2)) url += pick(["?v=1", "?v=2", "?", `?${"q".repeat(2100)}`]);
+    if (chance(0.2)) {
+      url += pick(["?v=1", "?v=2", "?", `?${"q".repeat(2100)}`, `?n=${BUILD}`, `?n=%62ld_${OTHER.slice(4)}`, "?n=%ZZ"]);
+    }
     if (chance(0.1)) url += "#frag";
     const loaded = chance(0.85);
     const size = chance(0.1) ? 3 * MB : chance(0.5) ? 1234 : undefined;
@@ -2820,6 +2944,49 @@ describe("worst-case time of plan() (third review F8, PB-06)", () => {
     );
     console.info(`guard integrity plan(), third review shapes: A ${a.toFixed(2)} ms, B ${b.toFixed(2)} ms`);
     expect(Math.max(a, b)).toBeLessThan(25);
+  });
+
+  it("the search for the marker in a 2 MB body is a short task, also on bodies made to slow it", () => {
+    const text = needle(BUILD);
+    const almost = text.slice(0, -1);
+    const size = 2 * MB;
+    const bodies: Record<string, Uint8Array> = {
+      "the marker without its last character, repeated": plain(
+        almost.repeat(Math.floor((size - 100) / almost.length)) + text,
+      ),
+      "its first character, repeated": plain("b".repeat(size - text.length) + text),
+      zeros: (() => {
+        const zeros = new Uint8Array(size);
+        zeros.set(plain(text), size - 60);
+        return zeros;
+      })(),
+      "no marker at all": plain(almost.repeat(Math.floor(size / almost.length))),
+    };
+    const times: string[] = [];
+    for (const [name, body] of Object.entries(bodies)) {
+      let elapsed = Number.POSITIVE_INFINITY;
+      let found = false;
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now();
+        found = holds(body, text);
+        elapsed = Math.min(elapsed, performance.now() - started);
+      }
+      expect(found).toBe(name !== "no marker at all");
+      times.push(`${name}: ${elapsed.toFixed(2)} ms`);
+      expect(elapsed, name).toBeLessThan(25);
+    }
+    console.info(`guard integrity holds(), 2 MB: ${times.join("; ")}`);
+    // Where it counts: at the start, at the end, across nothing, and not found in a near miss.
+    expect(holds(plain(`${text}rest`), text)).toBe(true);
+    expect(holds(plain(`rest${text}`), text)).toBe(true);
+    expect(holds(plain(almost), text)).toBe(false);
+    expect(holds(new Uint8Array(0), text)).toBe(false);
+    expect(holds(plain(`\uFEFFvar a=1;${text}`), text)).toBe(true);
+    // Without a latin1 decoder the bytes are compared one by one, with the same answers.
+    vi.stubGlobal("TextDecoder", undefined);
+    expect(holds(plain(`rest${text}`), text)).toBe(true);
+    expect(holds(plain(`b${almost}${almost}`), text)).toBe(false);
+    expect(holds(plain(`b:"b:"${text}`), text)).toBe(true);
   });
 
   it("at most 8 distinct Builds are read", () => {

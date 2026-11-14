@@ -111,6 +111,8 @@ With `--register`, Harden plants one more statement beside the Canaries: the **i
 
 The marker is not the `--integrity` option: `--integrity` wraps a script in a self-check inside the bundle; the integrity marker only names the Build so that the comparison happens on the server.
 
+> **With `--integrity`, the Build is not watched.** `--integrity` puts the whole planted file, marker included, into a string inside its self-check wrapper. Guard finds a Build by the marker's text in the bytes it is served, and inside that string the text is escaped, so Guard does not find it and sends no report. The Build is registered as usual and its page works; it just never becomes watched and never opens a Tampered Build Incident. Harden says so: the report shows `! Integrity marker: with --integrity this Build is not watched for tampering (the self-check wrapper hides the marker from Guard)`, and `--json` has `"watched": false` in `integrity_marker`. Use one or the other for a Build: `--integrity` for a self-check inside the bundle, or the marker (without `--integrity`) for tamper detection by Guard.
+
 ## Reverse Assessment: `--routes`, `--logic`, `--assess`
 
 These flags feed the [Reverse Assessment](reverse-assessment.md), which attacks the protected output and scores how well it resists.

@@ -15,7 +15,7 @@ import { sha256 } from "./crypto.js";
 /** @typedef {{ build: string, files: { i: number, h: string }[], skipped: number }} Report */
 /** @typedef {{ aborted: boolean, cancel?: (() => void) | undefined }} Job A collection; `cancel` ends its request in flight. */
 /** @typedef {{ url: string, path: string, search: string, size: number, listed: boolean, loaded: boolean }} Script */
-/** @typedef {{ byPath: Map<string, Script[]>, markers: Map<string, (string | null)[]> }} Page The page's scripts by path (in the order seen) and every marker read. */
+/** @typedef {{ scripts: Script[], byPath: Map<string, Script[]>, markers: Map<string, (string | null)[]> }} Page The page's scripts in the order seen, the same by path, and every marker read. */
 /** @typedef {{ build: string, paths: (string | null)[], candidates: Script[], page: Page }} Planned A Build and the scripts that may be its first file. */
 
 /** A JavaScript MIME type (parameters ignored). */
@@ -151,11 +151,26 @@ function pageScripts() {
 const endsLike = (path, listed) => path[path.length - listed.length - 1] === "/" && path.endsWith(listed);
 
 /**
+ * Whether a URL names a Build: its id is in the URL as written or decoded (the query string too). What such a URL
+ * answers may only echo the URL, so it proves nothing about the Build.
+ * @param {string} url
+ * @param {string} build
+ */
+function names(url, build) {
+  if (url.includes(build)) return true;
+  try {
+    return decodeURIComponent(url).includes(build);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The synchronous part: the registered Builds that `skip` does not refuse and that have one to `candidatesMax`
- * candidates for their first file: the loaded scripts (the first seen of each path) whose path ends with "/" + the
- * marker's first path. Which candidate it is, if any, only its bytes tell (see `collect`). A Build of which a
- * candidate must not be fetched (Resource Timing could not vouch for it, or says it is over 2 MB) cannot be
- * examined in full and is left out. At most `entriesMax` registry entries are scanned and `markersMax` distinct
+ * candidates for their first file: every loaded script URL (each query string of a path in its own right) whose
+ * path ends with "/" + the marker's first path. Which candidate it is, if any, only its bytes tell (see `collect`).
+ * A Build of which a candidate cannot be examined (Resource Timing could not vouch for it or says it is over 2 MB,
+ * or its URL names the Build) is left out. At most `entriesMax` registry entries are scanned and `markersMax` distinct
  * Builds read, by index only: no method of a registry object is called. A Build is read once (its first marker);
  * files past the 32nd and paths that are not strings of 1 to `pathMax` characters are not files. Nothing of the
  * page is read when every Build is skipped.
@@ -171,7 +186,7 @@ export function plan(skip) {
     ];
     if (!Array.isArray(registry)) return out;
     /** @type {Page} */
-    const page = { byPath: new Map(), markers: new Map() };
+    const page = { scripts: [], byPath: new Map(), markers: new Map() };
     let wanted = false;
     for (let k = 0; k < registry.length && k < INTEGRITY.entriesMax; k += 1) {
       if (page.markers.size >= INTEGRITY.markersMax) break;
@@ -193,7 +208,8 @@ export function plan(skip) {
       }
     }
     if (!wanted) return out;
-    for (const script of pageScripts()) {
+    page.scripts = pageScripts();
+    for (const script of page.scripts) {
       const at = page.byPath.get(script.path);
       if (at) at.push(script);
       else page.byPath.set(script.path, [script]);
@@ -204,12 +220,11 @@ export function plan(skip) {
       /** @type {Script[]} */
       const candidates = [];
       let examinable = true;
-      for (const [path, scripts] of page.byPath) {
-        const script = scripts[0];
-        if (!script || !endsLike(path, first)) continue;
+      for (const script of page.scripts) {
+        if (!endsLike(script.path, first)) continue;
         candidates.push(script);
-        examinable &&= script.size <= INTEGRITY.fileMaxBytes;
         if (candidates.length > INTEGRITY.candidatesMax) break;
+        examinable &&= script.size <= INTEGRITY.fileMaxBytes && !names(script.url, build);
       }
       if (examinable && candidates.length > 0 && candidates.length <= INTEGRITY.candidatesMax) {
         out.push({ build, paths, candidates, page });
@@ -258,7 +273,13 @@ export function locate(planned, anchor) {
  * @param {Uint8Array} bytes
  * @param {string} text
  */
-function holds(bytes, text) {
+export function holds(bytes, text) {
+  try {
+    // One byte, one character: the engine's own string search, which no body slows down.
+    return new TextDecoder("latin1").decode(bytes).includes(text);
+  } catch {
+    // No such decoder: compare byte by byte.
+  }
   const first = text.charCodeAt(0);
   for (let at = bytes.indexOf(first); at !== -1; at = bytes.indexOf(first, at + 1)) {
     let k = 1;
@@ -398,11 +419,14 @@ export async function collect(appId, crypto, navigator, storage, now, job) {
     for (const build of planned) {
       if (over()) break;
       const key = `${appId}/${build.build}`;
+      const claim = at + INTEGRITY.claimMs - INTEGRITY.memoMs;
       claimed[key] = 1;
-      remember(storage, key, at + INTEGRITY.claimMs - INTEGRITY.memoMs, now());
+      remember(storage, key, claim, now());
+      // The memo entry is taken back only while it is still this claim: never a report another tab made meanwhile.
       const giveBack = () => {
         delete claimed[key];
-        remember(storage, key, 0, now());
+        const present = now();
+        if (readMemo(storage, present)[key] === claim) remember(storage, key, 0, present);
         return null;
       };
       // The anchor: the one candidate whose bytes hold the marker's literal. Every candidate must be examined.
