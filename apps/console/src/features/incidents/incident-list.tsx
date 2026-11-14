@@ -115,6 +115,12 @@ export function IncidentList({
                         {incident.origin}
                       </span>
                     )}
+                    {/* A Tampered Build Incident names the file whose bytes changed. */}
+                    {(incident.artifact_path ?? null) === null ? null : (
+                      <span data-testid="incident-artifact" className="mt-0.5 block break-all code-3 text-fg-muted">
+                        {incident.artifact_path}
+                      </span>
+                    )}
                   </th>
                   <td data-testid="incident-app" className={`${CELL} min-w-32 break-words`}>
                     {appNames.get(incident.app_id) ?? <span className="code-3">{incident.app_id}</span>}

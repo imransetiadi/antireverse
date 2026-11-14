@@ -71,7 +71,7 @@ describe("incident constants", () => {
     expect(ALERT_CHANNEL_KINDS).toEqual([kind, "slack", "email"]);
   });
 
-  it("has the seven managed rules of the plans' tables", () => {
+  it("has the eight managed rules of the plans' tables", () => {
     const key: DetectionRuleKey = "blocked-burst";
     expect(DETECTION_RULES).toEqual([
       { key, title: "Blocked burst", severity: "high", threshold: 20, window_s: 300 },
@@ -81,6 +81,7 @@ describe("incident constants", () => {
       { key: "vulnerable-component", title: "Vulnerable component", severity: "high", threshold: 1, window_s: 3600 },
       { key: "exploit-attempt", title: "Exploit attempt", severity: "high", threshold: 1, window_s: 3600 },
       { key: "credential-stuffing", title: "Credential stuffing", severity: "high", threshold: 50, window_s: 300 },
+      { key: "tampered-build", title: "Tampered Build", severity: "high", threshold: 1, window_s: 3600 },
     ]);
     for (const rule of DETECTION_RULES) expect(SEVERITIES).toContain(rule.severity);
   });

@@ -1,6 +1,7 @@
 // Isomorphic: this module is safe for browsers. It must not import a Node built-in.
 import { z } from "zod";
 import { ID_PATTERNS } from "./constants.ts";
+import { IntegrityReportSchema } from "./integrity.ts";
 import { deepFreeze, isoDateTime } from "./shared.ts";
 
 // The Attestation contract (slice 03). Guard asks `POST /v1/attest/challenge` for a nonce, then sends
@@ -125,6 +126,9 @@ export type ChallengeResponse = z.infer<typeof ChallengeResponseSchema>;
 /**
  * Body of `POST /v1/attest`. `signals` accepts up to 16 signal-id-shaped strings, so that an older API takes a
  * newer Guard's request; parsing keeps the known ids only, each once, in the order of `ATTESTATION_SIGNALS`.
+ * `integrity` (slice 21a) is the optional integrity report of the page's Build. It never fails the attestation: a
+ * report that does not parse is dropped (the request parses without it), an older API strips the unknown key, and an
+ * older Guard sends none. It is judged after the response and changes neither the token nor the verdict.
  */
 export const AttestRequestSchema = z.object({
   app_id: AppIdSchema,
@@ -135,6 +139,7 @@ export const AttestRequestSchema = z.object({
     .max(SIGNALS_MAX)
     .transform((ids): AttestationSignal[] => ATTESTATION_SIGNALS.filter((id) => ids.includes(id))),
   cnf: CnfSchema,
+  integrity: IntegrityReportSchema.optional().catch(undefined),
 });
 export type AttestRequestInput = z.input<typeof AttestRequestSchema>;
 export type AttestRequest = z.infer<typeof AttestRequestSchema>;

@@ -19,6 +19,7 @@ import { createNonceStore } from "../attestation/nonces.ts";
 import type { AppEnv } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db } from "../db/db.ts";
+import type { IntegrityRecorder } from "../detect/integrity.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
 import { addressPrefix } from "../prefix.ts";
 import { ATTEST_BODY_BYTES_MAX, problem } from "../problem.ts";
@@ -71,6 +72,11 @@ export interface AttestDeps {
   usageSalts?: UsageSalts | undefined;
   /** New device references per App and UTC day at most. Default `USAGE_DEVICE_DAILY_CAP`. */
   usageDeviceDailyCap?: number | undefined;
+  /**
+   * Judges the integrity report of an attestation after its response (slice 21a). Default: none, and a report is
+   * ignored.
+   */
+  integrity?: Pick<IntegrityRecorder, "report"> | undefined;
 }
 
 /**
@@ -80,6 +86,8 @@ export interface AttestDeps {
  * limit. Neither limiter ever forgets a running window: when full, a new prefix or App is answered 429.
  * Unknown App, bad nonce, and a missing `cnf.jwk` or one whose thumbprint is not `cnf.jkt` share one fixed 400. Nothing of the request (address, App id, nonce, device, token) is
  * logged; the caller's address is reduced to its prefix at once and used only for the limit.
+ * An integrity report (slice 21a) changes nothing here: once the token is signed it is handed to the recorder, which
+ * is never awaited, and the answer is the same bytes it would be without the report.
  */
 export function attestRoutes(deps: AttestDeps): Hono<AppEnv> {
   const { db, attestation, clientAddress } = deps;
@@ -189,6 +197,16 @@ export function attestRoutes(deps: AttestDeps): Hono<AppEnv> {
       pv: 1,
     };
     const token = attestation.sign(claims);
+    // Slice 21a: the handshake passed (nonce, key binding, App limiter). The integrity report, if any, is handed to
+    // the recorder, which judges it after this response: no awaited I/O, and nothing of it reaches the token.
+    if (request.integrity !== undefined && deps.integrity !== undefined) {
+      deps.integrity.report({
+        appId,
+        report: request.integrity,
+        originHeader: c.req.header("origin"),
+        address: clientAddress(c),
+      });
+    }
     return c.json({ token, expires_at: new Date(exp * 1_000).toISOString() } satisfies AttestResponse, 200);
   });
 

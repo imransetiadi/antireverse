@@ -5,6 +5,7 @@ import { BuildBeaconSchema, ManifestBeaconSchema } from "./beacon.ts";
 import { BuildCanarySummarySchema, CANARY_LIMITS, CanarySchema, LeakScanSummarySchema } from "./canaries.ts";
 import { ENVIRONMENTS, ID_PATTERNS } from "./constants.ts";
 import { ComponentListSchema, EXPOSURE_LIMITS, FindingsSummarySchema } from "./exposure.ts";
+import { ManifestIntegritySchema } from "./integrity.ts";
 import { LOGIC_LIMITS, LogicFileSchema } from "./logic.ts";
 import { deepFreeze, isoDateTime, text } from "./shared.ts";
 
@@ -112,6 +113,12 @@ export const BuildManifestSchema = z.object({
    */
   logic_digest: Sha256Schema.optional(),
   logic_count: z.int().min(LOGIC_LIMITS.functionsMin).max(LOGIC_LIMITS.functionsMax).optional(),
+  /**
+   * The artifact paths the planted integrity marker lists (slice 21a), in the marker's order; an integrity report
+   * names a file by its index here. Empty when the marker did not fit the size budget. Optional, as `leak_scan`: a
+   * Build without it (an older CLI, `--no-integrity-marker`) is never judged for tampering.
+   */
+  integrity: ManifestIntegritySchema.optional(),
 });
 export type BuildManifest = z.infer<typeof BuildManifestSchema>;
 
@@ -151,7 +158,22 @@ export const RegisterBuildRequestSchema = z
       request.manifest.logic_count === undefined ||
       request.manifest.logic_count === request.logic.functions.length,
     { message: "Must list as many functions as the Manifest's logic_count.", path: ["logic"] },
-  );
+  )
+  .superRefine((request, context) => {
+    // Slice 21a: every path of the integrity marker is one of the Manifest's artifacts.
+    const files = request.manifest.integrity?.files;
+    if (files === undefined) return;
+    const paths = new Set(request.manifest.artifacts.map((artifact) => artifact.path));
+    files.forEach((file, index) => {
+      if (!paths.has(file)) {
+        context.addIssue({
+          code: "custom",
+          message: "Must be the path of one of the Manifest's artifacts.",
+          path: ["manifest", "integrity", "files", index],
+        });
+      }
+    });
+  });
 export type RegisterBuildRequest = z.infer<typeof RegisterBuildRequestSchema>;
 
 /**
@@ -170,6 +192,12 @@ export const BuildSchema = BuildManifestSchema.extend({
     .optional(),
   /** The Build's Clone Beacon as its allowed origins: a token given here is stripped, never returned. */
   beacon: BuildBeaconSchema.optional(),
+  /**
+   * Since when the Build is watched for tampering (slice 21a): the time of its first fully matching integrity
+   * report, null while it has not been seen unmodified. Present only for a Build whose integrity marker lists a
+   * file; the API stamps it, a Manifest never carries it.
+   */
+  integrity_first_match_at: z.iso.datetime().nullable().optional(),
 });
 export type Build = z.infer<typeof BuildSchema>;
 

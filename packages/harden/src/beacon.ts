@@ -28,6 +28,7 @@
 // shape and is treated as local: only a well-formed foreign origin is ever reported. The test suite pins this
 // against `isLocalOrigin` over a corpus by running the statement in a `vm` context.
 import { BEACON_TOKEN_PATTERN, ID_PATTERNS, ManifestBeaconSchema } from "@antireverse/protocol";
+import { literal } from "./marker.ts";
 
 /** The beacon a Build plants: its App id, token, the allowed origins and the API base URL reports go to. */
 export interface BeaconConfig {
@@ -70,11 +71,6 @@ export function beaconEndpointUrl(endpoint: string): string {
     refuse("query or fragment");
   }
   return `${endpoint.replace(/\/+$/, "")}/v1/beacon`;
-}
-
-/** A JS string literal for `value`, safe inside an HTML <script> element too (review F6). */
-function literal(value: string): string {
-  return JSON.stringify(value).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
 }
 
 /** An origin with one trailing dot removed from its host (review F2). */

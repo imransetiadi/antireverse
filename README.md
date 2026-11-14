@@ -202,6 +202,16 @@ Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the
 
 Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
 
+## Tamper detection
+
+Harden plants an integrity marker with `--register` (turn it off with `--no-integrity-marker`): the Build id and up to 32 protected file paths, never hashes. An attestation may then report the SHA-256 a browser observed for those files, and the API compares it with the registered Build after it has answered.
+
+- **Incident:** a mismatch opens one High **Tampered Build** Incident per Build, naming the file, the registered and the observed hash and the page origin. The attestation verdict and Shield do not change.
+- **Arming:** a Build opens Incidents only after one report matched it fully, so a pipeline that changes files after Harden does not raise a false alarm. The Build page shows "watched since" or "not yet seen unmodified".
+- **Stale, not tampered:** a hash that is the registered one for the same path in a recent Build (one of the newest 20, or registered in the last 30 days) is ignored.
+- **Limits per Build:** 20 new file-and-hash pairs an hour, 50 in any 24 hours, 600 mismatching reports an hour. When a limit hid a distinct hash, the Incident says so.
+- **Honest limits:** nothing in the field sends reports until Guard's collector ships (21b). It catches non-adaptive tampering only: a modified bundle can strip the marker, strip Guard or report the registered hashes. Anyone with the public App id can forge mismatches for an armed Build, and can also spend its limits, within the numbers above. The RRS does not change.
+
 ## Release gate
 
 `npm run gate:release` checks a release candidate against every line of QASUITE §16 and SECURITY §12 and writes a signed report to `reports/gate/` (gitignored).

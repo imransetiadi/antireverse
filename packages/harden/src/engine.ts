@@ -8,8 +8,9 @@ import { type CanaryScope, deriveCanaries } from "@antireverse/protocol/server";
 import type * as t from "@babel/types";
 import { generateCode, parseSource } from "./babel.ts";
 import { type BeaconConfig, beaconStatement } from "./beacon.ts";
-import { isDeclarationFile, plantCanaries } from "./canaries.ts";
+import { isDeclarationFile, type PlantedMarker, plantCanaries } from "./canaries.ts";
 import { EMPTY_ALLOWLIST, type LeakFinding, scanLeaks } from "./leaks/scan.ts";
+import { assertMarkerBuildId } from "./marker.ts";
 import { createManglePass } from "./passes/mangle.ts";
 import { createStringsPass } from "./passes/strings.ts";
 import { mulberry32 } from "./rng.ts";
@@ -158,6 +159,11 @@ export interface BundleOptions extends HardenOptions {
    * with the Canaries, in the same file, in one planting step (the budget counts both). Default: none.
    */
   beacon?: BeaconConfig;
+  /**
+   * The integrity marker to plant (slice 21a): the Build id it names. Planted after the Canaries (and the beacon), in
+   * the same file, with as many files as the size budget holds; it never fails the bundle. Default: none.
+   */
+  integrityMarker?: { buildId: string };
 }
 
 export interface BundleLeakScan {
@@ -179,6 +185,11 @@ export interface BundleResult extends HardenResult {
   plantError?: string;
   /** The planted Clone Beacon (token and origins; it sits in `plantedIn`), or null when none was asked for. */
   beacon: ManifestBeacon | null;
+  /**
+   * The planted integrity marker: the files it lists, in order (empty: it did not fit the size budget and was not
+   * planted), of the `eligible` protected JavaScript files. Null when none was asked for, or nothing was planted.
+   */
+  integrity: PlantedMarker | null;
 }
 
 /**
@@ -188,6 +199,9 @@ export interface BundleResult extends HardenResult {
  * deterministic: the same input and seed give byte-identical files and the same Canaries.
  */
 export function hardenBundle(input: BundleInput, options: BundleOptions): BundleResult {
+  // The one input that throws: an integrity marker for something that is not a Build id (a programming error of the
+  // caller, never a property of the bundle). Refused before the scan, so nothing is half done.
+  if (options.integrityMarker !== undefined) assertMarkerBuildId(options.integrityMarker.buildId);
   const seed = options.seed >>> 0;
   const scanned = new Map<string, string>();
   for (const [path, text] of Object.entries(input.sources)) scanned.set(path, text);
@@ -209,6 +223,7 @@ export function hardenBundle(input: BundleInput, options: BundleOptions): Bundle
       canaries: [],
       plantedIn: null,
       beacon: null,
+      integrity: null,
     };
   }
   const leakScan: BundleLeakScan = {
@@ -234,6 +249,7 @@ export function hardenBundle(input: BundleInput, options: BundleOptions): Bundle
       canaries,
       { originals: input.sources, sizePct: budget?.sizePct ?? DEFAULT_BUDGET.sizePct },
       beacon,
+      options.integrityMarker,
     );
     return {
       ...result,
@@ -243,9 +259,10 @@ export function hardenBundle(input: BundleInput, options: BundleOptions): Bundle
       canaries,
       plantedIn: planted.plantedIn,
       beacon: wanted ? { token: wanted.token, origins: [...wanted.origins] } : null,
+      integrity: planted.integrity ?? null,
     };
   } catch (error) {
     const plantError = error instanceof Error ? error.message : String(error);
-    return { ...result, leakScan, seed, canaries, plantedIn: null, plantError, beacon: null };
+    return { ...result, leakScan, seed, canaries, plantedIn: null, plantError, beacon: null, integrity: null };
   }
 }

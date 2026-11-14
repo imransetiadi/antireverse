@@ -10,6 +10,7 @@ import { createPurgeJob } from "../src/data/purge.ts";
 import { type OwnedDb, openDb, type Queryable } from "../src/db/db.ts";
 import { type BeaconRecorder, createBeaconRecorder } from "../src/detect/beacon.ts";
 import { createDetector } from "../src/detect/detector.ts";
+import { createIntegrityRecorder } from "../src/detect/integrity.ts";
 import type { ProveNetwork } from "../src/prove/deps.ts";
 import { createRecheckJob } from "../src/prove/recheck.ts";
 import { createSigner } from "../src/signer.ts";
@@ -289,6 +290,86 @@ describe("Clone Beacon during a pending deletion (kept open, D-082) and after th
     await recorder.flush();
     expect(recorder.dropped()["unknown-token"]).toBe(before + 1);
     expect(recorder.dropped().failed).toBe(0);
+  });
+});
+
+describe("Tamper recorder during a pending deletion (kept open like the Clone Beacon, D-082) and after the purge", () => {
+  it("still arms a Build and records a Tampered Build Incident while pending; the purge removes it and the recorder forgets", async () => {
+    const clock = { ms: T0 };
+    const now = () => new Date(clock.ms);
+    const db = await openDb();
+    const opened: string[] = [];
+    const recorder = createIntegrityRecorder({
+      db,
+      notifier: { incidentOpened: (_incident, organizationId) => opened.push(organizationId) },
+      now,
+      logger: captureLogger(),
+    });
+    const api = await makeTestApi({ db, now, integrity: recorder });
+    try {
+      const org = await organization(api, "Acme");
+      const appId = (await createAppFor(api, org.admin)).app.id;
+      const registered = "a".repeat(64);
+      const manifest: BuildManifest = {
+        ...EXAMPLE_BUILD_MANIFEST,
+        build_id: newId("bld"),
+        app_id: appId,
+        environment: "production",
+        version: "1.0.2",
+        artifacts: [{ path: "app.js", sha256: registered, bytes: 10 }],
+        integrity: { files: ["app.js"] },
+      };
+      expect((await api.app.request(`/v1/apps/${appId}/builds`, json({ manifest }, bearer(org.admin)))).status).toBe(
+        201,
+      );
+      await requestDeletion(api, org);
+      const send = async (hex: string) => {
+        recorder.report({
+          appId,
+          report: {
+            build: manifest.build_id,
+            files: [{ i: 0, h: Buffer.from(hex, "hex").toString("base64url") }],
+            skipped: 0,
+          },
+          originHeader: "https://shop.example",
+          address: "203.0.113.77",
+        });
+        await recorder.flush();
+      };
+      const count = (table: string) =>
+        api.db.owner(async (q) => {
+          const { rows } = await q.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM ${table} WHERE organization_id = $1`,
+            [org.organizationId],
+          );
+          return rows[0]?.n ?? 0;
+        });
+      // The decided behaviour (D-082): a keyless public recorder stays open while the deletion is pending.
+      await send(registered);
+      await send("b".repeat(64));
+      expect(await count("incidents")).toBe(1);
+      expect(await count("detections")).toBe(1);
+      expect(opened).toEqual([org.organizationId]);
+      expect(recorder.trackedBuilds()).toBe(1);
+
+      clock.ms += 7 * DAY + 1;
+      const job = createPurgeJob({
+        db: api.db,
+        signer: createSigner(),
+        now,
+        logger: captureLogger(),
+        onPurged: (organizationId) => recorder.forget(organizationId),
+      });
+      expect(await job.runOnce()).toMatchObject({ purged: 1 });
+      expect(await count("incidents")).toBe(0);
+      expect(recorder.trackedBuilds()).toBe(0);
+      const before = recorder.dropped()["unknown-build"];
+      await send("c".repeat(64));
+      expect(recorder.dropped()["unknown-build"]).toBe(before + 1);
+      expect(recorder.dropped().failed).toBe(0);
+    } finally {
+      await api.close();
+    }
   });
 });
 

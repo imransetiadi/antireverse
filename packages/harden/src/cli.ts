@@ -12,6 +12,10 @@
 //     register error.
 //   - Clone Beacon (slice 10): `--origin` needs `--register`; origins are validated with the other --register
 //     arguments, before any work (exit 2); the token is derived locally from the seed, App and version.
+//   - Integrity marker (slice 21a): with --register one more statement is planted with the Canaries: the Build id and
+//     up to 32 artifact paths under `globalThis[Symbol.for("ar.build")]`, identifiers only. It never fails a run: when
+//     it does not fit the size budget it is planted with fewer files or not at all, and the report and the Manifest
+//     (`integrity.files`) say so. `--no-integrity-marker` turns it off. It is not the `--integrity` self-check.
 //   - Leak scan (slice 07): every input file is scanned before any transform. An unsuppressed finding exits
 //     with code 3, writes nothing and registers nothing. A finding's value is never printed: only its rule,
 //     path:line, mask and fingerprint. There is no flag to skip the scan.
@@ -50,6 +54,7 @@ import {
   type Environment,
   type FindingsSummary,
   ID_PATTERNS,
+  INTEGRITY_LIMITS,
   isLocalOrigin,
   type LogicFile,
   type ManifestBeacon,
@@ -67,6 +72,7 @@ import {
 } from "@antireverse/protocol/server";
 import { type AssessmentFile, assessmentUploadProblem, consoleBuildUrl, requestAssessment } from "./assess.ts";
 import { beaconEndpointUrl } from "./beacon.ts";
+import type { PlantedMarker } from "./canaries.ts";
 import { readComponents } from "./components.ts";
 import { type BundleLeakScan, hardenBundle } from "./engine.ts";
 import { checkEquivalence } from "./equivalence.ts";
@@ -181,6 +187,16 @@ Clone Beacon (needs --register):
                        local; repeat for up to ${BEACON_LIMITS.originsMax}. A copy of the bundle running on any other public origin
                        reports it once (navigator.sendBeacon to <endpoint>/v1/beacon). Planted with the Canaries.
 
+Integrity marker (on with --register):
+  --no-integrity-marker
+                       Do not plant the integrity marker. By default a registered Build carries one statement, planted
+                       with the Canaries, that names the Build id and up to ${INTEGRITY_LIMITS.filesMax} of its files (paths only, never a
+                       hash) under globalThis[Symbol.for("ar.build")], so that Guard can report what a browser received
+                       and the API can compare it with this Build. It never fails a run: when it does not fit the size
+                       budget it is planted with fewer files, or not at all, and the report says so. Serve the files
+                       byte-identical: a step that rewrites them after Harden (a minifier, an HTML rewriter, a CDN
+                       that injects code) changes their hashes.
+
 Register the Build (sends ONLY the Manifest — no source, no bundle, no seed — and, beside it, the lockfile's
 components, the --routes inventory and the --logic file):
   --register --endpoint <url> --key-env <VAR> --app <appId> --environment <env> --build-version <v>
@@ -253,6 +269,8 @@ interface Flags {
   buildVersion?: string | undefined;
   /** `--origin` values in the order given; `undefined` marks an `--origin` with no value. */
   origins: Array<string | undefined>;
+  /** `--no-integrity-marker`: the integrity marker is not planted (slice 21a). */
+  noIntegrityMarker: boolean;
   /** `--lockfile`: absent = the default; `null` = the flag was given without a value. */
   lockfile?: string | null | undefined;
   /** `--fail-on`: absent = no gate; `null` = the flag was given without a value. */
@@ -272,7 +290,14 @@ interface Flags {
 }
 
 function parseFlags(args: string[]): { dir: string | undefined; flags: Flags; unknown: string | undefined } {
-  const flags: Flags = { profile: "balanced", integrity: false, json: false, register: false, origins: [] };
+  const flags: Flags = {
+    profile: "balanced",
+    integrity: false,
+    json: false,
+    register: false,
+    origins: [],
+    noIntegrityMarker: false,
+  };
   let dir: string | undefined;
   /** The first unknown `--flag`: refused, so its value is never taken as the bundle folder. */
   let unknown: string | undefined;
@@ -323,6 +348,9 @@ function parseFlags(args: string[]): { dir: string | undefined; flags: Flags; un
         break;
       case "--origin":
         flags.origins.push(args[++i]);
+        break;
+      case "--no-integrity-marker":
+        flags.noIntegrityMarker = true;
         break;
       case "--lockfile":
         flags.lockfile = args[++i] ?? null;
@@ -675,6 +703,8 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
             },
           }
         : {}),
+      // The integrity marker names the Build this run registers (slice 21a): only with --register.
+      ...(flags.register && !flags.noIntegrityMarker ? { integrityMarker: { buildId } } : {}),
     },
   );
 
@@ -768,6 +798,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
         : {}),
       ...(routes ? { routes: { count: routes.length, digest: routesDigest(routes) } } : {}),
       ...(logic ? { logic: { count: logic.functions.length, digest: logicDigest(logic) } } : {}),
+      ...(result.integrity ? { integrityFiles: result.integrity.files } : {}),
     });
     const reg = await registerBuild({
       endpoint: flags.endpoint as string,
@@ -881,6 +912,7 @@ export async function main(argv: string[], io: CliIo): Promise<number> {
     canaries: result.canaries,
     plantedIn: result.plantedIn,
     beacon: result.beacon,
+    marker: result.integrity,
     inventory,
     allSkipped,
     findings,
@@ -1245,6 +1277,8 @@ interface ReportInput {
   canaries: Canary[];
   plantedIn: string | null;
   beacon: ManifestBeacon | null;
+  /** The planted integrity marker (slice 21a); null when none was asked for. */
+  marker: PlantedMarker | null;
   inventory: { components: Component[]; skipped: number } | null;
   /** The dependencies a lockfile listed when every one was skipped (inventory off); null otherwise. */
   allSkipped: number | null;
@@ -1274,6 +1308,17 @@ function emitReport(io: CliIo, input: ReportInput): void {
       canaries_planted_in: input.plantedIn,
       // The token is in the public bundle anyway; it is reported so a deployment can be checked against it.
       ...(input.beacon ? { beacon: { ...input.beacon, planted_in: input.plantedIn } } : {}),
+      // The files the marker lists, in its order (empty: it did not fit and was not planted), and how many
+      // protected files it had to leave out.
+      ...(input.marker
+        ? {
+            integrity_marker: {
+              files: input.marker.files,
+              planted_in: input.marker.files.length > 0 ? input.plantedIn : null,
+              dropped: markerDropped(input.marker),
+            },
+          }
+        : {}),
       ...(input.registered ? { registered: input.registered } : {}),
       // Counts only: the component list itself is never printed.
       components: input.inventory
@@ -1319,6 +1364,7 @@ function emitReport(io: CliIo, input: ReportInput): void {
     const n = input.beacon.origins.length;
     lines.push(`✓ Clone Beacon: on (${n} origin${n === 1 ? "" : "s"}) in ${input.plantedIn}`);
   }
+  lines.push(...markerLines(input));
   lines.push(...inventoryLines(input));
   lines.push(...routeLines(input));
   lines.push(...logicLines(input));
@@ -1333,6 +1379,30 @@ function emitReport(io: CliIo, input: ReportInput): void {
     lines.push(...rrsGateLines(input.rrsGate, input.assessment.id, input.assessment.tier));
   }
   io.stdout(`${lines.join("\n")}\n`);
+}
+
+/** Protected files the marker could have listed (at most 32) and did not. */
+function markerDropped(marker: PlantedMarker): number {
+  return Math.min(marker.eligible, INTEGRITY_LIMITS.filesMax) - marker.files.length;
+}
+
+/** The integrity marker's line: on, degraded (and why), or off. Nothing without --register. */
+function markerLines(input: ReportInput): string[] {
+  if (!input.flags.register) return [];
+  if (input.marker === null) return ["  Integrity marker: off (--no-integrity-marker)"];
+  const listed = input.marker.files.length;
+  const wanted = listed + markerDropped(input.marker);
+  if (listed === 0) {
+    return [
+      "! Integrity marker: not planted (it does not fit the size budget); this Build cannot be checked for tampering",
+    ];
+  }
+  if (listed < wanted) {
+    return [
+      `! Integrity marker: ${listed} of ${wanted} files in ${input.plantedIn} (the rest did not fit the size budget)`,
+    ];
+  }
+  return [`✓ Integrity marker: ${listed} file${listed === 1 ? "" : "s"} in ${input.plantedIn}`];
 }
 
 /** Counts only — never a package name. */

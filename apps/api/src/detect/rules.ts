@@ -144,6 +144,8 @@ const COUNTS: Record<DetectionRuleKey, (event: StoredEvent, legacy: LegacyCovera
   "exploit-attempt": patchDecision,
   // A failure or a throttle of a login protection (`stuffingKind`); the Detector counts a throttle once per client.
   "credential-stuffing": (event, legacy) => stuffingKind(event, legacy) !== null,
+  // Counts integrity reports of an attestation (slice 21a), never Events: no Event opens a tampered-build Incident.
+  "tampered-build": () => false,
 };
 
 const ENFORCED_BLOCK_SQL = "(payload->'decision'->>'action' = 'block' AND payload->'decision'->>'mode' = 'enforce')";
@@ -214,14 +216,19 @@ export const NEEDS_COVERAGE_SQL = `(${sql.unstamped("payload")} AND (${sql.throt
 
 /**
  * The same conditions as `COUNTS`, over the `payload` column of `events`. Constant text: no value goes in.
- * `clone-origin` and `vulnerable-component` have none: their Incidents have no Events as evidence.
+ * `clone-origin`, `vulnerable-component` and `tampered-build` have none: their Incidents have no Events as evidence.
  * `canary-touched`, `credential-stuffing` and `failed-signin-burst` take a parameter and are written in
  * `ruleConditionSql`.
  */
 const COUNTS_SQL: Record<
   Exclude<
     DetectionRuleKey,
-    "canary-touched" | "clone-origin" | "vulnerable-component" | "credential-stuffing" | "failed-signin-burst"
+    | "canary-touched"
+    | "clone-origin"
+    | "vulnerable-component"
+    | "credential-stuffing"
+    | "failed-signin-burst"
+    | "tampered-build"
   >,
   string
 > = {
@@ -255,6 +262,7 @@ const isParam = (param: string | undefined): param is `$${number}` =>
 export function ruleConditionSql(rule: DetectionRuleKey, param?: `$${number}`, outer?: string): string {
   if (rule === "clone-origin") throw new TypeError("clone-origin counts Clone Beacon reports, not Events.");
   if (rule === "vulnerable-component") throw new TypeError("vulnerable-component counts Findings, not Events.");
+  if (rule === "tampered-build") throw new TypeError("tampered-build counts integrity reports, not Events.");
   if (rule === "credential-stuffing") {
     if (!isParam(param)) throw new TypeError("credential-stuffing needs the parameter holding the limit Rules.");
     if (outer !== undefined && !/^[a-z_]+$/.test(outer)) throw new TypeError("outer must be a table name.");

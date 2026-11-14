@@ -12,6 +12,7 @@ import type { EventBus } from "./bus.ts";
 import type { Db } from "./db/db.ts";
 import { type BeaconRecorder, createBeaconRecorder } from "./detect/beacon.ts";
 import type { PolicyPublished } from "./detect/detector.ts";
+import { createIntegrityRecorder, type IntegrityRecorder } from "./detect/integrity.ts";
 import { createIncidentQueue, type IncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger, redacting } from "./log.ts";
 import { type AddressHasher, createAddressHasher } from "./mail/address-key.ts";
@@ -47,6 +48,7 @@ import { usageRoutes } from "./routes/usage.ts";
 import { createSigner, type Signer } from "./signer.ts";
 import { sloRequests } from "./slo/middleware.ts";
 import type { SloService } from "./slo/service.ts";
+import { integrityBuildOf } from "./stores/integrity.ts";
 import type { UsageSalts } from "./usage/salts.ts";
 
 export interface AppDeps {
@@ -95,6 +97,11 @@ export interface AppDeps {
    * the one it flushes on close).
    */
   beacon?: BeaconRecorder;
+  /**
+   * Judges the integrity report of an attestation after its response (slice 21a). Default: a recorder on `db` and the
+   * notifier (`startApi` passes the one it flushes on close).
+   */
+  integrity?: IntegrityRecorder;
   /** The client address of a request, for the prefix of a beacon reporter or an attestation caller. Default: the socket's peer address. */
   clientAddress?: ClientAddress;
   /**
@@ -212,6 +219,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       email: deps.email,
     });
   const beacon = deps.beacon ?? createBeaconRecorder({ db: deps.db, notifier, now: deps.now, logger });
+  const integrity = deps.integrity ?? createIntegrityRecorder({ db: deps.db, notifier, now: deps.now, logger });
   const attestation = deps.attestation ?? createAttestationKeys({ now: deps.now, logger });
   const clientAddress = deps.clientAddress ?? socketAddress;
   const exposureIncidents = deps.exposureIncidents ?? createIncidentQueue({ db: deps.db, notifier, logger });
@@ -227,6 +235,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       ...deps,
       incidents: exposureIncidents,
       onBeaconRegistered: (appId, token) => beacon.tokenRegistered(appId, token),
+      onBuildRegistered: (organizationId, manifest) =>
+        integrity.buildRegistered(integrityBuildOf(organizationId, manifest)),
     }),
   );
   app.route("/", inventoryRoutes({ db: deps.db, incidents: exposureIncidents, now: deps.now }));
@@ -252,6 +262,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       logger,
       usageSalts: deps.usageSalts,
       usageDeviceDailyCap: deps.usageDeviceDailyCap,
+      integrity,
     }),
   );
   app.route(

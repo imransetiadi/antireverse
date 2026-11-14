@@ -35,6 +35,9 @@ interface IncidentRow {
   build_id: string | null;
   origin: string | null;
   advisory_id: string | null;
+  artifact_path: string | null;
+  observed_sha256: string | null;
+  capped_at: Date | null;
 }
 
 interface DetectionRow {
@@ -49,12 +52,23 @@ interface DetectionRow {
   detected_at: Date;
   canary_id: string | null;
   origin: string | null;
+  artifact_path: string | null;
+  observed_sha256: string | null;
 }
 
-const INCIDENT_COLUMNS =
-  "id, app_id, environment, rule, severity, title, status, ip_prefix, first_seen, last_seen, detection_count, created_at, updated_at, canary_id, build_id, origin, advisory_id";
+/**
+ * The file and the observed hash of a `tampered-build` Incident are those of its first Detection (slice 21a: the
+ * two columns live on `detections` only, D-100): the earliest, and of Detections of one instant (two files of one
+ * report) the first by path. Null for every other rule, whose Detections are not even read.
+ */
+const firstDetection = (column: "artifact_path" | "observed_sha256") =>
+  `(SELECT d.${column} FROM detections d
+     WHERE incidents.rule = 'tampered-build' AND d.organization_id = incidents.organization_id
+       AND d.incident_id = incidents.id
+     ORDER BY d.detected_at, d.artifact_path, d.observed_sha256, d.id LIMIT 1) AS ${column}`;
+const INCIDENT_COLUMNS = `id, app_id, environment, rule, severity, title, status, ip_prefix, first_seen, last_seen, detection_count, created_at, updated_at, canary_id, build_id, origin, advisory_id, ${firstDetection("artifact_path")}, ${firstDetection("observed_sha256")}, capped_at`;
 const DETECTION_COLUMNS =
-  "id, rule, app_id, environment, ip_prefix, count, window_start, window_end, detected_at, canary_id, origin";
+  "id, rule, app_id, environment, ip_prefix, count, window_start, window_end, detected_at, canary_id, origin, artifact_path, observed_sha256";
 
 function toIncident(row: IncidentRow): Incident {
   return {
@@ -75,6 +89,9 @@ function toIncident(row: IncidentRow): Incident {
     build_id: row.build_id,
     origin: row.origin,
     advisory_id: row.advisory_id,
+    artifact_path: row.artifact_path,
+    observed_sha256: row.observed_sha256,
+    detections_capped: row.capped_at !== null,
   };
 }
 
@@ -91,6 +108,8 @@ function toDetection(row: DetectionRow): Detection {
     detected_at: row.detected_at.toISOString(),
     canary_id: row.canary_id,
     origin: row.origin,
+    artifact_path: row.artifact_path,
+    observed_sha256: row.observed_sha256,
   };
 }
 
@@ -131,11 +150,18 @@ export interface DetectionInput {
    * prefix (or none).
    */
   exploit?: { advisoryId: string } | undefined;
+  /**
+   * For `tampered-build` only (slice 21a): the Build, the file of its integrity marker, the SHA-256 a browser
+   * observed for it (lowercase hex) and the page's origin. The Build is the group: one Incident per (App,
+   * Environment, Build), without a prefix or an origin of its own; the Detection keeps the origin and the reporter's
+   * prefix (or none).
+   */
+  tamper?: { buildId: string; artifactPath: string; observedSha256: string; origin: string } | undefined;
 }
 
 /**
  * Records one Detection and groups it: it joins the open or acknowledged Incident of the same (App,
- * Environment, rule, Canary, origin, prefix), else a new Incident opens. `opened` says which, so that only a new
+ * Environment, rule, Canary, origin, advisory, prefix) — and, for `tampered-build`, Build —, else a new Incident opens. `opened` says which, so that only a new
  * Incident alerts. Run in one transaction of the Detection's Organization.
  */
 export async function recordDetection(
@@ -146,12 +172,20 @@ export async function recordDetection(
   const canaryId = input.canary?.id ?? null;
   const origin = input.clone?.origin ?? null;
   const advisoryId = input.vulnerability?.advisoryId ?? input.exploit?.advisoryId ?? null;
-  const buildId = input.canary?.buildId ?? input.clone?.buildId ?? input.vulnerability?.buildId ?? null;
-  // A clone Incident is grouped by origin and has no prefix of its own; a vulnerable-component Incident by advisory.
+  const buildId =
+    input.canary?.buildId ?? input.clone?.buildId ?? input.vulnerability?.buildId ?? input.tamper?.buildId ?? null;
+  // A clone Incident is grouped by origin and has no prefix of its own; a vulnerable-component Incident by advisory;
+  // a tampered-build Incident by Build.
   const incidentPrefix =
-    input.clone === undefined && input.vulnerability === undefined && input.exploit === undefined
+    input.clone === undefined &&
+    input.vulnerability === undefined &&
+    input.exploit === undefined &&
+    input.tamper === undefined
       ? input.ipPrefix
       : null;
+  // A tampered-build Detection names the page's origin; its Incident has none (the Build is the group).
+  const detectionOrigin = input.tamper?.origin ?? origin;
+  const groupBuildId = input.tamper?.buildId ?? null;
   const severity = input.vulnerability?.severity ?? input.rule.severity;
   // The row is locked, so that a status change and a Detection never interleave.
   const found = await q.query<IncidentRow>(
@@ -161,6 +195,7 @@ export async function recordDetection(
        AND canary_id IS NOT DISTINCT FROM $6::text
        AND origin IS NOT DISTINCT FROM $7::text
        AND advisory_id IS NOT DISTINCT FROM $8::text
+       AND ($9::text IS NULL OR build_id = $9::text)
        AND status IN ('open', 'acknowledged')
      FOR UPDATE`,
     [
@@ -172,6 +207,7 @@ export async function recordDetection(
       canaryId,
       origin,
       advisoryId,
+      groupBuildId,
     ],
   );
   let row: IncidentRow | undefined;
@@ -222,9 +258,9 @@ export async function recordDetection(
 
   const detection = await q.query<DetectionRow>(
     `INSERT INTO detections (id, organization_id, incident_id, app_id, environment, rule, ip_prefix, count,
-       window_start, window_end, detected_at, canary_id, origin, advisory_id)
+       window_start, window_end, detected_at, canary_id, origin, advisory_id, artifact_path, observed_sha256)
      VALUES ($1, $2, $3, $4, $5, $6, $7::text, $8, $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::text,
-       $13::text, $14::text)
+       $13::text, $14::text, $15::text, $16::text)
      RETURNING ${DETECTION_COLUMNS}`,
     [
       newId("dtc"),
@@ -239,13 +275,21 @@ export async function recordDetection(
       input.windowEnd,
       at,
       canaryId,
-      origin,
+      detectionOrigin,
       advisoryId,
+      input.tamper?.artifactPath ?? null,
+      input.tamper?.observedSha256 ?? null,
     ],
   );
   const detectionRow = detection.rows[0];
   if (detectionRow === undefined) throw new Error("The Detection was not stored.");
-  return { incident: toIncident(row), detection: toDetection(detectionRow), opened };
+  const incident = toIncident(row);
+  // A newly opened tampered-build Incident was returned before its first Detection existed: it is this one.
+  if (opened && input.tamper !== undefined) {
+    incident.artifact_path = input.tamper.artifactPath;
+    incident.observed_sha256 = input.tamper.observedSha256;
+  }
+  return { incident, detection: toDetection(detectionRow), opened };
 }
 
 /** The Incidents of the transaction's Organization, newest first by `last_seen`, then by id; optionally filtered. */

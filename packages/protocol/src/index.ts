@@ -13,6 +13,7 @@ export * from "./data-controls.ts";
 export * from "./events.ts";
 export * from "./exposure.ts";
 export * from "./incidents.ts";
+export * from "./integrity.ts";
 export * from "./logic.ts";
 export * from "./patches.ts";
 export * from "./policy.ts";

@@ -300,7 +300,7 @@ No request or response bodies, no query strings, no raw account identifiers. Rou
 
 | Signal | Observes | Confidence | Used for |
 |---|---|---|---|
-| `tamper.integrity_mismatch` | Code region hash differs from the Build Manifest | High | Verdict `hostile` |
+| `tamper.integrity_mismatch` | A protected file's hash, as observed in the browser, differs from the registered Build (compared on the server) | High | "Tampered Build" Incident; the verdict is unchanged until a later decision (D-100) |
 | `tamper.guard_modified` | Guard self-check failed or challenge program result wrong | High | Verdict `hostile` |
 | `hook.native_api` | Patched network, crypto or reflection primitives | High | Verdict `suspect` or `hostile` |
 | `origin.unauthorized` | Running on an origin outside the signed allowlist | High | Clone Beacon |

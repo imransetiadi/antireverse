@@ -122,7 +122,7 @@ How we know Airverse works: that it protects, that it does not break the custome
 | ID | Case | Expected |
 |---|---|---|
 | TC-GRD-001 | Attestation on an untouched client | Token issued, lifetime ≤ 5 min, verdict `trusted` |
-| TC-GRD-002 | Patch one byte in a protected region | `tamper.integrity_mismatch`, verdict `hostile` |
+| TC-GRD-002 | Patch one byte in a protected file of an armed Build | `tamper.integrity_mismatch`: one High "Tampered Build" Incident; verdict unchanged (D-100) |
 | TC-GRD-003 | Drive the app with an automated browser | `automation.webdriver` reported |
 | TC-GRD-004 | Replace network primitives before Guard loads | `hook.native_api` reported |
 | TC-GRD-005 | Attach a debugger | Signal reported; application unaffected by default |

@@ -46,7 +46,7 @@ In order, Harden:
 | `--profile <p>` | `light` = identifier mangling; `balanced` (default) = mangling + string encryption bound at the use site; `maximum` = `balanced` for now. |
 | `--out <dir>` | Writes the protected files. Without it Harden only reports and writes nothing. |
 | `--test <command>` | Runs this command against the protected copy as the equivalence gate. |
-| `--seed <n>` | An integer seed for reproducible output. |
+| `--seed <n>` | An integer seed for reproducible output (with `--register`, apart from the integrity marker's line, see below). |
 | `--map <file.json>` | A JSON map of `"relative/path": "skip"` to emit a file unchanged. |
 | `--integrity` | Wraps already-bundled (non-ESM) output in a tamper self-check. Refused on ESM input. |
 | `--leak-allow <file>` | The leak allowlist. Default: `.antireverse/leak-allow.json` in the working directory. |
@@ -87,6 +87,7 @@ More flags that work with `--register`:
 - `--lockfile <path>`: the npm lockfile to read (default `./package-lock.json`). Package names and versions are sent with the Build for known-vulnerability Findings.
 - `--fail-on <low|medium|high|critical>`: exit 4 when the registered Build has open Findings at or above that level.
 - `--origin <origin>`: plants a Clone Beacon. Give each origin your bundle is served from (`https://host[:port]`), up to 20; a copy running anywhere else reports once.
+- `--no-integrity-marker`: does not plant the integrity marker (see below).
 
 ```bash
 npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
@@ -95,6 +96,20 @@ npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
   --app <appId> --environment production --build-version 1.4.0 \
   --lockfile package-lock.json --fail-on high
 ```
+
+## Integrity marker
+
+With `--register`, Harden plants one more statement beside the Canaries: the **integrity marker**. It lets Airverse notice when the files a browser received are not the files of the Build you registered.
+
+- **What is planted.** One line, in the same file as the Canaries, that adds `{ b: <Build ID>, f: [<file paths>] }` to a list under `globalThis[Symbol.for("ar.build")]`. It holds identifiers only: the Build ID and up to 32 file paths, the planted file first and then the largest protected files. It never holds a hash, runs inside `try`/`catch`, and does nothing else.
+- **What is registered.** The Manifest lists the same paths in the same order (`integrity.files`), and for every file its SHA-256 and size (`artifacts`). The hash is of the exact bytes Harden writes to `--out`.
+- **How it is used.** An attestation may carry the hashes a browser observed for these files; the API compares them with the registered Build. Guard collects and sends the hashes from a later release: until then nothing in the field reports. A Build is watched from its first fully matching report; after that, a file whose hash differs opens a High **Tampered Build** Incident that names the Build, the file and both hashes. A file that belongs to another recent Build of the same App Environment (a deploy in progress, a cache) is not counted. Recent means one of the newest 20 Builds of that App Environment, or a Build registered in the last 30 days. The report never changes the attestation, the verdict or what Shield does.
+- **It never fails a build.** If the marker does not fit the size budget, Harden plants it with fewer files, or not at all. The report says so (`! Integrity marker: …`), `--json` has `integrity_marker` with the files and how many were left out, and the Manifest lists only the files that were planted.
+- **Reproducible output.** The marker names the Build ID, which is new on every run. Two runs with the same `--seed` are byte-identical apart from that one line, and identical altogether with `--no-integrity-marker`.
+
+> **Serve the files exactly as Harden wrote them.** The registered hashes are of the bytes in `--out`. A step that rewrites those files afterwards changes their hashes: a minifier or bundler run after Harden, a build step that appends a source-map comment or a banner, a server or CDN feature that injects or rewrites code (analytics snippets, "auto-minify", HTML or script rewriting, email obfuscation), a line-ending or encoding conversion in the deploy (CRLF, a byte order mark). Run Harden as the last step that touches the files. If a later step must change them, such a Build is never seen matching, so it is never watched and opens no Incident; turn the marker off with `--no-integrity-marker` to make that explicit.
+
+The marker is not the `--integrity` option: `--integrity` wraps a script in a self-check inside the bundle; the integrity marker only names the Build so that the comparison happens on the server.
 
 ## Reverse Assessment: `--routes`, `--logic`, `--assess`
 
@@ -192,5 +207,6 @@ When 4 and 5 or 6 both apply, 4 wins and both gates are reported.
 - A file that calls `eval` is left unmangled. Public export names, imports and property keys are preserved by design.
 - The leak scan matches patterns; multi-line or computed secrets and symlinked files are not caught.
 - Canaries are only seen where Shield runs. A cloner who edits the bundle can remove the Clone Beacon.
+- The integrity marker catches tampering that does not adapt to it. Someone who changes the files can also remove the marker, remove Guard, or report the registered hashes. An origin that was changed before it ever served the registered files is never seen matching, so it is never watched. A page of an older Build that is neither among the newest 20 Builds of its App Environment nor registered in the last 30 days, and is still served somewhere (a long-lived cache, a forgotten host), is reported as tampered when it loads a file of a newer Build: register Builds for what you serve, and take old deployments down. Anyone who knows the public App ID can report a false mismatch for a watched Build, and can also use up the limits so that real reports of the same hour are not recorded. The limits are per Build: 20 new file-and-hash pairs an hour and 50 in any 24 hours, one Detection per file and hash per hour, and 600 reports an hour that carry a mismatch. When a limit hid something, the Incident says so ("More distinct hashes were reported than are recorded."). Until Guard collects the hashes (a later release), nothing in the field sends reports.
 
 See also: [Reverse Assessment](reverse-assessment.md), [Getting started](getting-started.md).

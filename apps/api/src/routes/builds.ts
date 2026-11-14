@@ -1,6 +1,7 @@
 import {
   BUILD_LIMITS,
   type Build,
+  type BuildManifest,
   type BuildResponse,
   EXPOSURE_LIMITS,
   type FindingsSummary,
@@ -89,6 +90,8 @@ export function buildRoutes(deps: {
   incidents: IncidentQueue;
   /** Told each beacon token registered with its App, after the commit (the Clone Beacon's caches forget it). */
   onBeaconRegistered?: (appId: string, token: string) => void;
+  /** Told each Build registered with its App, after the commit (slice 21a: the integrity recorder learns it without a lookup). */
+  onBuildRegistered?: (organizationId: string, manifest: BuildManifest) => void;
 }): Hono<AppEnv> {
   const { db } = deps;
   const now = deps.now ?? (() => new Date());
@@ -218,6 +221,9 @@ export function buildRoutes(deps: {
             `${manifest.artifacts.length} artifacts`,
             ...(manifest.canaries === undefined ? [] : [`${manifest.canaries.length} Canaries`]),
             ...(manifest.beacon === undefined ? [] : ["a Clone Beacon"]),
+            ...(manifest.integrity === undefined || manifest.integrity.files.length === 0
+              ? []
+              : [`an integrity marker of ${manifest.integrity.files.length} files`]),
             ...(components === undefined ? [] : [`${components.length} components`]),
             ...(inventory === undefined ? [] : [`${inventory.length} routes`]),
             ...(logic === undefined ? [] : [`${logic.functions.length} logic functions`]),
@@ -254,6 +260,7 @@ export function buildRoutes(deps: {
       if (result === null) return problem(c, "not-found");
       if (result === "token-taken") return problem(c, "conflict", undefined, "beacon-token-taken");
       if (manifest.beacon !== undefined) deps.onBeaconRegistered?.(appId, manifest.beacon.token);
+      deps.onBuildRegistered?.(organizationId, manifest);
       deps.incidents.enqueue(organizationId, result.opened);
       const response: BuildResponse =
         result.findings === undefined ? { build: result.build } : { build: result.build, findings: result.findings };

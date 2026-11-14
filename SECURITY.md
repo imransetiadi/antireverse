@@ -233,7 +233,7 @@ Prove contains a reverse-engineering toolbelt and an autonomous pentest engine. 
 | Source code, unprotected builds | — | **Never** | — | Stay in the customer's CI |
 | Build Manifest | Hashes, sizes, profile, costs | Yes | Life of the Build + 13 months | No code |
 | Protected artifact | The bundle that ships publicly | Opt-in | Assessment + 30 days | Needed for Prove |
-| Guard reports | Signal identifiers, random device identifier, Build | Yes | 30 days | No personal data by design |
+| Guard reports | Signal identifiers, random device identifier, Build; for tamper detection the Build id, file indexes and SHA-256 hashes of the Build's own protected files | Yes | 30 days; a mismatch is kept with its Incident (395 days) with the file path, observed hash, page origin and network prefix | No personal data by design; no URL or page content |
 | Request metadata | Method, route template, status, latency, network, country | Yes | By plan (7 days to 13 months) | No bodies, no query strings |
 | Account reference | Customer's user identifier | Hashed in Shield before sending | Same as events | Airverse never receives the raw value |
 | Evidence bundles | Assessment and Campaign output | Yes | 13 months | Tenant-scoped encryption |

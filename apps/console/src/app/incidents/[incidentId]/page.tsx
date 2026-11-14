@@ -25,8 +25,9 @@ async function load(key: string, incidentId: string) {
     const [appName, canaryBuild, patches] = await Promise.all([
       // The App is gone: the Incident stays readable and names the App by its id.
       getApp(key, appId).then((response) => response.app.name, orIfGone(appId)),
-      // A Canary Incident names its Build: the Build gives the Canary's kind and the version. Without it
-      // (gone, or not a Canary Incident) the facts show the ids alone.
+      // A Canary Incident names its Build: the Build gives the Canary's kind and the version; for a Tampered Build
+      // Incident (slice 21a) also the registered hash of the file. Without it (gone, or an Incident that names no
+      // Build) the facts show the ids alone.
       buildId === null
         ? Promise.resolve(null)
         : getBuild(key, appId, buildId).then((response) => response.build, orIfGone(null)),

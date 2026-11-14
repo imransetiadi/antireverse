@@ -14,6 +14,7 @@ import { createRetentionJob, type RetentionJob, type RetentionOptions } from "./
 import { type Db, openDb } from "./db/db.ts";
 import { createBeaconRecorder } from "./detect/beacon.ts";
 import { createDetector, type Detector } from "./detect/detector.ts";
+import { createIntegrityRecorder } from "./detect/integrity.ts";
 import { createIncidentQueue } from "./exposure/match.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { type AddressHasher, createAddressHasher } from "./mail/address-key.ts";
@@ -223,6 +224,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     slo: slo.recorder,
   });
   const beacon = createBeaconRecorder({ db, notifier, now: options.now, logger });
+  const integrity = createIntegrityRecorder({ db, notifier, now: options.now, logger });
   const exposureIncidents = createIncidentQueue({ db, notifier, logger });
   // The Detector is made once the server listens; until then a publish tells nobody.
   let detector: Detector | undefined;
@@ -236,6 +238,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     shutdown: shutdown.signal,
     notifier,
     beacon,
+    integrity,
     exposureIncidents,
     allowPrivateAlertUrls,
     slo,
@@ -296,6 +299,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     onPurged: (organizationId) => {
       started.forget(organizationId);
       beacon.forget(organizationId);
+      integrity.forget(organizationId);
       options.purge?.onPurged?.(organizationId);
     },
   });
@@ -335,6 +339,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     await retention.flush();
     await started.flush();
     await beacon.flush();
+    await integrity.flush();
     await exposureIncidents.flush();
     await notifier.drain();
     // Last before the database closes: the minute in progress, and every SLI the steps above recorded.

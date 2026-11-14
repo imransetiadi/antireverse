@@ -20,6 +20,9 @@
 // Slice 10: the newest Build has a Clone Beacon with two allowed origins (origins only, never the token); the
 // first App also gets an open "Clone detected" Incident for https://clone.example naming that Build, with two
 // Detections — one reporter network known, one unknown. Every Incident and Detection carries `origin`.
+// Slice 21a: the newest Build carries an integrity marker over its artifacts (`integrity.files`); the first App also
+// gets an open "Tampered Build" Incident for that Build's dist/vendor.js (stub-tamper.mjs, checked by a test against
+// the protocol), with two reports. It cannot be contained (409 containment-not-applicable).
 // Slice 19: the newest Build lists 412 components, the next 398, the oldest none. Every App has Findings in
 // every state — open (build and runtime), fixed, ignored, withdrawn (D-060) — with severities critical, high,
 // medium, low and unknown, against six synthetic advisories (one without a fix, one rated by nothing); the first App also gets
@@ -89,6 +92,7 @@ import { createOpsStore } from "./stub-ops.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
+import { integrityFilesOf, makeTamperIncident } from "./stub-tamper.mjs";
 import { createUsageStore } from "./stub-usage.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
@@ -380,6 +384,13 @@ function makeBuild(app, spec) {
     bytes: 1024 * (index + 1) + spec.version.length,
   }));
   return {
+    // Slice 21a: the integrity marker lists every artifact.
+    ...(spec.integrity
+      ? {
+          integrity: integrityFilesOf({ artifacts }),
+          integrity_first_match_at: new Date(created.getTime() + 60_000).toISOString(),
+        }
+      : {}),
     format: 1,
     build_id: newId("bld"),
     app_id: app.id,
@@ -428,6 +439,7 @@ function seedBuilds(app) {
       leakScan: { status: "clean", suppressed: 0 },
       canaries: true,
       beacon: ["https://shop.example", "https://www.shop.example"],
+      integrity: true,
       components: 412,
       logic: 2,
     }),
@@ -555,6 +567,7 @@ const RULES = {
   "credential-stuffing": { title: "Credential stuffing", severity: "high", threshold: 50 },
   "canary-touched": { title: "Canary used", severity: "high", threshold: 1 },
   "clone-origin": { title: "Clone detected", severity: "high", threshold: 1 },
+  "tampered-build": { title: "Tampered Build", severity: "high", threshold: 1 },
 };
 
 /** One stored Event of an Incident's evidence: what the rule counted, from the Incident's network. */
@@ -793,6 +806,23 @@ function seedIncidents(organizationId, app) {
   incidents.set(organizationId, [
     ...vulnerableIncident(organizationId, app, now),
     ...exploitIncident(organizationId, app, now),
+    ...(build?.integrity
+      ? [
+          makeTamperIncident(app, {
+            build,
+            path: build.integrity.files.at(-1),
+            status: "open",
+            reports: [
+              { origin: "https://shop.example", prefix: "198.51.100.0/24" },
+              { origin: "https://www.shop.example", prefix: null },
+            ],
+            endMs: now - 30_000,
+            gapMs: 4 * minute,
+            newId,
+            capped: true,
+          }),
+        ]
+      : []),
     makeCloneIncident(app, {
       origin: "https://clone.example",
       build,
@@ -1735,7 +1765,8 @@ const server = http.createServer(async (req, res) => {
     if (![900, 3600, 86400].includes(ttl)) {
       return problem(res, 400, "Invalid request", { errors: [{ path: "ttl_s", message: "Invalid option" }] });
     }
-    // A clone Incident, or any Incident without a network prefix, cannot be contained (slice 10).
+    // A clone Incident, or any Incident without a network prefix (a Tampered Build Incident among them, slice 21a),
+    // cannot be contained (slice 10).
     if (incident.rule === "clone-origin" || incident.ip_prefix === null) {
       return problem(res, 409, "Conflict", { reason: "containment-not-applicable" });
     }

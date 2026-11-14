@@ -10,7 +10,10 @@ export interface BuildTarget {
 interface BuildRow {
   manifest: BuildManifest;
   registered_at: Date;
+  integrity_first_match_at: Date | null;
 }
+
+const BUILD_COLUMNS = "manifest, registered_at, integrity_first_match_at";
 
 const OF_TARGET = "organization_id = $1::text AND app_id = $2::text";
 
@@ -25,6 +28,11 @@ function toBuild(row: BuildRow): Build {
     ...manifest,
     ...(canaries === undefined ? {} : { canaries: canaries.map(({ id, kind }) => ({ id, kind })) }),
     ...(beacon === undefined ? {} : { beacon: { origins: beacon.origins } }),
+    // Slice 21a: a Build whose integrity marker lists a file says since when it is watched (null: not yet seen
+    // unmodified). A Build without a marker is never watched and has no such member.
+    ...((manifest.integrity?.files.length ?? 0) === 0
+      ? {}
+      : { integrity_first_match_at: row.integrity_first_match_at?.toISOString() ?? null }),
     registered_at: row.registered_at.toISOString(),
   };
 }
@@ -42,7 +50,7 @@ export async function insertBuild(
   const { rows } = await q.query<BuildRow>(
     `INSERT INTO builds (organization_id, app_id, build_id, environment, version, profile, manifest, registered_at)
      VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::jsonb, $8::timestamptz)
-     RETURNING manifest, registered_at`,
+     RETURNING ${BUILD_COLUMNS}`,
     [
       input.organizationId,
       m.app_id,
@@ -62,7 +70,7 @@ export async function insertBuild(
 /** The newest `limit` Builds of the App, newest first: by `registered_at`, then Build id, both descending. */
 export async function listBuilds(q: Queryable, target: BuildTarget, limit: number): Promise<Build[]> {
   const { rows } = await q.query<BuildRow>(
-    `SELECT manifest, registered_at FROM builds
+    `SELECT ${BUILD_COLUMNS} FROM builds
      WHERE ${OF_TARGET}
      ORDER BY registered_at DESC, build_id DESC
      LIMIT $3`,
@@ -74,7 +82,7 @@ export async function listBuilds(q: Queryable, target: BuildTarget, limit: numbe
 /** One Build of the App, or null. Another Organization's or App's Build is null as well. */
 export async function findBuild(q: Queryable, target: BuildTarget, buildId: string): Promise<Build | null> {
   const { rows } = await q.query<BuildRow>(
-    `SELECT manifest, registered_at FROM builds WHERE ${OF_TARGET} AND build_id = $3::text`,
+    `SELECT ${BUILD_COLUMNS} FROM builds WHERE ${OF_TARGET} AND build_id = $3::text`,
     [target.organizationId, target.appId, buildId],
   );
   return rows[0] === undefined ? null : toBuild(rows[0]);

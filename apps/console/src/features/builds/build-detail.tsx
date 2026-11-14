@@ -121,6 +121,36 @@ function BuildBeacon({ build }: { build: Build }) {
 }
 
 /**
+ * The integrity marker of a Build (slice 21a), in one line: Off; or the number of files it lists and whether the
+ * Build is watched for tampering yet — since its first fully matching report — or not yet seen unmodified.
+ */
+function BuildIntegrity({ build }: { build: Build }) {
+  const files = build.integrity?.files.length ?? 0;
+  const since = build.integrity_first_match_at ?? null;
+  const status = files === 0 ? "off" : since === null ? "waiting" : "watched";
+  let value = t("build.integrity.off");
+  if (status === "waiting") {
+    value = files === 1 ? t("build.integrity.waiting.one") : t("build.integrity.waiting", { count: files });
+  } else if (status === "watched" && since !== null) {
+    const time = formatDateTime(since).text;
+    value =
+      files === 1 ? t("build.integrity.watched.one", { time }) : t("build.integrity.watched", { count: files, time });
+  }
+  return (
+    <div
+      data-testid="build-integrity"
+      data-status={status}
+      className="flex items-baseline justify-between gap-3 border-border border-b py-2"
+    >
+      <span className="text-fg-muted">{t("build.integrity")}</span>
+      <span data-testid="build-integrity-value" className={`code-3 ${status === "off" ? "text-fg-muted" : "text-fg"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/**
  * The markers of a Build (SCR-07 MARKERS): the leak-scan outcome, the Clone Beacon, and the Canaries planted
  * in it, by kind and id. Canary values and the beacon token are never shown: the API does not return them.
  */
@@ -146,6 +176,7 @@ function BuildMarkers({ build }: { build: Build }) {
           {scan.text}
         </span>
       </div>
+      <BuildIntegrity build={build} />
       <BuildBeacon build={build} />
       <div data-testid="build-canaries" className="flex flex-col gap-2">
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">

@@ -237,7 +237,10 @@ describe("--origin with --register: planting, report, --json and Manifest", () =
     expect(r.code).toBe(0);
     const token = deriveBeaconToken(1, { appId: EXAMPLE_BUILD.app_id, version: "1.0.0" });
     const written = readFileSync(join(out, "a.mjs"), "utf8");
-    expect(written.endsWith(`${beaconStatement(EXAMPLE_BUILD.app_id, token, [SHOP, WWW], ENDPOINT)}\n`)).toBe(true);
+    // The beacon follows the Canaries; from slice 21a the integrity marker's line follows the beacon.
+    const lines = written.trimEnd().split("\n");
+    expect(lines.at(-2)).toBe(beaconStatement(EXAMPLE_BUILD.app_id, token, [SHOP, WWW], ENDPOINT));
+    expect(lines.at(-1)).toContain('Symbol.for("ar.build")');
 
     expect(calls).toHaveLength(1);
     const manifest = BuildManifestSchema.parse(JSON.parse(calls[0]?.body ?? "").manifest);
@@ -274,7 +277,19 @@ describe("--origin with --register: planting, report, --json and Manifest", () =
     const one = await once("one", "1.0.0");
     const again = await once("again", "1.0.0");
     const next = await once("next", "1.0.1");
-    expect(again.code).toBe(one.code);
+    // From slice 21a a registered Build's integrity marker names its Build id, which is new on every run: the
+    // bytes are identical apart from that one line (and identical altogether with --no-integrity-marker).
+    const withoutMarker = (code: string) =>
+      code.replace(/^;\(function\(\)\{try\{var s=Symbol\.for\("ar\.build"\).*\n/m, "");
+    expect(withoutMarker(one.code)).not.toBe(one.code);
+    expect(withoutMarker(again.code)).toBe(withoutMarker(one.code));
+    const plain = async (name: string) => {
+      const args = ["harden", d, "--seed", "7", "--out", join(base, name), ...register("1.0.0"), "--origin", SHOP];
+      expect((await run([...args, "--no-integrity-marker"], { cwd: d })).code).toBe(0);
+      return readFileSync(join(base, name, "a.mjs"), "utf8");
+    };
+    expect(await plain("plain-one")).toBe(await plain("plain-two"));
+    expect(await plain("plain-three")).toBe(withoutMarker(one.code));
     expect(next.token).not.toBe(one.token);
     expect(next.code).toContain(next.token);
     expect(next.code).not.toContain(one.token);

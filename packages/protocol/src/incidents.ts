@@ -97,6 +97,9 @@ export const CONFIRMATION_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
  * (`decision.action` throttle), and those with status 401, 403 or 429 on a route a limit Rule of the published
  * Policy covers. Like `blocked-burst` it records its Detection on reaching `threshold`: the 50th such Event in
  * 5 minutes from one network prefix.
+ * `tampered-build` (slice 21a) counts integrity reports of an attestation, not Events, per (App, Environment, Build):
+ * one report whose observed hash of a protected file differs from the registered Build's records the Detection, once
+ * the Build is armed by its first fully matching report.
  * Deeply frozen: no consumer can change a threshold at run time.
  */
 export const DETECTION_RULES = deepFreeze([
@@ -107,6 +110,7 @@ export const DETECTION_RULES = deepFreeze([
   { key: "vulnerable-component", title: "Vulnerable component", severity: "high", threshold: 1, window_s: 3600 },
   { key: "exploit-attempt", title: "Exploit attempt", severity: "high", threshold: 1, window_s: 3600 },
   { key: "credential-stuffing", title: "Credential stuffing", severity: "high", threshold: 50, window_s: 300 },
+  { key: "tampered-build", title: "Tampered Build", severity: "high", threshold: 1, window_s: 3600 },
 ] as const satisfies readonly {
   key: string;
   title: string;
@@ -153,6 +157,18 @@ const IncidentAdvisoryIdSchema = AdvisoryIdSchema.nullable();
 /** The Canary a `canary-touched` Detection or Incident is about; null for every other rule. */
 const CanaryIdSchema = z.string().regex(ID_PATTERNS.cny).nullable();
 const CountSchema = z.int().min(0);
+/**
+ * The file a `tampered-build` Detection is about (a path of the Build's `integrity.files`) and the SHA-256 a browser
+ * observed for it, as lowercase hex like `artifacts[].sha256`; null for every other rule. On an Incident: those of
+ * its first Detection. Additive (slice 21a): a Detection or Incident from before the slice has neither and parses
+ * with null.
+ */
+const ArtifactPathSchema = text(256).min(1).nullable().default(null);
+const ObservedSha256Schema = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/)
+  .nullable()
+  .default(null);
 /** `whsec_` followed by 32 random bytes as 43 base64url characters (`generateSigningSecret` of the server entry). */
 const SigningSecretSchema = z.string().regex(/^whsec_[A-Za-z0-9_-]{43}$/);
 
@@ -170,7 +186,10 @@ export const DetectionSchema = z.object({
   window_end: isoDateTime(),
   detected_at: z.iso.datetime(),
   canary_id: CanaryIdSchema,
+  /** The foreign origin of a `clone-origin` Detection; the page's origin of a `tampered-build` one; else null. */
   origin: IncidentOriginSchema,
+  artifact_path: ArtifactPathSchema,
+  observed_sha256: ObservedSha256Schema,
 });
 export type Detection = z.infer<typeof DetectionSchema>;
 
@@ -194,10 +213,21 @@ export const IncidentSchema = z.object({
   created_at: z.iso.datetime(),
   updated_at: z.iso.datetime(),
   canary_id: CanaryIdSchema,
-  /** The Build the Canary or the Clone Beacon was planted in; null for every other rule. */
+  /**
+   * The Build the Canary or the Clone Beacon was planted in, or the Build a `tampered-build` Incident is about (it
+   * is that rule's group); null for every other rule.
+   */
   build_id: z.string().regex(ID_PATTERNS.bld).nullable(),
   origin: IncidentOriginSchema,
   advisory_id: IncidentAdvisoryIdSchema,
+  artifact_path: ArtifactPathSchema,
+  observed_sha256: ObservedSha256Schema,
+  /**
+   * For `tampered-build` (slice 21a): true once a cap dropped a distinct observed hash while the Incident was open, so
+   * more distinct hashes were reported than its Detections show. False for every other rule. Additive: an Incident
+   * from before the field parses with false.
+   */
+  detections_capped: z.boolean().default(false),
 });
 export type Incident = z.infer<typeof IncidentSchema>;
 
@@ -423,6 +453,8 @@ export const EXAMPLE_DETECTION: Detection = deepFreeze({
   detected_at: "2026-11-10T08:20:00.000Z",
   canary_id: null,
   origin: null,
+  artifact_path: null,
+  observed_sha256: null,
 });
 
 /** An open Incident holding `EXAMPLE_DETECTION`. */
@@ -444,6 +476,9 @@ export const EXAMPLE_INCIDENT: Incident = deepFreeze({
   build_id: null,
   origin: null,
   advisory_id: null,
+  artifact_path: null,
+  observed_sha256: null,
+  detections_capped: false,
 });
 
 /** An open Canary Incident: one request used the decoy key of `EXAMPLE_CANARIES`, planted in `EXAMPLE_BUILD`. */
@@ -465,6 +500,9 @@ export const EXAMPLE_CANARY_INCIDENT: Incident = deepFreeze({
   build_id: "bld_0123456789abcdef01234567",
   origin: null,
   advisory_id: null,
+  artifact_path: null,
+  observed_sha256: null,
+  detections_capped: false,
 });
 
 /** An open clone Incident: a copy of `EXAMPLE_BUILD` reported itself from a foreign origin. No prefix. */
@@ -486,6 +524,9 @@ export const EXAMPLE_CLONE_INCIDENT: Incident = deepFreeze({
   build_id: "bld_0123456789abcdef01234567",
   origin: "https://clone.example",
   advisory_id: null,
+  artifact_path: null,
+  observed_sha256: null,
+  detections_capped: false,
 });
 
 /**
@@ -510,6 +551,53 @@ export const EXAMPLE_FINDING_INCIDENT: Incident = deepFreeze({
   build_id: EXAMPLE_FINDING.build_id,
   origin: null,
   advisory_id: EXAMPLE_FINDING.advisory_id,
+  artifact_path: null,
+  observed_sha256: null,
+  detections_capped: false,
+});
+
+/**
+ * The Detection that opened `EXAMPLE_TAMPER_INCIDENT`: a browser on the App's own origin received bytes of
+ * `dist/index.js` of `EXAMPLE_BUILD` whose SHA-256 is not the registered one.
+ */
+export const EXAMPLE_TAMPER_DETECTION: Detection = deepFreeze({
+  id: "dtc_89abcdef0123456789abcdef",
+  rule: "tampered-build",
+  app_id: "app_89abcdef0123456789abcdef",
+  environment: "development",
+  ip_prefix: "203.0.113.0/24",
+  count: 1,
+  window_start: "2026-11-10T11:00:00.000Z",
+  window_end: "2026-11-10T11:00:00.000Z",
+  detected_at: "2026-11-10T11:00:00.000Z",
+  canary_id: null,
+  origin: "https://shop.example",
+  artifact_path: "dist/index.js",
+  observed_sha256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+});
+
+/** An open tampered-build Incident of `EXAMPLE_BUILD`. No prefix and no origin: its Detections carry them. */
+export const EXAMPLE_TAMPER_INCIDENT: Incident = deepFreeze({
+  id: "inc_0f1e2d3c4b5a69788796a5b4",
+  app_id: "app_89abcdef0123456789abcdef",
+  environment: "development",
+  rule: "tampered-build",
+  severity: "high",
+  title: "Tampered Build",
+  status: "open",
+  ip_prefix: null,
+  first_seen: "2026-11-10T11:00:00.000Z",
+  last_seen: "2026-11-10T11:00:00.000Z",
+  detection_count: 1,
+  created_at: "2026-11-10T11:00:00.000Z",
+  updated_at: "2026-11-10T11:00:00.000Z",
+  canary_id: null,
+  build_id: "bld_0123456789abcdef01234567",
+  origin: null,
+  advisory_id: null,
+  artifact_path: EXAMPLE_TAMPER_DETECTION.artifact_path,
+  observed_sha256: EXAMPLE_TAMPER_DETECTION.observed_sha256,
+  detections_capped: false,
 });
 
 /** A webhook channel as the API returns it: host and last 4 characters only, never the URL. */

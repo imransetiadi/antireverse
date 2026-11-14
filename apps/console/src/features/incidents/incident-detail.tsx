@@ -36,9 +36,9 @@ interface IncidentDetailProps {
   /** True when the address asks for the confirmation step of resolving. */
   confirmResolve: boolean;
   /**
-   * For a Canary or clone Incident: the Build its Canary or Clone Beacon was planted in, as the API returned
-   * it, which names the Canary's kind and the Build's version. Null when it could not be read: the facts then
-   * show the ids only.
+   * For a Canary, clone or Tampered Build Incident: the Build it names, as the API returned it, which gives the
+   * Canary's kind, the Build's version and (slice 21a) the registered hash of the tampered file. Null when it
+   * could not be read: the facts then show the ids only.
    */
   canaryBuild?: Build | null;
   /** The keyed address hashes in the evidence with their request counts (slice 09). */
@@ -153,12 +153,72 @@ function OriginFact({ origin }: { origin: string | null }) {
   );
 }
 
+/** A SHA-256 for display: its first 12 characters and an ellipsis. The full value goes in `title` and to Copy. */
+const shortSha = (sha256: string): string => `${sha256.slice(0, 12)}…`;
+
+/**
+ * One hash of a Tampered Build Incident: shortened monospace text with the full value as its title and a Copy
+ * button for it; "Not available" when there is none to show.
+ */
+function HashFact({ label, testId, sha256 }: { label: string; testId: string; sha256: string | null }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <dt className={TERM}>{label}</dt>
+      <dd data-testid={testId} className="flex min-w-0 flex-wrap items-start gap-2">
+        {sha256 === null ? (
+          <span className="text-fg-muted">{t("incident.fact.hash.unavailable")}</span>
+        ) : (
+          <>
+            <span data-testid={`${testId}-value`} title={sha256} className={`${DATA} min-w-0 flex-1 select-all`}>
+              {shortSha(sha256)}
+            </span>
+            <CopyButton value={sha256} />
+          </>
+        )}
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * The facts of a Tampered Build Incident (slice 21a): the Build, the file whose bytes changed, the hash the Build
+ * registered for it (read from the Build; not available when the Build could not be read or does not list the
+ * file) and the hash a browser observed.
+ */
+function TamperFacts({ incident, build }: { incident: Incident; build: Build | null }) {
+  const path = incident.artifact_path ?? null;
+  const registered =
+    path === null
+      ? null
+      : (knownBuild(incident.build_id, build)?.artifacts.find((artifact) => artifact.path === path)?.sha256 ?? null);
+  return (
+    <>
+      <BuildFact appId={incident.app_id} buildId={incident.build_id} build={build} />
+      <div className="flex min-w-0 flex-col gap-1">
+        <dt className={TERM}>{t("incident.fact.file")}</dt>
+        <dd data-testid="fact-file" className={`${DATA} break-all`}>
+          {path ?? t("incident.fact.none")}
+        </dd>
+      </div>
+      <HashFact label={t("incident.fact.registeredHash")} testId="fact-registered-hash" sha256={registered} />
+      <HashFact
+        label={t("incident.fact.observedHash")}
+        testId="fact-observed-hash"
+        sha256={incident.observed_sha256 ?? null}
+      />
+    </>
+  );
+}
+
 /**
  * SCR-05: one Incident — its severity, title and status, the containment bar (first: containing is the
  * primary action), the status actions, the facts, its Actors and blocks, the timeline of its Detections and
  * the Events behind it. A clone Incident (slice 10) is about a copy of the App served elsewhere: its facts
  * name the origin and the Build, its timeline is the reports with the reporter's network, and it has no
- * containment, Actors, blocks or Events — a note says where to act instead.
+ * containment, Actors, blocks or Events — a note says where to act instead. A Tampered Build Incident (slice 21a)
+ * is about files of a Build that reached browsers changed: its facts name the Build, the file and both hashes, its
+ * timeline is the reports with the page's origin (plain text, never a link) and the reporter's network, and it
+ * has no containment, Actors, blocks or Events either — a note says why.
  */
 export function IncidentDetail({
   incident,
@@ -176,6 +236,9 @@ export function IncidentDetail({
 }: IncidentDetailProps) {
   const timeline = [...detections].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
   const clone = incident.rule === "clone-origin";
+  const tamper = incident.rule === "tampered-build";
+  /** Reported from a browser rather than counted from Events: no network of its own, no Actors, no evidence. */
+  const reported = clone || tamper;
   const network = incident.ip_prefix ?? t("incident.fact.none");
   const evidenceCaption = t("incident.evidence.caption", { network, app: appName });
 
@@ -202,12 +265,12 @@ export function IncidentDetail({
         <h2 id="incident-contain-title" className={SECTION_TITLE}>
           {t("containment.title")}
         </h2>
-        {clone ? (
+        {reported ? (
           <p
-            data-testid="containment-clone-note"
+            data-testid={tamper ? "containment-tamper-note" : "containment-clone-note"}
             className="rounded-card border border-border bg-surface p-3 text-fg-muted"
           >
-            {t("incident.clone.containment")}
+            {t(tamper ? "incident.tamper.containment" : "incident.clone.containment")}
           </p>
         ) : (
           <ContainmentBar
@@ -249,7 +312,7 @@ export function IncidentDetail({
           </div>
           {clone ? (
             <OriginFact origin={incident.origin} />
-          ) : (
+          ) : tamper ? null : (
             <div className="flex min-w-0 flex-col gap-1">
               <dt className={TERM}>{t("incident.fact.network")}</dt>
               <dd data-testid="fact-network" className={`${DATA} break-all`}>
@@ -277,6 +340,7 @@ export function IncidentDetail({
             </div>
           )}
           {clone ? <BuildFact appId={incident.app_id} buildId={incident.build_id} build={canaryBuild} /> : null}
+          {tamper ? <TamperFacts incident={incident} build={canaryBuild} /> : null}
           {incident.canary_id === null ? null : (
             <CanaryFacts
               appId={incident.app_id}
@@ -298,15 +362,21 @@ export function IncidentDetail({
             </dd>
           </div>
           <div className="flex min-w-0 flex-col gap-1">
-            <dt className={TERM}>{t("incident.fact.detections")}</dt>
+            <dt className={TERM}>{t(tamper ? "incident.fact.reports" : "incident.fact.detections")}</dt>
             <dd data-testid="fact-detections" className={DATA}>
               {incident.detection_count}
             </dd>
           </div>
         </dl>
+        {/* A cap dropped distinct hashes while this Incident was open: what is listed is not all that was reported. */}
+        {tamper && incident.detections_capped === true ? (
+          <p data-testid="incident-capped-note" className="body-5 text-fg-muted">
+            {t("incident.tamper.capped")}
+          </p>
+        ) : null}
       </section>
 
-      {clone ? null : (
+      {reported ? null : (
         <>
           <section aria-labelledby="incident-actors-title" className={SECTION}>
             <h2 id="incident-actors-title" className={SECTION_TITLE}>
@@ -359,7 +429,38 @@ export function IncidentDetail({
                 <span data-testid="detection-time" className={`${DATA} text-fg-muted`}>
                   {t("incident.detection.at", { time: formatDateTime(detection.detected_at).text })}
                 </span>
-                {clone ? (
+                {tamper ? (
+                  <>
+                    <span className="flex flex-wrap items-baseline gap-x-2 body-5 text-fg-muted">
+                      <span>{t("incident.detection.file")}</span>
+                      <span data-testid="detection-file" className={`${DATA} break-all`}>
+                        {detection.artifact_path ?? t("incident.fact.none")}
+                      </span>
+                    </span>
+                    <span className="flex flex-wrap items-baseline gap-x-2 body-5 text-fg-muted">
+                      <span>{t("incident.detection.observed")}</span>
+                      {(detection.observed_sha256 ?? null) === null ? (
+                        <span>{t("incident.fact.none")}</span>
+                      ) : (
+                        <span
+                          data-testid="detection-observed"
+                          title={detection.observed_sha256 ?? undefined}
+                          className={DATA}
+                        >
+                          {shortSha(detection.observed_sha256 ?? "")}
+                        </span>
+                      )}
+                    </span>
+                    {/* The page's origin: plain text, never a link — a report can name any origin. */}
+                    <span className="flex flex-wrap items-baseline gap-x-2 body-5 text-fg-muted">
+                      <span>{t("incident.detection.origin")}</span>
+                      <span data-testid="detection-origin" className={`${DATA} select-all break-all`}>
+                        {detection.origin ?? t("incident.fact.none")}
+                      </span>
+                    </span>
+                  </>
+                ) : null}
+                {reported ? (
                   <span className="flex flex-wrap items-baseline gap-x-2 body-5 text-fg-muted">
                     <span>{t("incident.detection.reporter")}</span>
                     <span data-testid="detection-reporter" className={`${DATA} break-all`}>
@@ -381,7 +482,7 @@ export function IncidentDetail({
         )}
       </section>
 
-      {clone ? null : (
+      {reported ? null : (
         <section aria-labelledby="incident-evidence-title" data-testid="incident-evidence" className={SECTION}>
           <h2 id="incident-evidence-title" className={SECTION_TITLE}>
             {t("incident.evidence")}

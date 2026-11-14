@@ -44,6 +44,11 @@ export interface BuildManifestArgs {
   routes?: { count: number; digest: string };
   /** The designated protected functions in summary (slice 12b): their number and `logicDigest`. Never the file. Omitted when absent. */
   logic?: { count: number; digest: string };
+  /**
+   * The files the planted integrity marker lists, in its order (slice 21a); empty when the marker was wanted but did
+   * not fit the size budget. Omitted when no marker was asked for.
+   */
+  integrityFiles?: readonly string[];
 }
 
 function gzipLen(code: string): number {
@@ -90,5 +95,6 @@ export function buildManifest(args: BuildManifestArgs): BuildManifest {
     ...(args.components ? { components_digest: args.components.digest, component_count: args.components.count } : {}),
     ...(args.routes ? { routes_digest: args.routes.digest, route_count: args.routes.count } : {}),
     ...(args.logic ? { logic_digest: args.logic.digest, logic_count: args.logic.count } : {}),
+    ...(args.integrityFiles ? { integrity: { files: [...args.integrityFiles] } } : {}),
   };
 }

@@ -19,9 +19,13 @@ interface IncidentActionsProps {
   confirmResolve: boolean;
 }
 
-/** The resolve question: a clone Incident names its origin; any other its network (an em dash when unknown). */
+/**
+ * The resolve question: a clone Incident names its origin; a Tampered Build Incident its Build's files; any other
+ * its network (an em dash when unknown).
+ */
 function resolveQuestion(incident: Incident, appName: string): string {
   const named = { title: incident.title, app: appName, environment: incident.environment };
+  if (incident.rule === "tampered-build") return t("incident.confirm.resolve.tamper", named);
   if (incident.origin !== null) return t("incident.confirm.resolve.clone", { ...named, origin: incident.origin });
   return t("incident.confirm.resolve", { ...named, network: incident.ip_prefix ?? t("incident.fact.none") });
 }
@@ -38,7 +42,13 @@ export function IncidentActions({ incident, appName, confirmResolve }: IncidentA
   if (incident.status === "resolved") {
     return (
       <p data-testid="incident-resolved-note" className="text-fg-muted">
-        {t(incident.origin === null ? "incident.resolved.note" : "incident.resolved.note.clone")}
+        {t(
+          incident.rule === "tampered-build"
+            ? "incident.resolved.note.tamper"
+            : incident.origin === null
+              ? "incident.resolved.note"
+              : "incident.resolved.note.clone",
+        )}
       </p>
     );
   }
