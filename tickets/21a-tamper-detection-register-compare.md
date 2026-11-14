@@ -114,7 +114,7 @@ Quality
   - Evicting a Build's state reset its caps.
   - A report in flight during a purge logged an error.
 
-**Jev:** its verification of the final gate claims came back unverified at low confidence (one claim verified at 0.67); the claims rest on the gate log quoted above. Jev was unreachable when the cap was redesigned; asked afterwards, it picked the rolling window at 0.51 with confidence 0.41, so D-101 stays provisional until the owner confirms.
+**Jev:** its verification of the final gate claims came back unverified at low confidence (one claim verified at 0.67); the claims rest on the gate log quoted above. Jev was unreachable when the cap was redesigned; asked afterwards, it picked the rolling window at 0.51 with confidence 0.41, and the owner confirmed it (D-101).
 
 ## Honest limits
 
