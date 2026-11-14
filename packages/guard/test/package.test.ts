@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
+import { MARKER_KEY } from "../../harden/src/marker.ts";
 import {
   ATTESTATION_HEADER,
   ATTESTATION_LIMITS,
@@ -12,6 +13,8 @@ import {
   ATTESTATION_SIGNALS,
   CONTENT_HASH_HEADER,
   EMPTY_CONTENT_SHA256,
+  ID_PATTERNS,
+  INTEGRITY_LIMITS,
   SIGNATURE_HEADER,
 } from "../../protocol/src/index.ts";
 import * as constants from "../src/constants.js";
@@ -119,6 +122,33 @@ describe("constants pinned to the protocol", () => {
     expect(constants.EMPTY_CONTENT_SHA256).toBe(EMPTY_CONTENT_SHA256);
     expect(guard.SIGNATURE_HEADER).toBe(SIGNATURE_HEADER);
     expect(guard.CONTENT_HASH_HEADER).toBe(CONTENT_HASH_HEADER);
+  });
+
+  it("the integrity collector (slice 21b): marker key, Build id, file limit and its own budgets", () => {
+    expect(constants.INTEGRITY.markerKey).toBe(MARKER_KEY);
+    expect(constants.PATTERNS.build.source).toBe(ID_PATTERNS.bld.source);
+    expect(constants.PATTERNS.memoKey.source).toBe(
+      `${ID_PATTERNS.app.source.replace(/\$$/, "")}\\/${ID_PATTERNS.bld.source.replace(/^\^/, "")}`,
+    );
+    expect(constants.INTEGRITY.filesMax).toBe(INTEGRITY_LIMITS.filesMax);
+    expect(constants.INTEGRITY).toEqual({
+      markerKey: "ar.build",
+      storageKey: "ar.integrity",
+      filesMax: 32,
+      pathMax: 256,
+      urlMax: 2048,
+      markersMax: 64,
+      buildsMax: 4,
+      scanMax: 500,
+      memoMax: 64,
+      timingFull: 250,
+      fileMaxBytes: 2 * 1024 * 1024,
+      budgetMs: 5_000,
+      delayMs: 30_000,
+      memoMs: 24 * 3_600_000,
+      claimMs: 60_000,
+    });
+    expect(Object.isFrozen(constants.INTEGRITY)).toBe(true);
   });
 
   it("device storage key", () => {

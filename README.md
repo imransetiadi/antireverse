@@ -210,7 +210,8 @@ Harden plants an integrity marker with `--register` (turn it off with `--no-inte
 - **Arming:** a Build opens Incidents only after one report matched it fully, so a pipeline that changes files after Harden does not raise a false alarm. The Build page shows "watched since" or "not yet seen unmodified".
 - **Stale, not tampered:** a hash that is the registered one for the same path in a recent Build (one of the newest 20, or registered in the last 30 days) is ignored.
 - **Limits per Build:** 20 new file-and-hash pairs an hour, 50 in any 24 hours, 600 mismatching reports an hour. When a limit hid a distinct hash, the Incident says so.
-- **Honest limits:** nothing in the field sends reports until Guard's collector ships (21b). It catches non-adaptive tampering only: a modified bundle can strip the marker, strip Guard or report the registered hashes. Anyone with the public App id can forge mismatches for an armed Build, and can also spend its limits, within the numbers above. The RRS does not change.
+- **Guard's collector:** about 30 s after the first token, Guard hashes the Build's files that the page loaded from its own origin (at most 2 MB each, about 5 s in all) and sends the report with one early re-attest, once per Build per device per day. Turn it off with `createGuard({ integrity: false })`. Details and limits are in `docs/guard.md`.
+- **Honest limits:** it catches non-adaptive tampering only: a modified bundle can strip the marker, strip Guard or report the registered hashes. Anyone with the public App id can forge mismatches for an armed Build, and can also spend its limits, within the numbers above. The RRS does not change.
 
 ## Release gate
 

@@ -30,6 +30,8 @@ export interface GuardNavigator {
   plugins?: { readonly length: number } | null;
   /** User-Agent Client Hints (Chromium only). */
   userAgentData?: { readonly platform?: string } | null;
+  /** Under Save-Data the integrity collector does nothing (Chromium only). */
+  connection?: { readonly saveData?: boolean } | null;
 }
 
 /** The subset of `SubtleCrypto` Guard uses. */
@@ -82,6 +84,12 @@ export interface GuardOptions {
   fetch?: GuardFetch | null | undefined;
   crypto?: GuardCrypto | null | undefined;
   navigator?: GuardNavigator | null | undefined;
+  /**
+   * `false` turns the integrity collector off. On (the default), when a hardened bundle planted its integrity
+   * marker, Guard hashes that Build's files the page loaded from its own origin (the global `fetch`, once, about
+   * 30 s after the first token) and sends `{ build, files: [{ i, h }], skipped }` with one early re-attest.
+   */
+  integrity?: boolean | undefined;
 }
 
 /** One request to sign, as it will be sent. */

@@ -7,10 +7,12 @@ import {
   DEVICE_STORAGE_KEY,
   EMPTY_CONTENT_SHA256,
   GUARD_LIMITS,
+  INTEGRITY,
   PATTERNS,
   SIGNATURE_HEADER,
 } from "./constants.js";
 import { base64url, createSessionKey, randomDeviceId, sha256, signText, tokenJti } from "./crypto.js";
+import { collect, remember } from "./integrity.js";
 import {
   bodyBytes,
   callerContentType,
@@ -125,6 +127,27 @@ async function pageFetch(input, init) {
   return /** @type {typeof globalThis.fetch} */ (fetch).call(globalThis, input, init);
 }
 
+/**
+ * Runs `task` in idle time: requestIdleCallback (called with globalThis as receiver, else "Illegal invocation"),
+ * or setTimeout 0. Throws when scheduling throws.
+ * @param {() => void} task
+ * @returns {{ cancel: () => void }}
+ */
+function whenIdle(task) {
+  const idle = globalValue("requestIdleCallback");
+  if (typeof idle === "function") {
+    const handle = idle.call(globalThis, task, { timeout: GUARD_LIMITS.idleTimeoutMs });
+    return {
+      cancel: () => {
+        const cancel = globalValue("cancelIdleCallback");
+        if (typeof cancel === "function") cancel.call(globalThis, handle);
+      },
+    };
+  }
+  const handle = setTimeout(task, 0);
+  return { cancel: () => clearTimeout(handle) };
+}
+
 /** @type {Guard} */
 const INERT = Object.freeze({
   attest: () => Promise.resolve(null),
@@ -146,8 +169,8 @@ const INERT = Object.freeze({
 function snapshot(options) {
   if (!isRecord(options)) throw new TypeError("options must be an object");
   const source = /** @type {Partial<GuardOptions>} */ (options);
-  const { appId, endpoint, storage, now, fetch, crypto, navigator } = source;
-  return { appId, endpoint, storage, now, fetch, crypto, navigator };
+  const { appId, endpoint, storage, now, fetch, crypto, navigator, integrity } = source;
+  return { appId, endpoint, storage, now, fetch, crypto, navigator, integrity };
 }
 
 /**
@@ -200,6 +223,22 @@ function build(opts) {
   let pendingStart = null;
   /** Bumped by stop(): an attest started before it schedules nothing. */
   let generation = 0;
+  // The integrity collector (integrity.js): once, 30 s after the first token and while the page is visible, it
+  // hashes one registered Build's files in idle time and sends the report with a re-attest made then. A further
+  // Build on the page is collected after that and goes with the next regular re-attest.
+  /** The report the next handshake carries. */
+  /** @type {import("./integrity.js").Report | null} */
+  let pending = null;
+  /** The collector's timer, visibility listener or idle callback. */
+  /** @type {{ cancel: () => void } | null} */
+  let watch = null;
+  /** The collection that is running. */
+  /** @type {import("./integrity.js").Job | null} */
+  let job = null;
+  /** Whether the first collection ran (to its end: stop() during it lets a later token start it again). */
+  let collected = false;
+  /** Whether the last handshake delivered a report: a further Build may then be collected. */
+  let delivered = false;
 
   /** @returns {GuardFetch | null} */
   function resolveFetch() {
@@ -258,10 +297,100 @@ function build(opts) {
   }
 
   /**
-   * One handshake. The current token stays in use while it runs; a failure drops it.
+   * Replaces what the collector waits on, cancelling what it waited on before: nothing is ever left behind.
+   * @param {{ cancel: () => void } | null} next
+   */
+  function setWatch(next) {
+    const previous = watch;
+    watch = next;
+    try {
+      previous?.cancel();
+    } catch {
+      // Nothing to cancel.
+    }
+  }
+
+  /**
+   * Runs `task` now, or when the page is next visible. Throws when the page cannot be watched.
+   * @param {() => void} task
+   */
+  function whenVisible(task) {
+    const page = /** @type {Document | null} */ (globalValue("document"));
+    if (page?.visibilityState !== "hidden") return task();
+    const cancel = () => page.removeEventListener("visibilitychange", seen);
+    const seen = () => {
+      if (page.visibilityState === "hidden") return;
+      setWatch(null);
+      task();
+    };
+    page.addEventListener("visibilitychange", seen);
+    setWatch({ cancel });
+  }
+
+  /**
+   * Collects in idle time. The first report (`early`) goes with a re-attest of its own, made while the page is
+   * visible and after any handshake in flight; a later one, or one a handshake took meanwhile, with the next.
+   * @param {boolean} early
+   */
+  function gather(early) {
+    try {
+      setWatch(null);
+      watch = whenIdle(async () => {
+        watch = null;
+        collected = true;
+        const started = generation;
+        const running = { aborted: false };
+        job = running;
+        const report = await collect(
+          appId,
+          optionOrGlobal(opts.crypto, "crypto"),
+          optionOrGlobal(opts.navigator, "navigator"),
+          optionOrGlobal(opts.storage, "localStorage"),
+          now,
+          running,
+        );
+        if (job === running) job = null;
+        // A report is kept even when stop() came as the collection ended: its Build stays claimed, so only this
+        // Guard can still send it, with its next handshake.
+        if (report === null) return;
+        pending = report;
+        if (!early || started !== generation) return;
+        await inFlight;
+        if (started !== generation) return;
+        try {
+          whenVisible(() => {
+            if (pending !== null && started === generation) void attest(true);
+          });
+        } catch {
+          // The report goes with the next regular re-attest.
+        }
+      });
+    } catch {
+      // No idle time to be had: no report.
+    }
+  }
+
+  /** The first collection, `delayMs` after the first token or when the page is next visible after that. */
+  function watchIntegrity() {
+    if (opts.integrity === false || collected || watch !== null) return;
+    const timer = setTimeout(() => {
+      watch = null;
+      try {
+        whenVisible(() => gather(true));
+      } catch {
+        // No report.
+      }
+    }, INTEGRITY.delayMs);
+    setWatch({ cancel: () => clearTimeout(timer) });
+  }
+
+  /**
+   * One handshake. The current token stays in use while it runs; a failure drops it, unless the handshake was
+   * brought forward for an integrity report (`early`): then the token and its re-attest timer stay.
+   * @param {boolean} early
    * @returns {Promise<string | null>}
    */
-  async function run() {
+  async function run(early) {
     const started = generation;
     try {
       const token = await handshake();
@@ -269,12 +398,17 @@ function build(opts) {
         current = token.value;
         signer = { value: token.value, jti: token.jti, privateKey: token.privateKey };
         currentUntil = now() + token.lifetimeMs;
-        if (started === generation) schedule(token.lifetimeMs);
+        if (started === generation) {
+          schedule(token.lifetimeMs);
+          watchIntegrity();
+          if (delivered) gather(false);
+        }
         return token.value;
       }
     } catch {
       // Any failure: no token.
     }
+    if (early) return token();
     current = null;
     signer = null;
     return null;
@@ -296,13 +430,28 @@ function build(opts) {
     const signals = collectSignals(optionOrGlobal(opts.navigator, "navigator"));
     const device = deviceId(crypto);
     const { jkt, jwk, pair } = await getSessionKey(crypto);
-    const answer = await post(fetch, `${endpoint}/v1/attest`, {
-      app_id: appId,
-      nonce,
-      device,
-      signals,
-      cnf: { jkt, jwk },
-    });
+    // The waiting integrity report goes with this request, and waits again when the request fails.
+    const report = pending;
+    pending = null;
+    /** @type {Record<string, unknown>} */
+    let answer;
+    try {
+      answer = await post(fetch, `${endpoint}/v1/attest`, {
+        app_id: appId,
+        nonce,
+        device,
+        signals,
+        cnf: { jkt, jwk },
+        ...(report === null ? {} : { integrity: report }),
+      });
+    } catch (error) {
+      pending ??= report;
+      throw error;
+    }
+    delivered = report !== null;
+    if (report !== null) {
+      remember(optionOrGlobal(opts.storage, "localStorage"), `${appId}/${report.build}`, now(), now());
+    }
 
     const token = answer.token;
     const expiresAt = typeof answer.expires_at === "string" ? Date.parse(answer.expires_at) : Number.NaN;
@@ -327,9 +476,10 @@ function build(opts) {
     };
   }
 
-  function attest() {
+  /** @param {boolean} [early] */
+  function attest(early) {
     if (inFlight === null) {
-      const running = run();
+      const running = run(early === true);
       inFlight = running;
       void running.then(() => {
         if (inFlight === running) inFlight = null;
@@ -406,7 +556,7 @@ function build(opts) {
   }
 
   return {
-    attest,
+    attest: () => attest(),
     token,
     headers() {
       const value = token();
@@ -446,25 +596,11 @@ function build(opts) {
     },
     start() {
       if (pendingStart !== null) return;
-      const begin = () => {
-        pendingStart = null;
-        void attest();
-      };
       try {
-        const idle = globalValue("requestIdleCallback");
-        if (typeof idle === "function") {
-          // Window methods need globalThis as receiver (else "Illegal invocation").
-          const handle = idle.call(globalThis, begin, { timeout: GUARD_LIMITS.idleTimeoutMs });
-          pendingStart = {
-            cancel: () => {
-              const cancel = globalValue("cancelIdleCallback");
-              if (typeof cancel === "function") cancel.call(globalThis, handle);
-            },
-          };
-        } else {
-          const handle = setTimeout(begin, 0);
-          pendingStart = { cancel: () => clearTimeout(handle) };
-        }
+        pendingStart = whenIdle(() => {
+          pendingStart = null;
+          void attest();
+        });
       } catch {
         pendingStart = null;
       }
@@ -473,6 +609,18 @@ function build(opts) {
       generation += 1;
       clearTimer();
       cancelStart();
+      setWatch(null);
+      try {
+        // A running collection ends here and gives its Build back: a later token starts the collection again.
+        if (job !== null) {
+          job.aborted = true;
+          job.cancel?.();
+          collected = false;
+        }
+      } catch {
+        // Nothing to cancel.
+      }
+      job = null;
     },
   };
 }

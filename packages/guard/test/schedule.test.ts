@@ -314,7 +314,7 @@ describe("request timeout", () => {
   it("leaves no timer behind once a request answers", async () => {
     const { guard } = setup();
     await guard.attest();
-    expect(vi.getTimerCount()).toBe(1); // only the re-attest
+    expect(vi.getTimerCount()).toBe(2); // the re-attest, and the integrity collector's one start (slice 21b)
     guard.stop();
     expect(vi.getTimerCount()).toBe(0);
   });
