@@ -4,7 +4,7 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c) and usage metering (17a). Not built yet: Pentest Campaigns (15), plans and billing (17b), and the rest of GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a) and SLO measurement with the operator dashboard (18d). Not built yet: Pentest Campaigns (15), plans and billing (17b), the release-gate runner and synthetic probes, and the rest of GA hardening (18).
 
 ## What works today
 
@@ -201,6 +201,44 @@ Add `--min-rrs <0–100>` to `harden --register --assess <tier>` to wait for the
 ## Audit log
 
 Every administrative change writes an entry in the same transaction: who (the admin key), when, what, and why. Sensitive actions — promoting to enforce, containment, signing Rules of Engagement, deleting a target — require a reason, sent as the percent-encoded `X-Airverse-Reason` header (the Console asks for it). Entries are append-only and hash-chained per Organization; **Settings → Audit log** shows them, checks the chain, and exports NDJSON that starts with a head signed by the audit key (`GET /v1/audit/public-key`), so an auditor can verify the export and detect truncation. The key lives in `audit-key.json` beside the data directory: back it up with the database.
+
+## Operator SLO dashboard
+
+Set `AR_OPS_TOKEN` (32–512 printable characters) to turn on operator access; without it the operator routes answer 404. The API then measures, for this instance:
+
+| SLO | What it measures |
+|---|---|
+| SLO-01 | Attestation |
+| SLO-02 | Ingest |
+| SLO-03 | Policy distribution |
+| SLO-04 | Event freshness |
+| SLO-05 | Detection latency |
+| SLO-07 | Control API |
+| SLO-09 | Alert delivery |
+| SLO-10 | Prove |
+
+What it keeps and reports:
+
+- **Per minute**, it keeps good and total counts and latency histograms in `slo_minutes`, for 35 days. There are no tenant identifiers.
+- **Per SLO**, it reports 30-day attainment, the error budget left and burn rates over 5 m, 30 m, 1 h, 6 h and 3 d.
+- **What counts:** only Airverse's own failures. Client-caused 4xx, slow or aborted uploads, and failures of a tenant's own alert destination are left out.
+
+Where to read it:
+
+- `GET /v1/ops/slo` (JSON) and `GET /metrics` (Prometheus) take `Authorization: Bearer $AR_OPS_TOKEN`.
+- The Console's `/ops` page signs in with the same token, in its own cookie. It shows one panel per SLO and is not linked from the tenant navigation.
+
+Burn alerts:
+
+| Severity | Burn rate | Window (confirmation) |
+|---|---|---|
+| Page | 14.4× | 1 h (5 m) |
+| Page | 6× | 6 h (30 m) |
+| Ticket | 1× | 3 d |
+
+- An alert needs at least 3 events. Its state survives restarts.
+- Each alert is logged and, if `AR_OPS_WEBHOOK_URL` is set, posted there. The post is signed with `AR_OPS_WEBHOOK_SECRET` when that is set, and names the SLO's runbook.
+- SLO-06 and SLO-08 are not measured yet.
 
 ## Usage
 

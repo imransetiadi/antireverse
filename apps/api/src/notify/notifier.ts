@@ -17,6 +17,7 @@ import {
   testAlertMail,
 } from "../mail/message.ts";
 import type { MailEnvelope, Mailer, MailResult } from "../mail/smtp.ts";
+import type { SloSink } from "../slo/recorder.ts";
 import {
   type DeliverableChannel,
   findChannelForDelivery,
@@ -88,7 +89,19 @@ export interface NotifierDeps {
    * logged), so one Organization's slow channels never crowd out another's alerts. Default 100.
    */
   maxPendingPerOrg?: number | undefined;
+  /**
+   * Slice 18d, SLO-09: told the final outcome of each Incident alert per channel — good when delivered within
+   * `ALERT_DELIVERY_GOOD_MS` of the Incident's creation. A failure of the destination the tenant chose (a non-2xx
+   * answer, refused or timed-out connection, its host not resolving or refused by the SSRF guard; an SMTP refusal of
+   * a recipient) is neither good nor bad (Jev, exclude_destination_failures, 0.83); our own failures are bad: no SMTP
+   * settings or no answer from our SMTP relay, an error of ours during delivery, and an alert dropped (queue full,
+   * notifier stopped) or whose job failed before any channel was tried (review M4). Test alerts are not counted.
+   */
+  slo?: SloSink | undefined;
 }
+
+/** SLO-09's bound (PB-18): an alert delivered within 60 s of its Incident's creation. */
+export const ALERT_DELIVERY_GOOD_MS = 60_000;
 
 /** The mail side of the notifier: the SMTP client (or a fake in tests) and the From of every mail. */
 export interface EmailDeps {
@@ -411,7 +424,7 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     alert: Alert,
     number: number,
     progress: Progress = { remaining: null },
-  ): Promise<{ delivery: AlertDelivery; retry: boolean } | null> {
+  ): Promise<{ delivery: AlertDelivery; retry: boolean; cause: "destination" | "ours" | null } | null> {
     if (closed) return null;
     // Read again on every attempt: a channel deleted meanwhile is not contacted again.
     const target = await db.tx({ organizationId }, (q) => findChannelForDelivery(q, channelId));
@@ -419,6 +432,8 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     let status: number | null;
     let delivered: boolean;
     let retry = true;
+    /** Whose failure a failed attempt is (SLO-09). */
+    let cause: "destination" | "ours" = "destination";
     if (target.kind === "email") {
       // Only confirmed recipients, and on a retry only those not reached yet.
       const remaining = progress.remaining;
@@ -429,11 +444,14 @@ export function createNotifier(deps: NotifierDeps): Notifier {
         status = null;
         delivered = false;
         retry = false;
+        cause = "ours";
       } else {
         const sent = await mailTo(organizationId, email, recipients, mailTextOf(alert));
         progress.remaining = new Set(sent.retry);
         status = sent.status;
         delivered = !sent.anyFailed;
+        // No reply at all: our relay did not answer. A reply refusing a recipient is the destination's.
+        if (sent.status === null) cause = "ours";
         // Only temporary failures are tried again; permanent refusals are final.
         retry = sent.retry.length > 0;
       }
@@ -459,15 +477,39 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     logger.info(
       `alert channel=${channelId} incident=${incident} attempt=${number} outcome=${outcome} status=${status ?? "none"}`,
     );
-    return { delivery, retry };
+    return { delivery, retry, cause: delivered ? null : cause };
+  }
+
+  /** SLO-09 for one Incident alert: `good` null leaves it uncounted. */
+  function observeAlert(incident: Incident, good: boolean, at: Date): void {
+    if (deps.slo === undefined) return;
+    const ms = at.getTime() - Date.parse(incident.created_at);
+    deps.slo.record("SLO-09", good && ms <= ALERT_DELIVERY_GOOD_MS, ms);
   }
 
   async function deliver(organizationId: string, channelId: string, alert: Alert): Promise<void> {
     const progress: Progress = { remaining: null };
-    for (let number = 1; number <= MAX_ATTEMPTS; number++) {
-      const result = await attempt(organizationId, channelId, alert, number, progress);
-      if (result === null || result.delivery.outcome === "delivered" || !result.retry) return;
-      if (number < MAX_ATTEMPTS && !closed) await sleep(backoffMs * 2 ** (number - 1));
+    let last: { delivery: AlertDelivery; cause: "destination" | "ours" | null } | undefined;
+    let ours = false;
+    try {
+      for (let number = 1; number <= MAX_ATTEMPTS; number++) {
+        const result = await attempt(organizationId, channelId, alert, number, progress);
+        if (result === null) return;
+        last = result;
+        if (result.delivery.outcome === "delivered" || !result.retry) return;
+        if (number < MAX_ATTEMPTS && !closed) await sleep(backoffMs * 2 ** (number - 1));
+      }
+    } catch (error) {
+      // An error of ours (the database, most likely) during delivery.
+      ours = true;
+      throw error;
+    } finally {
+      // SLO-09: the final outcome of an Incident alert on this channel.
+      if (alert.type !== "test") {
+        if (ours) observeAlert(alert.incident, false, now());
+        else if (last?.delivery.outcome === "delivered") observeAlert(alert.incident, true, new Date(last.delivery.at));
+        else if (last?.cause === "ours") observeAlert(alert.incident, false, new Date(last.delivery.at));
+      }
     }
   }
 
@@ -522,21 +564,29 @@ export function createNotifier(deps: NotifierDeps): Notifier {
     incidentOpened(incident, organizationId) {
       if (closed) {
         logger.warn(`alert dropped incident=${incident.id} reason=stopped`);
+        observeAlert(incident, false, now());
         return;
       }
       if (pending.size >= maxPending || (pendingByOrg.get(organizationId) ?? 0) >= maxPendingPerOrg) {
         logger.warn(`alert dropped incident=${incident.id} organization=${organizationId} reason=queue-full`);
+        observeAlert(incident, false, now());
         return;
       }
+      let tried = false;
       const job = (async () => {
         const { channelIds, appName } = await db.tx({ organizationId }, async (q) => ({
           channelIds: await listActiveChannelIds(q),
           appName: (await findApp(q, incident.app_id))?.name ?? incident.app_id,
         }));
         const alert: Alert = { type: "incident.opened", incident, appName };
+        tried = true;
         // Each channel on its own: a failing or slow one never holds back another.
         await Promise.all(channelIds.map((channelId) => deliver(organizationId, channelId, alert).catch(failed)));
-      })().catch(failed);
+      })().catch((error: unknown) => {
+        // The job failed before any channel was tried: the alert is lost (SLO-09, review M4).
+        if (!tried) observeAlert(incident, false, now());
+        failed(error);
+      });
       track(organizationId, job);
     },
 

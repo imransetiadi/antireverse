@@ -1,5 +1,6 @@
 import { LIMITS } from "@antireverse/protocol";
 import type { MiddlewareHandler } from "hono";
+import type { AppEnv } from "./auth/authenticate.ts";
 import { problem } from "./problem.ts";
 
 /**
@@ -31,7 +32,9 @@ export async function discard(reader: ReadableStreamDefaultReader<Uint8Array>, c
 
 /**
  * Refuses a request body larger than `maxBytes` with a 413 problem, whether or not the client declared
- * its length. An accepted body is buffered (it is bounded) and handed on unchanged.
+ * its length. An accepted body is buffered (it is bounded) and handed on unchanged. A body whose upload fails (the
+ * client aborted or reset it) is the client's doing: a 400 `malformed-json` (an incomplete body is no valid JSON),
+ * never a 500 (slice 18d review H1). Once the body is read, the SLO middleware is told (`bodyRead`).
  */
 export function limitBody(
   maxBytes: number = LIMITS.bodyBytesMax,
@@ -41,7 +44,7 @@ export function limitBody(
     | "inventory-payload-too-large"
     | "build-payload-too-large"
     | "assessment-payload-too-large" = "payload-too-large",
-): MiddlewareHandler {
+): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const raw = c.req.raw;
     if (raw.body === null) return next();
@@ -51,13 +54,20 @@ export function limitBody(
     const chunks: Uint8Array[] = [];
     let size = 0;
     let tooLarge = declared > maxBytes;
-    while (!tooLarge) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) tooLarge = true;
-      else chunks.push(value);
+    try {
+      while (!tooLarge) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxBytes) tooLarge = true;
+        else chunks.push(value);
+      }
+    } catch {
+      // The upload failed: the client went away or reset the stream.
+      c.header("Connection", "close");
+      return problem(c, "malformed-json");
     }
+    c.get("bodyRead")?.();
 
     if (tooLarge) {
       if (!(await discard(reader, DRAIN_CAP_BYTES))) c.header("Connection", "close");

@@ -78,6 +78,10 @@ export const GLOBAL_TABLES: Readonly<Record<string, string>> = {
     "confirmation mails per keyed address hash and day, across Organizations (the abuse cap of slice 06b); no Organization id, expires with its day",
   organization_deletions: "the owner's deletion requests and tombstones: they outlive the Organization",
   retention_sweep_state: "where the retention sweep's rotation over Organizations stands: one number, no identifier",
+  slo_alerts: "the burn rules firing now (slice 18d): SLO, rule and the episode's start, no tenant identifier",
+  slo_flushes: "the ids of SLI batches written in the last day (slice 18d), so a retried batch is not counted twice",
+  slo_minutes:
+    "the operator's per-minute SLI buckets (slice 18d): SLO, counts and a latency histogram, no tenant identifier; swept after 35 days",
 };
 
 /** Base tables of `public` that are neither global nor carry an `organization_id` column (`organizations` is the root: its `id` is it). */

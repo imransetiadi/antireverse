@@ -295,6 +295,37 @@ describe("detector", () => {
     }
   });
 
+  it("records SLO-05 per Detection: good when recorded within 10 s of its triggering Event's receipt (slice 18d)", async () => {
+    const appId = (await createAppFor(api, adminA, { name: "Latency" })).app.id;
+    const target: Target = { organizationId: orgA, appId, environment: "development" };
+    const recorded: [string, boolean, number][] = [];
+    const instance = createDetector({
+      db: api.db,
+      bus: api.bus,
+      notifier: fakeNotifier(),
+      now,
+      logger: captureLogger(),
+      slo: { record: (id, good, ms) => recorded.push([id, good, ms]) },
+    });
+    const stop = instance.start();
+    try {
+      // The crossing Event was received 3 s before the Detector saw it: good. Events before it are not Detections.
+      burst(BLOCKED.threshold - 1, (ms) => event(target, ms));
+      burst(1, (ms) => event(target, ms, { received_at: new Date(ms - 3_000).toISOString() }));
+      await instance.flush();
+      // The next crossing's Event was received 11 s before: bad.
+      burst(BLOCKED.threshold - 1, (ms) => event(target, ms));
+      burst(1, (ms) => event(target, ms, { received_at: new Date(ms - 11_000).toISOString() }));
+      await instance.flush();
+      expect(recorded).toEqual([
+        ["SLO-05", true, 3_000],
+        ["SLO-05", false, 11_000],
+      ]);
+    } finally {
+      stop();
+    }
+  });
+
   it("forgets Events older than the window", async () => {
     const appId = (await createAppFor(api, adminA, { name: "Window" })).app.id;
     const target: Target = { organizationId: orgA, appId, environment: "development" };

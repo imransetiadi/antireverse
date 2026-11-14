@@ -28,6 +28,10 @@ export const FAKE_MAIL_FILE = process.env.E2E_FAKE_MAIL_FILE;
 process.env.E2E_ASSESS_HOLD_FILE ||= join(mkdtempSync(join(tmpdir(), "antireverse-e2e-hold-")), "assess-hold");
 export const ASSESS_HOLD_FILE = process.env.E2E_ASSESS_HOLD_FILE;
 
+// The operator token of the e2e API (slice 18d): it opens GET /v1/ops/slo and the Console's /ops dashboard. A test value
+// for this local API only, at least 32 characters as the API requires.
+export const OPS_TOKEN = "e2e-console-operator-token-".padEnd(48, "0");
+
 export default defineConfig({
   testDir: ".",
   testMatch: "**/*.e2e.ts",
@@ -60,6 +64,7 @@ export default defineConfig({
         E2E_FAKE_DNS_FILE: FAKE_DNS_FILE,
         E2E_FAKE_MAIL_FILE: FAKE_MAIL_FILE,
         E2E_ASSESS_HOLD_FILE: ASSESS_HOLD_FILE,
+        AR_OPS_TOKEN: OPS_TOKEN,
       },
       url: `${API_URL}/healthz`,
       reuseExistingServer: false,

@@ -8,6 +8,9 @@
 // AR_SMTP_USER, AR_SMTP_PASSWORD or AR_SMTP_PASSWORD_FILE, AR_SMTP_FROM, AR_SMTP_FROM_NAME (default Airverse); all or
 // none, a partial set stops the start naming the missing variable. AR_SMTP_TEST_CA_FILE: a local test server's CA only.
 // The secret that keys the per-address count of confirmation mails is mail-hash-key.json beside the data directory.
+// Operator SLOs (slice 18d): AR_OPS_TOKEN (32+ printable characters, else the start fails) opens GET /v1/ops/slo and
+// GET /metrics, which answer 404 without it; AR_OPS_WEBHOOK_URL receives burn alerts, signed with AR_OPS_WEBHOOK_SECRET
+// (optional, 32+ characters) in an AR-Signature header like alert-channel webhooks.
 import { readConfig } from "./config.ts";
 import { consoleLogger } from "./log.ts";
 import { type RunningApi, startApi } from "./server.ts";

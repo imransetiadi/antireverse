@@ -5,6 +5,7 @@ import { consoleLogger, type Logger, redacting } from "../log.ts";
 import type { Notifier } from "../notify/notifier.ts";
 import { exploitAdvisory } from "../patches/activation.ts";
 import { PATCH_CATALOG, type PatchCatalog } from "../patches/catalog.ts";
+import type { SloSink } from "../slo/recorder.ts";
 import { findCanaryBuild } from "../stores/canaries.ts";
 import { recordDetection } from "../stores/incidents.ts";
 import { currentVersion, findPolicyRules } from "../stores/policies.ts";
@@ -67,7 +68,15 @@ export interface DetectorDeps {
   maxKeysPerOrg?: number | undefined;
   /** The Virtual patch catalog, for the advisory of an `exploit-attempt` Event. Default: `PATCH_CATALOG`. */
   patches?: PatchCatalog | undefined;
+  /**
+   * Slice 18d, SLO-05: told each Detection written (good when recorded within `DETECTION_GOOD_MS` of its triggering
+   * Event's `received_at`) or failed (bad). Nothing when the write records nothing.
+   */
+  slo?: SloSink | undefined;
 }
+
+/** SLO-05's bound (PB-14): a Detection recorded within 10 s of its triggering Event's receipt. */
+export const DETECTION_GOOD_MS = 10_000;
 
 /** A Policy version that was just published (or rolled back to): the App Environment's new latest version. */
 export interface PolicyPublished {
@@ -188,12 +197,19 @@ export function createDetector(deps: DetectorDeps): Detector {
   const coverage = new Map<string, OrgCoverage>();
   let waiting = 0;
 
+  /** SLO-05: the time from the triggering Event's receipt to now; a failed write is bad. */
+  function observe(written: boolean, receivedAt: number): void {
+    if (deps.slo === undefined || !Number.isFinite(receivedAt)) return;
+    const ms = now().getTime() - receivedAt;
+    deps.slo.record("SLO-05", written && ms <= DETECTION_GOOD_MS, ms);
+  }
+
   /** The kind of error only: a message could quote a value from an Event. */
   const failed = (error: unknown) => {
     logger.warn(`detector failed ${error instanceof Error ? error.name : "error"}`);
   };
 
-  function write(window: Window, entries: Entry[], detectedAt: Date): void {
+  function write(window: Window, entries: Entry[], detectedAt: Date, receivedAt: number): void {
     const times = entries.map((entry) => entry.ts).sort((a, b) => a - b);
     const windowStart = times[0];
     const windowEnd = times.at(-1);
@@ -229,7 +245,15 @@ export function createDetector(deps: DetectorDeps): Detector {
         canary,
         exploit,
       });
-    }).then(() => {}, failed);
+    }).then(
+      (recorded) => {
+        if (recorded !== null) observe(true, receivedAt);
+      },
+      (error: unknown) => {
+        observe(false, receivedAt);
+        failed(error);
+      },
+    );
     writes.add(promise);
     void promise.finally(() => writes.delete(promise));
   }
@@ -431,7 +455,7 @@ export function createDetector(deps: DetectorDeps): Detector {
       }
       if (window.entries.length >= rule.threshold) {
         // One Detection per crossing: the window starts again from nothing.
-        write(window, window.entries, at);
+        write(window, window.entries, at, Date.parse(event.received_at));
         continue;
       }
       let own = windows.get(organizationId);

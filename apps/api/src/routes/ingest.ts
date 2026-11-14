@@ -4,10 +4,19 @@ import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { EventBus } from "../bus.ts";
 import type { Db } from "../db/db.ts";
+import type { SloSink } from "../slo/recorder.ts";
 import { insertEvents } from "../stores/events.ts";
 import { validateJson } from "../validate.ts";
 
-export function ingestRoutes(deps: { db: Db; bus: EventBus; now?: () => Date }): Hono<AppEnv> {
+/** SLO-04's bound: an Event is fresh when published within this many ms of being received (PB-13). */
+const FRESH_MS = 5_000;
+
+export function ingestRoutes(deps: {
+  db: Db;
+  bus: EventBus;
+  now?: () => Date;
+  slo?: SloSink | undefined;
+}): Hono<AppEnv> {
   const { db, bus } = deps;
   const now = deps.now ?? (() => new Date());
   const routes = new Hono<AppEnv>();
@@ -35,7 +44,13 @@ export function ingestRoutes(deps: { db: Db; bus: EventBus; now?: () => Date }):
       received_at: receivedAt.toISOString(),
     };
     for (const event of events) {
-      if (stored.delete(event.event_id)) bus.publish({ ...event, ...stamp } satisfies StoredEvent);
+      if (!stored.delete(event.event_id)) continue;
+      bus.publish({ ...event, ...stamp } satisfies StoredEvent);
+      // Slice 18d, SLO-04: received to published on the live bus, per Event.
+      if (deps.slo !== undefined) {
+        const ms = now().getTime() - receivedAt.getTime();
+        deps.slo.record("SLO-04", ms <= FRESH_MS, ms);
+      }
     }
 
     return c.json({ accepted, duplicates: events.length - accepted } satisfies IngestResponse, 202);

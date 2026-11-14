@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 import type { Db } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
+import type { SloSink } from "../slo/recorder.ts";
 import {
   artifactFiles,
   assessmentQueue,
@@ -82,7 +83,12 @@ export interface AssessmentRunnerOptions {
   budgets?: Partial<Record<AssessmentTier, TierLimits>>;
   graceMs?: number;
   expiryIntervalMs?: number;
+  /** Slice 18d: told each T1 Assessment that ends (SLO-10). */
+  slo?: SloSink | undefined;
 }
+
+/** SLO-10's bound (PB-22): a T1 result within 30 min of the Assessment's creation. */
+export const PROVE_GOOD_MS = 1_800_000;
 
 /** What the routes need: told when an Assessment was queued. */
 export interface AssessmentQueue {
@@ -213,9 +219,16 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
       });
   }
 
-  async function finish(organizationId: string, id: string, result: Finish): Promise<void> {
-    const written = await db.tx({ organizationId }, (q) => finishAssessment(q, id, result, now()));
+  async function finish(organizationId: string, claimed: ClaimedRun, result: Finish): Promise<void> {
+    const { id } = claimed;
+    const finishedAt = now();
+    const written = await db.tx({ organizationId }, (q) => finishAssessment(q, id, result, finishedAt));
     logger.info(`assessment ${written ? "finished" : "already ended"} id=${id} status=${result.status}`);
+    // Slice 18d, SLO-10: a T1 Assessment with a result (scored or inconclusive) within 30 min of its creation.
+    if (written && claimed.tier === "T1" && options.slo !== undefined) {
+      const ms = finishedAt.getTime() - claimed.createdAt.getTime();
+      options.slo.record("SLO-10", result.status !== "failed" && ms <= PROVE_GOOD_MS, ms);
+    }
   }
 
   async function execute(organizationId: string, claimed: ClaimedRun, controller: AbortController): Promise<void> {
@@ -236,7 +249,7 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
       };
     });
     if (facts === null) {
-      await finish(organizationId, claimed.id, failWith(FAILURE_REASONS.artifact));
+      await finish(organizationId, claimed, failWith(FAILURE_REASONS.artifact));
       return;
     }
 
@@ -280,11 +293,11 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
 
     if (ended === "timeout") {
       controller.abort();
-      await finish(organizationId, claimed.id, failWith(FAILURE_REASONS.timeout));
+      await finish(organizationId, claimed, failWith(FAILURE_REASONS.timeout));
       return;
     }
     if (ended === "aborted") {
-      await finish(organizationId, claimed.id, failWith(FAILURE_REASONS.interrupted));
+      await finish(organizationId, claimed, failWith(FAILURE_REASONS.interrupted));
       return;
     }
     if (ended.kind === "error") {
@@ -295,14 +308,14 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
           : ended.name === "AbortError"
             ? FAILURE_REASONS.interrupted
             : FAILURE_REASONS.engine;
-      await finish(organizationId, claimed.id, failWith(reason));
+      await finish(organizationId, claimed, failWith(reason));
       return;
     }
 
     const results = ResultsSchema.safeParse(ended.outcome.results);
     const scope = ScopeStatementSchema.safeParse(ended.outcome.scope);
     if (!results.success || !scope.success || scope.data.tier !== claimed.tier) {
-      await finish(organizationId, claimed.id, failWith(FAILURE_REASONS.invalid));
+      await finish(organizationId, claimed, failWith(FAILURE_REASONS.invalid));
       return;
     }
     // Stored in Objective order, as the protocol lists them, with the referenced calls of the call log (fork 5).
@@ -318,7 +331,7 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
           ordered.findIndex((other) => other.objective === result.objective) === index &&
           (result.result !== "achieved" || TIER_IDS.indexOf(result.tier) <= TIER_IDS.indexOf(claimed.tier)),
       );
-      await finish(organizationId, claimed.id, {
+      await finish(organizationId, claimed, {
         status: "failed",
         results: kept,
         reason: FAILURE_REASONS.agent,
@@ -330,12 +343,12 @@ export function createAssessmentRunner(options: AssessmentRunnerOptions): Assess
     try {
       score = scoreAssessment(results.data, claimed.tier);
     } catch {
-      await finish(organizationId, claimed.id, failWith(FAILURE_REASONS.invalid));
+      await finish(organizationId, claimed, failWith(FAILURE_REASONS.invalid));
       return;
     }
     await finish(
       organizationId,
-      claimed.id,
+      claimed,
       score.status === "scored"
         ? {
             status: "scored",

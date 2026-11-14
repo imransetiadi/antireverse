@@ -18,7 +18,18 @@ export type PrincipalOf<K extends KeyKind> = Extract<Principal, { kind: K }>;
  * The Hono environment of the API: an authenticated route has its principal in `c.var.principal`. Every request has
  * an id (`requestId`, slice 18a); a mutating request may carry a validated reason (`reason`, `X-Airverse-Reason`).
  */
-export type AppEnv = { Variables: { principal: Principal; requestId: string; reason?: string | undefined } };
+export type AppEnv = {
+  Variables: {
+    principal: Principal;
+    requestId: string;
+    reason?: string | undefined;
+    /**
+     * Slice 18d: told by `limitBody` once the whole request body has been read, so that the SLIs time the server
+     * from there (a slow client's upload is not server time). Set by the SLO middleware only.
+     */
+    bodyRead?: (() => void) | undefined;
+  };
+};
 
 const BEARER = /^Bearer (\S+)$/i;
 

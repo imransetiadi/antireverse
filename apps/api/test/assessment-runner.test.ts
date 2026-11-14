@@ -170,6 +170,44 @@ describe("Assessment runner", () => {
     expect(manifest.build_id).toBe(done.build_id);
   });
 
+  it("records SLO-10 for each T1 Assessment that ends: good with a result within 30 min of its creation (slice 18d)", async () => {
+    const recorded: [string, boolean, number][] = [];
+    assessor = fakeAssessor();
+    runner = makeRunner({ slo: { record: (id, good, ms) => recorded.push([id, good, ms]) } });
+    await runner.start();
+    const base = T0 + 10 * DAY;
+
+    // Scored one minute after creation: good.
+    clock.now = new Date(base);
+    await queue(B());
+    const first = await within(assessor.run(0), 2_000, "the first run");
+    clock.now = new Date(base + 60_000);
+    first.resolve({ results: scoredResults(), scope: fakeScope("T1") });
+    await runner.idle();
+
+    // Inconclusive 31 minutes after creation: a result, but late.
+    clock.now = new Date(base + 100_000);
+    await queue(B());
+    const second = await within(assessor.run(1), 2_000, "the second run");
+    clock.now = new Date(base + 100_000 + 31 * 60_000);
+    second.resolve({ results: inconclusiveResults(), scope: fakeScope("T1") });
+    await runner.idle();
+
+    // Failed two seconds after creation: no result.
+    clock.now = new Date(base + 3_000_000);
+    await queue(B());
+    const third = await within(assessor.run(2), 2_000, "the third run");
+    clock.now = new Date(base + 3_002_000);
+    third.reject(new Error("engine crashed"));
+    await runner.idle();
+
+    expect(recorded).toEqual([
+      ["SLO-10", true, 60_000],
+      ["SLO-10", false, 31 * 60_000],
+      ["SLO-10", false, 2_000],
+    ]);
+  });
+
   it("forwards the Build's stored logic file and its integrity flag to the Assessor (slice 12b)", async () => {
     assessor = fakeAssessor();
     runner = makeRunner();

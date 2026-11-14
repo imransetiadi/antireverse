@@ -112,6 +112,8 @@ import {
   type SimulatePolicyRequestInput,
   type SimulatePolicyResponse,
   SimulatePolicyResponseSchema,
+  type SloReport,
+  SloReportSchema,
   type SubjectEraseResponse,
   SubjectEraseResponseSchema,
   type TargetResponse,
@@ -1023,4 +1025,14 @@ export function updateRetention(
 export function getUsage(key: string, month?: string): Promise<UsageResponse> {
   const query = month === undefined ? "" : `?month=${encodeURIComponent(month)}`;
   return call(`/v1/usage${query}`, UsageResponseSchema, { key });
+}
+
+// ── Operator SLOs (slice 18d) ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * `GET /v1/ops/slo` — the SLO report of the API instance that answers, with the operator token (`AR_OPS_TOKEN`) as the
+ * bearer. 404 (NotFoundError): operator access is not enabled on that API. 401 (UnauthorizedError): not the token.
+ */
+export function getSloReport(token: string): Promise<SloReport> {
+  return call("/v1/ops/slo", SloReportSchema, { key: token });
 }

@@ -187,6 +187,70 @@ describe("notifier", () => {
     return { instance, sleeps };
   }
 
+  it("records SLO-09 per channel: delivered within 60 s of the Incident's creation is good, late is bad, a destination's failure is not counted (slice 18d)", async () => {
+    const recorded: [string, boolean, number][] = [];
+    const slo = { record: (id: string, good: boolean, ms: number) => recorded.push([id, good, ms]) };
+    const fast = await receiver();
+    const failing = await receiver();
+    // The tenant's endpoint answers 500: the destination's failure (Jev, exclude_destination_failures, 0.83).
+    failing.handler = (_, res) => res.writeHead(500).end();
+    await channel("webhook", fast.url);
+    const broken = await channel("webhook", failing.url);
+    // Nobody listens there: connection refused, also the destination's.
+    const closed = await receiver();
+    const refusedUrl = closed.url;
+    await closed.close();
+    await channel("webhook", refusedUrl);
+    const incident = await openIncident();
+    clock.ms += 5_000;
+    const { instance } = notifier({ slo });
+    instance.incidentOpened(incident, organizationId);
+    await instance.drain();
+    expect(recorded).toEqual([["SLO-09", true, 5_000]]);
+
+    // Delivered, but 61 s after the Incident's creation: bad. A test alert is not counted.
+    recorded.length = 0;
+    await removeChannel(broken.id);
+    const late = await openIncident();
+    clock.ms += 61_000;
+    const second = notifier({ slo }).instance;
+    second.incidentOpened(late, organizationId);
+    await second.drain();
+    expect(recorded).toEqual([["SLO-09", false, 61_000]]);
+  });
+
+  it("records SLO-09 bad for an alert dropped (queue full, stopped) or whose job failed before any channel (review M4)", async () => {
+    const recorded: [string, boolean, number][] = [];
+    const slo = { record: (id: string, good: boolean, ms: number) => recorded.push([id, good, ms]) };
+    const r = await receiver();
+    await channel("webhook", r.url);
+    const incident = await openIncident();
+    clock.ms += 2_000;
+
+    // Its own logger: the file's logger counts queue-full drops elsewhere.
+    const full = notifier({ slo, maxPending: 0, logger: captureLogger() }).instance;
+    full.incidentOpened(incident, organizationId);
+    await full.drain();
+    expect(recorded).toEqual([["SLO-09", false, 2_000]]);
+
+    recorded.length = 0;
+    const stopped = notifier({ slo, logger: captureLogger() }).instance;
+    await stopped.drain();
+    stopped.incidentOpened(incident, organizationId);
+    expect(recorded).toEqual([["SLO-09", false, 2_000]]);
+
+    recorded.length = 0;
+    const down = notifier({
+      slo,
+      logger: captureLogger(),
+      db: { ...api.db, tx: () => Promise.reject(new Error("db down")) },
+    }).instance;
+    down.incidentOpened(incident, organizationId);
+    await down.drain();
+    expect(recorded).toEqual([["SLO-09", false, 2_000]]);
+    expect(r.received).toHaveLength(0);
+  });
+
   it("delivers a signed incident.opened webhook that verifies with the protocol's verifier", async () => {
     const r = await receiver();
     const { id, signingSecret } = await channel("webhook", r.url);

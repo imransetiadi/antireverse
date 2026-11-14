@@ -243,6 +243,8 @@ export interface ClaimedRun {
   buildId: string;
   tier: AssessmentTier;
   artifactId: string | null;
+  /** When the Assessment was created (queued): the start of SLO-10's clock. */
+  createdAt: Date;
 }
 
 /**
@@ -256,18 +258,26 @@ export async function claimAssessment(q: Queryable, id: string, startedAt: Date)
     build_id: string;
     tier: AssessmentTier;
     artifact_id: string | null;
+    created_at: Date;
   }>(
     `UPDATE assessments SET status = 'running', started_at = GREATEST($2::timestamptz, created_at)
      WHERE id = $1::text AND status = 'queued'
        AND NOT EXISTS (SELECT 1 FROM assessments r WHERE r.organization_id = assessments.organization_id
                        AND r.status = 'running')
-     RETURNING id, app_id, build_id, tier, artifact_id`,
+     RETURNING id, app_id, build_id, tier, artifact_id, created_at`,
     [id, startedAt.toISOString()],
   );
   const row = rows[0];
   return row === undefined
     ? null
-    : { id: row.id, appId: row.app_id, buildId: row.build_id, tier: row.tier, artifactId: row.artifact_id };
+    : {
+        id: row.id,
+        appId: row.app_id,
+        buildId: row.build_id,
+        tier: row.tier,
+        artifactId: row.artifact_id,
+        createdAt: row.created_at,
+      };
 }
 
 /** The Build's planted Canaries, in Manifest order, with their decoy values: verifier input only. */

@@ -37,6 +37,7 @@ import { healthRoutes } from "./routes/health.ts";
 import { incidentRoutes } from "./routes/incidents.ts";
 import { ingestRoutes } from "./routes/ingest.ts";
 import { inventoryRoutes } from "./routes/inventory.ts";
+import { opsRoutes } from "./routes/ops.ts";
 import { organizationRoutes } from "./routes/organizations.ts";
 import { patchRoutes } from "./routes/patches.ts";
 import { policyRoutes } from "./routes/policies.ts";
@@ -44,6 +45,8 @@ import { proveRoutes } from "./routes/prove.ts";
 import { type SimulationOptions, simulateRoutes } from "./routes/simulate.ts";
 import { usageRoutes } from "./routes/usage.ts";
 import { createSigner, type Signer } from "./signer.ts";
+import { sloRequests } from "./slo/middleware.ts";
+import type { SloService } from "./slo/service.ts";
 import type { UsageSalts } from "./usage/salts.ts";
 
 export interface AppDeps {
@@ -140,6 +143,15 @@ export interface AppDeps {
   usageSalts?: UsageSalts;
   /** New Guard device references per App and UTC day at most. Default `USAGE_DEVICE_DAILY_CAP`. */
   usageDeviceDailyCap?: number;
+  /**
+   * The SLO service (slice 18d): its recorder is fed by every request and by ingest, and it answers the operator
+   * routes. Default: none (nothing is recorded; `startApi` passes the one it starts and flushes on close).
+   */
+  slo?: SloService;
+  /** The operator token (`AR_OPS_TOKEN`) of `GET /v1/ops/slo` and `GET /metrics`. Default: none, and they answer 404. */
+  opsToken?: string;
+  /** The millisecond clock of request latency for the SLIs. Default `performance.now`; tests pass a fake. */
+  monotonic?: () => number;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -182,6 +194,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     c.header("Cache-Control", "no-store");
     await next();
   });
+  // Slice 18d: the request SLIs (route class, status, server time), counted in memory.
+  if (deps.slo !== undefined) app.use("*", sloRequests(deps.slo.recorder, deps.monotonic));
   // Slice 18a: a request id for every request, and the reason header of a mutating one checked before any route.
   app.use("*", auditRequest());
 
@@ -204,6 +218,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const patches = deps.patches ?? PATCH_CATALOG;
 
   app.route("/", healthRoutes());
+  app.route("/", opsRoutes({ slo: deps.slo, token: deps.opsToken }));
   app.route("/", organizationRoutes(deps));
   app.route("/", appRoutes(deps));
   app.route(
@@ -217,7 +232,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route("/", inventoryRoutes({ db: deps.db, incidents: exposureIncidents, now: deps.now }));
   app.route("/", findingRoutes({ db: deps.db, now: deps.now }));
   app.route("/", eventRoutes(deps));
-  app.route("/", ingestRoutes(deps));
+  app.route("/", ingestRoutes({ ...deps, slo: deps.slo?.recorder }));
   app.route("/", policyRoutes(deps));
   app.route("/", simulateRoutes(deps));
   app.route("/", bundleRoutes({ ...deps, attestation, patches }));

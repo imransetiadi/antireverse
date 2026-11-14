@@ -183,6 +183,14 @@ export const ROUTES = {
   events: (appId: string): string => `/api/apps/${appId}/events`,
   /** The set-up proxy the Set up page polls every 5 s. */
   setupApi: (appId: string, environment: Environment): string => `/api/apps/${appId}/setup?environment=${environment}`,
+  /** The operator SLO dashboard (slice 18d). Not linked from the tenant navigation. */
+  ops: "/ops",
+  /** Operator sign-in with the operator token (slice 18d). */
+  opsSignIn: "/ops/sign-in",
+  /** Operator sign-in after the API stopped accepting the saved token. */
+  opsSignInExpired: "/ops/sign-in?reason=expired",
+  /** The route handler that clears a token the API no longer accepts, then opens operator sign-in. */
+  opsExpired: "/ops/expired",
   /** The stream proxy the browser's EventSource connects to. */
   stream: (appId: string): string => `/api/apps/${appId}/events/stream`,
 } as const;

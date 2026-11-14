@@ -68,10 +68,14 @@
 // `POST /__stub/retention-run` (with the admin key) records a sample run for the Organization, to see the last run.
 // Slice 17a: `GET /v1/usage?month=` (stub-usage.mjs, checked by a test against the protocol) with made-up figures per
 // App and day; the month is validated as in the API and reads share the budget of the Organization export.
+// Slice 18d: `GET /v1/ops/slo` (stub-ops.mjs, checked by a test against the protocol) takes the operator token of
+// `AR_STUB_OPS_TOKEN` as a bearer: 404 when it is unset, 401 for anything else (admin keys included), as the API does.
+// Made-up figures show every state of the operator dashboard `/ops`.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
 //   PORT=39201 npx tsx apps/console/scripts/stub-api.mjs   (tsx: the audit log reads the TypeScript protocol)
+//   (add AR_STUB_OPS_TOKEN=<32+ characters> to open the operator dashboard at /ops)
 //   AR_API_URL=http://127.0.0.1:39201 PORT=39200 npm run dev -w @antireverse/console
 //
 // `POST /__stub/outage?ms=6000` simulates an API restart. It never logs a key.
@@ -81,12 +85,15 @@ import { createAlertStore } from "./stub-alerts.mjs";
 import { createAssessmentStore } from "./stub-assessments.mjs";
 import { auditOf, createAuditStore, promotedRules } from "./stub-audit.mjs";
 import { createDataStore } from "./stub-data.mjs";
+import { createOpsStore } from "./stub-ops.mjs";
 import { createProveStore } from "./stub-prove.mjs";
 import { createSetupStore } from "./stub-setup.mjs";
 import { stubSimulation } from "./stub-simulation.mjs";
 import { createUsageStore } from "./stub-usage.mjs";
 
 const port = Number(process.env.PORT ?? 39201);
+/** Operator SLOs (slice 18d): `AR_STUB_OPS_TOKEN` opens `GET /v1/ops/slo`; unset, it answers 404. */
+const ops = createOpsStore({ token: process.env.AR_STUB_OPS_TOKEN || undefined });
 const host = process.env.HOST ?? "127.0.0.1";
 
 /** @type {Map<string, { id: string, name: string, created_at: string }>} admin key → Organization */
@@ -1396,6 +1403,10 @@ const server = http.createServer(async (req, res) => {
   // Public (slice 06b): the Console posts the token of a confirmation link here from its server. Never logged.
   if (req.method === "POST" && path === "/v1/alert-recipients/confirm")
     return send(res, alerts.confirm(await readBody(req)));
+
+  // Operator SLOs (slice 18d): the operator token only, never an admin key.
+  const operator = ops.handle(req.method, path, req.headers.authorization);
+  if (operator) return sendData(res, operator);
 
   // Everything below needs an admin key.
   const bearer = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];

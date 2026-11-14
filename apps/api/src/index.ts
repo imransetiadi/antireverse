@@ -66,3 +66,7 @@ export {
 } from "./prove/verify.ts";
 export { type Listening, listen, type RunningApi, type StartApiOptions, startApi } from "./server.ts";
 export { createSigner, type Signer } from "./signer.ts";
+export type { AlertTransition } from "./slo/evaluate.ts";
+export type { SloRecorder, SloSink } from "./slo/recorder.ts";
+export { createSloService, SLO_JOB_DEFAULTS, type SloService, type SloServiceOptions } from "./slo/service.ts";
+export { OPS_VARIABLES, type OpsSettings, type OpsWebhook, readOpsSettings } from "./slo/settings.ts";

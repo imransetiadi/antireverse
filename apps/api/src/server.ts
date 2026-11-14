@@ -25,6 +25,8 @@ import { type Authorize, createAuthorize } from "./prove/authorize.ts";
 import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { createRecheckJob, type RecheckOptions } from "./prove/recheck.ts";
 import { createSigner, type Signer } from "./signer.ts";
+import { createSloService, type SloService } from "./slo/service.ts";
+import { type OpsSettings, readOpsSettings } from "./slo/settings.ts";
 import { createUsageSalts, type UsageSalts } from "./usage/salts.ts";
 
 export interface Listening {
@@ -111,6 +113,12 @@ export interface StartApiOptions {
   purge?: Omit<PurgeOptions, "db" | "signer" | "now" | "logger">;
   /** Settings of the daily retention job (slice 18c). Default: `RETENTION_DEFAULTS`. */
   retention?: Omit<RetentionOptions, "db" | "now" | "logger" | "usageSalts">;
+  /**
+   * The operator settings (slice 18d): the token of `GET /v1/ops/slo` and `GET /metrics`, and the burn alerts'
+   * webhook. Default: `AR_OPS_TOKEN`, `AR_OPS_WEBHOOK_URL` and `AR_OPS_WEBHOOK_SECRET`; an invalid value fails the
+   * start, naming the variable.
+   */
+  ops?: OpsSettings;
 }
 
 export interface RunningApi extends Listening {
@@ -133,6 +141,8 @@ export interface RunningApi extends Listening {
   purge: PurgeJob;
   /** The daily retention job (slice 18c): started with the server, flushed on close. */
   retention: RetentionJob;
+  /** The SLO recorder and its minute job (slice 18d): started with the server, flushed last on close. */
+  slo: SloService;
   /**
    * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
    * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
@@ -157,6 +167,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const logger = options.logger ?? consoleLogger;
   // Read before anything opens: a partial SMTP set fails the start with the name of the missing variable.
   const smtp = options.smtp === undefined ? readSmtpSettings(process.env) : options.smtp;
+  // Likewise the operator settings: a short AR_OPS_TOKEN fails the start (slice 18d).
+  const ops = options.ops ?? readOpsSettings(process.env);
   const email: EmailDeps | undefined =
     options.email ??
     (smtp === null
@@ -197,6 +209,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   }
   const bus = createEventBus();
   const shutdown = new AbortController();
+  // Slice 18d: every feed writes to one recorder; the job flushes it each minute and evaluates the burn alerts.
+  const slo = createSloService({ db, now: options.now, logger, webhook: ops.webhook });
   const allowPrivateAlertUrls = options.allowPrivateAlertUrls ?? process.env.AR_ALLOW_PRIVATE_ALERT_URLS === "1";
   const notifier = createNotifier({
     db,
@@ -206,6 +220,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     backoffMs: options.alertBackoffMs,
     logger,
     email,
+    slo: slo.recorder,
   });
   const beacon = createBeaconRecorder({ db, notifier, now: options.now, logger });
   const exposureIncidents = createIncidentQueue({ db, notifier, logger });
@@ -223,7 +238,9 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     beacon,
     exposureIncidents,
     allowPrivateAlertUrls,
+    slo,
   };
+  if (ops.token !== null) deps.opsToken = ops.token;
   if (email !== undefined) deps.email = email;
   deps.addressHasher = addressHasher;
   deps.usageSalts = usageSalts;
@@ -234,7 +251,14 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   if (options.now !== undefined) deps.now = options.now;
   if (options.patches !== undefined) deps.patches = options.patches;
   const assessor = options.assessor ?? proveAssessor();
-  const assessments = createAssessmentRunner({ ...options.assessments, db, assessor, now: options.now, logger });
+  const assessments = createAssessmentRunner({
+    ...options.assessments,
+    db,
+    assessor,
+    now: options.now,
+    logger,
+    slo: slo.recorder,
+  });
   deps.assessor = assessor;
   deps.assessments = assessments;
   const app = createApp(deps);
@@ -249,7 +273,15 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const { server } = listening;
   const graceMs = options.shutdownGraceMs ?? 2_000;
   // Started once the server listens: a failed start leaves nothing subscribed.
-  const started = createDetector({ db, bus, notifier, now: options.now, logger, patches: options.patches });
+  const started = createDetector({
+    db,
+    bus,
+    notifier,
+    now: options.now,
+    logger,
+    patches: options.patches,
+    slo: slo.recorder,
+  });
   detector = started;
   const stopDetector = started.start();
   const recheck = createRecheckJob({ ...options.recheck, db, network, now: options.now, logger });
@@ -270,6 +302,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const stopPurge = purge.start();
   const retention = createRetentionJob({ ...options.retention, db, now: options.now, logger, usageSalts });
   const stopRetention = retention.start();
+  const stopSlo = slo.start();
   // Fails the Assessments a previous process left running, then takes the queued ones.
   await assessments.start();
 
@@ -294,6 +327,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     stopRecheck();
     stopPurge();
     stopRetention();
+    stopSlo();
     // Running Assessments are aborted and recorded as failed (interrupted) while the database is still open.
     await assessments.stop();
     await recheck.flush();
@@ -303,6 +337,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     await beacon.flush();
     await exposureIncidents.flush();
     await notifier.drain();
+    // Last before the database closes: the minute in progress, and every SLI the steps above recorded.
+    await slo.flush();
     await db.close();
   };
 
@@ -318,6 +354,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     assessments,
     purge,
     retention,
+    slo,
     close() {
       closing ??= stop();
       return closing;
