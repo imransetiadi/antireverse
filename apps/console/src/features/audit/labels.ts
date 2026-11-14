@@ -33,6 +33,7 @@ export const ACTION_LABEL: Readonly<Record<AuditAction, MessageKey>> = {
   "organization.deletion.cancel": "audit.action.organization.deletion.cancel",
   "subject.export": "audit.action.subject.export",
   "subject.erase": "audit.action.subject.erase",
+  "organization.retention.update": "audit.action.organization.retention.update",
 };
 
 /** What an entry's target is, in readable words. */

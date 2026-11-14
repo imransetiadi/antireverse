@@ -387,6 +387,14 @@ export function IncidentDetail({
             {t("incident.evidence")}
           </h2>
           <p className="text-fg-muted">{t("incident.evidence.lead")}</p>
+          {/* Slice 18c: the retention job removes old Events; a static note, so the page makes no extra request. */}
+          <p data-testid="evidence-retention" className="max-w-3xl body-5 text-fg-muted">
+            {t("incident.evidence.retention")}
+            <Link href={ROUTES.dataControls()} prefetch={false}>
+              {t("incident.evidence.retention.link")}
+            </Link>
+            .
+          </p>
           {evidence.length === 0 ? (
             <div data-testid="evidence-empty">
               <EmptyState>{t("incident.evidence.none")}</EmptyState>

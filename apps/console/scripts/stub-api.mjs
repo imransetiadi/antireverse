@@ -64,6 +64,8 @@
 // deletion with its 7-day grace and its cancellation (reason required), subject export and erasure by actor hash. While
 // a deletion is pending every other route of the Organization answers 403 organization-deletion-pending, as the API
 // does. No purge runs: `GET /v1/deletions/:id/report` is always 404.
+// Slice 18c: the Event retention (stub-data.mjs), a shortening with a reason. No retention job runs:
+// `POST /__stub/retention-run` (with the admin key) records a sample run for the Organization, to see the last run.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
@@ -1404,7 +1406,7 @@ const server = http.createServer(async (req, res) => {
   }
   // Slice 18b: data controls; the entry of each export or change is recorded here.
   if (path.startsWith("/v1/organization/") || path.startsWith("/v1/subjects/")) {
-    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const body = req.method === "POST" || req.method === "PUT" ? await readBody(req) : undefined;
     const answer = dataControls.handle(organization, req.method, path, body, reason);
     if (answer) {
       if (answer.audit) {
@@ -1431,6 +1433,15 @@ const server = http.createServer(async (req, res) => {
   if (path.startsWith("/v1/audit")) {
     const answer = audits.handle(organization.id, req.method, path, url.searchParams);
     if (answer) return sendAudit(res, answer);
+  }
+  if (req.method === "POST" && path === "/__stub/retention-run") {
+    const run = {
+      ran_at: new Date().toISOString(),
+      complete: url.searchParams.get("complete") !== "0",
+      counts: { events: 1200, containments: 1, incidents: 2, detections: 5, alert_deliveries: 3 },
+    };
+    dataControls.recordRetentionRun(organization.id, run);
+    return json(res, 200, run);
   }
   const tamperMatch = req.method === "POST" && path === "/__stub/audit-tamper";
   if (tamperMatch) {

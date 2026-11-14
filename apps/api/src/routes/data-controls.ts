@@ -7,10 +7,13 @@ import {
   type DeletionStatusResponse,
   ID_PATTERNS,
   RequestDeletionRequestSchema,
+  type RetentionResponse,
   type SignedAuditHead,
   SUBJECT_EXPORT_FORMAT,
   type SubjectEraseResponse,
   SubjectRequestSchema,
+  UpdateRetentionRequestSchema,
+  type UpdateRetentionResponse,
 } from "@antireverse/protocol";
 import { auditSubjectRef, newId } from "@antireverse/protocol/server";
 import { Hono } from "hono";
@@ -25,10 +28,11 @@ import type { Signer } from "../signer.ts";
 import { auditHead } from "../stores/audit.ts";
 import { cancelDeletion, deletionReport, insertDeletion, pendingDeletion } from "../stores/deletions.ts";
 import { findOrganization } from "../stores/organizations.ts";
+import { lastRetentionRun, lockedRetention, organizationRetention, setEventRetention } from "../stores/retention.ts";
 import { validateJson } from "../validate.ts";
 
 // Data controls (slice 18b): the Organization export, the Organization deletion with a grace period, the signed
-// deletion report, and subject requests by actor hash. Admin keys only. While a deletion is pending, the deletion
+// deletion report, and subject requests by actor hash; and the Event retention (slice 18c). Admin keys only. While a deletion is pending, the deletion
 // status, its cancellation and the export stay open to the Organization's keys; every other route refuses them
 // (`requireKey`). The deletion report is public by its id, which only the Organization was given.
 
@@ -184,6 +188,52 @@ export function dataControlRoutes(deps: {
     if (deletion === null) return problem(c, "not-found");
     return c.json({ deletion } satisfies DeletionResponse);
   });
+
+  // The Event retention, the fixed periods and the Organization's last retention run.
+  routes.get("/v1/organization/retention", admin, async (c) => {
+    const { organizationId } = c.var.principal;
+    const body = await db.tx({ organizationId }, async (q) => {
+      const retention = await organizationRetention(q, organizationId);
+      if (retention === null) return null;
+      return { retention, last_run: await lastRetentionRun(q) } satisfies RetentionResponse;
+    });
+    if (body === null) return problem(c, "not-found");
+    return c.json(body);
+  });
+
+  // Changes the Event retention. Shortening it removes Events at the next run: it needs a reason.
+  routes.put(
+    "/v1/organization/retention",
+    admin,
+    limitBody(),
+    validateJson(UpdateRetentionRequestSchema),
+    async (c) => {
+      const { organizationId } = c.var.principal;
+      const { event_retention_days: days } = c.req.valid("json");
+      const at = now();
+      const outcome = await db.tx({ organizationId }, async (q) => {
+        // Locked: a concurrent change waits, so the reason check and the audit use the value replaced here.
+        const before = await lockedRetention(q, organizationId);
+        if (before === null) return "not-found" as const;
+        if (days < before.event_retention_days && reasonMissing(c) !== null) return "reason-required" as const;
+        await setEventRetention(q, organizationId, days);
+        await audit(q, auditActor(c), {
+          action: "organization.retention.update",
+          target: { kind: "organization", id: organizationId },
+          summary: `Changed the Event retention from ${before.event_retention_days} to ${days} days.`,
+          at,
+        });
+        return {
+          retention: { ...before, event_retention_days: days },
+          last_run: await lastRetentionRun(q),
+          events_removed_before: new Date(at.getTime() - days * DAY_MS).toISOString(),
+        } satisfies UpdateRetentionResponse;
+      });
+      if (outcome === "not-found") return problem(c, "not-found");
+      if (outcome === "reason-required") return problem(c, "reason-required");
+      return c.json(outcome);
+    },
+  );
 
   // Public: the signed report of a purged deletion, by the id the Organization was given at request time.
   routes.get("/v1/deletions/:deletionId/report", async (c) => {

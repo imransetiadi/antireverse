@@ -77,6 +77,7 @@ export const GLOBAL_TABLES: Readonly<Record<string, string>> = {
   confirmation_mail_counts:
     "confirmation mails per keyed address hash and day, across Organizations (the abuse cap of slice 06b); no Organization id, expires with its day",
   organization_deletions: "the owner's deletion requests and tombstones: they outlive the Organization",
+  retention_sweep_state: "where the retention sweep's rotation over Organizations stands: one number, no identifier",
 };
 
 /** Base tables of `public` that are neither global nor carry an `organization_id` column (`organizations` is the root: its `id` is it). */
@@ -294,6 +295,18 @@ export async function seedOrganization(api: TestApi, name: string, options: Seed
        VALUES ($1, $2, 1, ARRAY[$3], ARRAY[]::text[], 'passive', ARRAY['mon'], '09:00', '17:00',
          ARRAY['security@acme.test'], $4, $5, $6)`,
       [organizationId, newId("roe"), target.target.id, keyId, now(), "0".repeat(64)],
+    );
+    // A retention run (slice 18c): written by the owner-only job.
+    await q.query("INSERT INTO retention_runs (organization_id, ran_at, complete, counts) VALUES ($1, $2, true, $3)", [
+      organizationId,
+      now(),
+      JSON.stringify({ events: 1 }),
+    ]);
+    // The set-up record (slice 18c): written by the owner-only sweep.
+    await q.query(
+      `INSERT INTO setup_milestones (organization_id, app_id, environment, shield_first_at, guard_first_at)
+       VALUES ($1, $2, $3, $4, NULL)`,
+      [organizationId, appId, environment, now()],
     );
   });
 

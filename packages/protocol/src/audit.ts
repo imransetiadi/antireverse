@@ -45,6 +45,8 @@ export const AUDIT_ACTIONS = deepFreeze([
   "organization.deletion.cancel",
   "subject.export",
   "subject.erase",
+  // Slice 18c: the Event retention. Shortening it needs a reason.
+  "organization.retention.update",
 ] as const);
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

@@ -18,4 +18,5 @@ export * from "./patches.ts";
 export * from "./policy.ts";
 export * from "./problem.ts";
 export * from "./prove.ts";
+export * from "./retention.ts";
 export * from "./signature.ts";

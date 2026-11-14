@@ -100,6 +100,8 @@ import {
   ProblemSchema,
   type ResendConfirmationResponse,
   ResendConfirmationResponseSchema,
+  type RetentionResponse,
+  RetentionResponseSchema,
   type RollbackPolicyRequest,
   type RulesOfEngagementResponse,
   RulesOfEngagementResponseSchema,
@@ -117,6 +119,9 @@ import {
   type TestAlertChannelResponse,
   TestAlertChannelResponseSchema,
   type UpdateIncidentRequest,
+  type UpdateRetentionRequest,
+  type UpdateRetentionResponse,
+  UpdateRetentionResponseSchema,
   type VerifyTargetResponse,
   VerifyTargetResponseSchema,
 } from "@antireverse/protocol";
@@ -977,6 +982,30 @@ export function eraseSubject(key: string, ipHash: string, options: ReasonOption 
     method: "POST",
     key,
     body: { ip_hash: ipHash },
+    reason: options.reason,
+  });
+}
+
+// ── Retention (slice 18c) ─────────────────────────────────────────────────────────────────────────────
+
+/** `GET /v1/organization/retention` — the Event retention, the fixed periods and the Organization's last run. */
+export function getRetention(key: string): Promise<RetentionResponse> {
+  return call("/v1/organization/retention", RetentionResponseSchema, { key });
+}
+
+/**
+ * `PUT /v1/organization/retention` — sets the Event retention. A shortening needs a reason (400 `reason-required`
+ * without one); the answer says before when received Events are removed at the next run.
+ */
+export function updateRetention(
+  key: string,
+  request: UpdateRetentionRequest,
+  options: ReasonOption = {},
+): Promise<UpdateRetentionResponse> {
+  return call("/v1/organization/retention", UpdateRetentionResponseSchema, {
+    method: "PUT",
+    key,
+    body: { event_retention_days: request.event_retention_days },
     reason: options.reason,
   });
 }

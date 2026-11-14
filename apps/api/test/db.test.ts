@@ -287,6 +287,7 @@ describe("data directory", () => {
         { version: "0032_audit_chain_trigger.sql" },
         { version: "0033_data_controls.sql" },
         { version: "0034_data_controls_review.sql" },
+        { version: "0035_retention.sql" },
       ]);
     } finally {
       await second.close();

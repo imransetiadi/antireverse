@@ -8,8 +8,18 @@
 // the Organization export the signed audit head; audit entries name a subject by `auditSubjectRef`, never by its
 // hash; the Organization export takes from a per-Organization budget of 20 a minute that audit verification and the
 // audit export share (`takeRead`), answering 429 too-many-audit-reads with Retry-After when it is spent.
+// Slice 18c: the Event retention (`GET`/`PUT /v1/organization/retention`), 30 days for a new Organization; the body is
+// validated first, then a shortening needs the reason, as in the API. No retention job runs here: the last run is the
+// one given to `recordRetentionRun`, else null.
 import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto";
-import { EXPORT_CONSISTENCY, RequestDeletionRequestSchema, SubjectRequestSchema } from "@antireverse/protocol";
+import {
+  DEFAULT_EVENT_RETENTION_DAYS,
+  EXPORT_CONSISTENCY,
+  RETENTION_FIXED_DAYS,
+  RequestDeletionRequestSchema,
+  SubjectRequestSchema,
+  UpdateRetentionRequestSchema,
+} from "@antireverse/protocol";
 import { auditSubjectRef } from "@antireverse/protocol/server";
 
 const PROBLEMS = "https://antireverse.dev/problems/";
@@ -78,6 +88,19 @@ export function createDataStore({ now = () => Date.now(), auditHead, tables, sub
   const pendingByOrg = new Map();
   /** @type {Map<string, { start: number, count: number }>} Organization id → its read budget of this minute */
   const reads = new Map();
+  /** @type {Map<string, number>} Organization id → its Event retention in days (slice 18c) */
+  const retentionDays = new Map();
+  /** @type {Map<string, { ran_at: string, complete: boolean, counts: Record<string, number> }>} last run per Organization */
+  const lastRuns = new Map();
+
+  /** The Organization's retention and its last run: the body of `GET /v1/organization/retention`. */
+  const retentionBody = (organizationId) => ({
+    retention: {
+      event_retention_days: retentionDays.get(organizationId) ?? DEFAULT_EVENT_RETENTION_DAYS,
+      ...RETENTION_FIXED_DAYS,
+    },
+    last_run: lastRuns.get(organizationId) ?? null,
+  });
 
   /** Takes one read from the Organization's budget of this minute. */
   function takeRead(organizationId) {
@@ -122,6 +145,11 @@ export function createDataStore({ now = () => Date.now(), auditHead, tables, sub
 
     /** The public half of the key that signs export end lines. */
     publicKey: () => ({ key_id: keyId, algorithm: "Ed25519", public_key: publicRaw.toString("base64url") }),
+
+    /** Records a run of the retention job for the Organization (the stub runs none itself). */
+    recordRetentionRun(organizationId, run) {
+      lastRuns.set(organizationId, { ran_at: run.ran_at, complete: run.complete, counts: { ...run.counts } });
+    },
 
     /** The pending deletion of an Organization, or null. */
     pending: (organizationId) => pendingByOrg.get(organizationId) ?? null,
@@ -192,6 +220,30 @@ export function createDataStore({ now = () => Date.now(), auditHead, tables, sub
               action: "organization.deletion.cancel",
               target: { kind: "organization_deletion", id: deletion.id },
               summary: `Cancelled the deletion ${deletion.id} of the Organization ${organizationId}.`,
+            },
+          };
+        }
+        return problem(405, "method-not-allowed", "Method Not Allowed");
+      }
+      if (path === "/v1/organization/retention") {
+        if (method === "GET") return { status: 200, body: retentionBody(organizationId) };
+        if (method === "PUT") {
+          const read = validated(UpdateRetentionRequestSchema, body);
+          if (read.error) return read.error;
+          const days = read.data.event_retention_days;
+          const before = retentionBody(organizationId).retention.event_retention_days;
+          if (days < before && reason === undefined) return reasonRequired();
+          retentionDays.set(organizationId, days);
+          return {
+            status: 200,
+            body: {
+              ...retentionBody(organizationId),
+              events_removed_before: new Date(at - days * DAY_MS).toISOString(),
+            },
+            audit: {
+              action: "organization.retention.update",
+              target: { kind: "organization", id: organizationId },
+              summary: `Changed the Event retention from ${before} to ${days} days.`,
             },
           };
         }

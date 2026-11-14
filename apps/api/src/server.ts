@@ -10,6 +10,7 @@ import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.
 import { createEventBus, type EventBus } from "./bus.ts";
 import { DEFAULT_HOST } from "./config.ts";
 import { createPurgeJob, type PurgeJob, type PurgeOptions } from "./data/purge.ts";
+import { createRetentionJob, type RetentionJob, type RetentionOptions } from "./data/retention.ts";
 import { type Db, openDb } from "./db/db.ts";
 import { createBeaconRecorder } from "./detect/beacon.ts";
 import { createDetector, type Detector } from "./detect/detector.ts";
@@ -107,6 +108,8 @@ export interface StartApiOptions {
   assessments?: Omit<AssessmentRunnerOptions, "db" | "assessor" | "now" | "logger">;
   /** Settings of the daily purge of deleted Organizations (slice 18b). Default: `PURGE_DEFAULTS`. */
   purge?: Omit<PurgeOptions, "db" | "signer" | "now" | "logger">;
+  /** Settings of the daily retention job (slice 18c). Default: `RETENTION_DEFAULTS`. */
+  retention?: Omit<RetentionOptions, "db" | "now" | "logger">;
 }
 
 export interface RunningApi extends Listening {
@@ -127,6 +130,8 @@ export interface RunningApi extends Listening {
   assessments: AssessmentRunner;
   /** The daily purge of Organizations past their deletion grace (slice 18b): started with the server, flushed on close. */
   purge: PurgeJob;
+  /** The daily retention job (slice 18c): started with the server, flushed on close. */
+  retention: RetentionJob;
   /**
    * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
    * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
@@ -257,6 +262,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     },
   });
   const stopPurge = purge.start();
+  const retention = createRetentionJob({ ...options.retention, db, now: options.now, logger });
+  const stopRetention = retention.start();
   // Fails the Assessments a previous process left running, then takes the queued ones.
   await assessments.start();
 
@@ -280,10 +287,12 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     stopDetector();
     stopRecheck();
     stopPurge();
+    stopRetention();
     // Running Assessments are aborted and recorded as failed (interrupted) while the database is still open.
     await assessments.stop();
     await recheck.flush();
     await purge.flush();
+    await retention.flush();
     await started.flush();
     await beacon.flush();
     await exposureIncidents.flush();
@@ -302,6 +311,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     authorize: createAuthorize({ db, now: options.now }),
     assessments,
     purge,
+    retention,
     close() {
       closing ??= stop();
       return closing;

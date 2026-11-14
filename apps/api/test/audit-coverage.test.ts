@@ -470,6 +470,22 @@ describe("audit coverage", () => {
         return bare("DELETE", `/v1/targets/${s.spareTargetId}`, h);
       },
     },
+    // Slice 18c: the Event retention. Lengthening needs no reason; shortening does.
+    {
+      route: "PUT /v1/organization/retention",
+      action: "organization.retention.update",
+      status: 200,
+      run: (h) =>
+        api.app.request("/v1/organization/retention", put({ event_retention_days: 90 }, { ...bearer(admin), ...h })),
+    },
+    {
+      route: "PUT /v1/organization/retention",
+      action: "organization.retention.update",
+      sensitive: true,
+      status: 200,
+      run: (h) =>
+        api.app.request("/v1/organization/retention", put({ event_retention_days: 7 }, { ...bearer(admin), ...h })),
+    },
     // Slice 18b: data controls. The deletion request comes last but one: until it is cancelled, the key is refused
     // everywhere else.
     {

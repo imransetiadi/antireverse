@@ -2,16 +2,24 @@ import type { AppSetup, Environment } from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
 
 /**
- * The read of `appSetup`: Organization, App, Environment. One MIN() per step, each served by an index that a test
- * checks: Shield by `events_recent`, Guard by `events_first_attested` (migration 0030), Harden by
- * `builds_recent_by_environment`. Row-level security applies on top of the Organization named here.
+ * The read of `appSetup`: Organization, App, Environment. Shield and Guard take the earlier of the set-up record
+ * (`setup_milestones`, migration 0035: the earliest instants the retention sweep removed, by primary key) and the
+ * Events that remain; one MIN() per step, each served by an index that a test checks: Shield by `events_recent`,
+ * Guard by `events_first_attested` (migration 0030), Harden by `builds_recent_by_environment`. Row-level security
+ * applies on top of the Organization named here.
  */
 export const APP_SETUP_SQL = `SELECT
-       (SELECT MIN(received_at) FROM events
-         WHERE organization_id = $1 AND app_id = $2 AND environment = $3) AS shield,
-       (SELECT MIN(received_at) FROM events
-         WHERE organization_id = $1 AND app_id = $2 AND environment = $3
-           AND payload->'attestation'->>'status' = 'valid') AS guard,
+       LEAST(
+         (SELECT shield_first_at FROM setup_milestones
+           WHERE organization_id = $1 AND app_id = $2 AND environment = $3),
+         (SELECT MIN(received_at) FROM events
+           WHERE organization_id = $1 AND app_id = $2 AND environment = $3)) AS shield,
+       LEAST(
+         (SELECT guard_first_at FROM setup_milestones
+           WHERE organization_id = $1 AND app_id = $2 AND environment = $3),
+         (SELECT MIN(received_at) FROM events
+           WHERE organization_id = $1 AND app_id = $2 AND environment = $3
+             AND payload->'attestation'->>'status' = 'valid')) AS guard,
        (SELECT MIN(registered_at) FROM builds
          WHERE organization_id = $1 AND app_id = $2 AND environment = $3) AS harden`;
 

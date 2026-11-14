@@ -28,6 +28,8 @@ import {
   type DecisionMode,
   ENVIRONMENTS,
   type Environment,
+  EVENT_RETENTION_DAYS,
+  type EventRetentionDays,
   EXPOSURE_LIMITS,
   holdsSecretShape,
   ID_PATTERNS,
@@ -106,6 +108,7 @@ import {
   testAlertChannel,
   UnauthorizedError,
   updateIncident,
+  updateRetention,
   ValidationError,
   verifyAudit,
   verifyTarget,
@@ -2023,6 +2026,65 @@ async function eraseSubjectChange(_previous: EraseSubjectState, formData: FormDa
     const refusal = reasonRefusal(error);
     if (refusal) return { ok: false, errors: refusal };
     return { ok: false, errors: apiErrors(error, []) };
+  }
+}
+
+// ── Retention (slice 18c) ─────────────────────────────────────────────────────────────────────────────
+// Lengthening (or keeping) the Event retention is sent at once, without a reason. Shortening removes Events at the next
+// run: the page asks for it in its confirmation step, which sends `confirm=shorten` and a reason, forwarded as the
+// reason header. The API alone decides what a shortening is: when it asks for a reason that was not sent (a tab that
+// shows an older period), the state names the period so that the page opens the confirmation step for it.
+
+export type RetentionChangeState =
+  | null
+  | { ok: false; errors: FieldError[]; reason?: string; confirm?: EventRetentionDays }
+  | { ok: true; days: EventRetentionDays; eventsRemovedBefore: string };
+
+const isRetentionDays = (value: number): value is EventRetentionDays =>
+  (EVENT_RETENTION_DAYS as readonly number[]).includes(value);
+
+/** Sets the Event retention; from the confirmation step (a shortening), with the reason it requires. */
+export async function updateRetentionAction(
+  previous: RetentionChangeState,
+  formData: FormData,
+): Promise<RetentionChangeState> {
+  const state = await updateRetentionChange(previous, formData);
+  return state?.ok === true ? state : keptReason(state, formData);
+}
+
+async function updateRetentionChange(
+  _previous: RetentionChangeState,
+  formData: FormData,
+): Promise<RetentionChangeState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const raw = text(formData, "event_retention_days");
+  const days = /^[0-9]{1,3}$/.test(raw) ? Number(raw) : Number.NaN;
+  if (!isRetentionDays(days)) return failed("event_retention_days", t("data.retention.invalid"));
+  // The confirmation step stays open on every refusal it gets back.
+  const fromStep = text(formData, "confirm") === "shorten";
+  const step = fromStep ? { confirm: days } : {};
+  const read = reasonFrom(formData, fromStep);
+  if ("error" in read) return { ok: false, errors: [read.error], ...step };
+
+  try {
+    const answer = await updateRetention(key, { event_retention_days: days }, withReason(read.reason));
+    revalidatePath(ROUTES.dataControls());
+    return { ok: true, days, eventsRemovedBefore: answer.events_removed_before };
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    if (error instanceof ReasonRequiredError && !fromStep) {
+      // A shortening after all: the page shows the period the API holds, and the step for this one.
+      revalidatePath(ROUTES.dataControls());
+      return { ok: false, errors: [], confirm: days };
+    }
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal, ...step };
+    if (error instanceof ValidationError && error.errors.some((entry) => entry.path === "event_retention_days")) {
+      return { ...failed("event_retention_days", t("data.retention.invalid")), ...step };
+    }
+    return { ok: false, errors: apiErrors(error, []), ...step };
   }
 }
 
