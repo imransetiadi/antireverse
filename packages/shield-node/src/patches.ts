@@ -13,8 +13,13 @@
 // with JSON `\uXXXX` escapes decoded; path, query and each header value are scanned over their first 16,384
 // characters. Each form is ASCII-lower-cased once per request and searched with the native `indexOf`, `startsWith`
 // and `endsWith` (Jev native_indexof_latin1): a condition costs at most its input's length × the value's length
-// (≤ 256). ASCII-compatible single-byte charsets (`LATIN1_CHARSETS`) are read as Latin-1, an empty charset as UTF-8. No regular expression ever runs on request data, and each condition costs time linear in its
-// input. Nothing here logs, and no header value, query value or body leaves this module.
+// (≤ 256). Two shortcuts spare a long body scans that cannot find anything, without changing any answer (slice 18f,
+// Jev a_plus_b_capped): the JSON-escape form is built and scanned only for a condition whose value holds a character
+// some escape decodes to (`reaches`), and a text of `PROBE_MIN` characters or more is first asked, one native
+// `indexOf` per character, whether it holds a few characters of the value at all (`lacks`). ASCII-compatible
+// single-byte charsets (`LATIN1_CHARSETS`) are read as Latin-1, an empty charset as UTF-8. No regular expression
+// ever runs on request data, and each condition costs time linear in its input. Nothing here logs, and no header
+// value, query value or body leaves this module.
 import type { IncomingMessage } from "node:http";
 import { compilePattern } from "./policy/match.ts";
 import type { AppliedPatch, AppliedPolicy } from "./policy/store.ts";
@@ -96,6 +101,13 @@ export interface PreparedCondition {
   readonly over: number;
   /** `name` in lower case (query_value), or null. */
   readonly foldedName: string | null;
+  /**
+   * The code units a JSON escape must decode to for the escape form to answer differently from the form it was
+   * decoded from: those of `needle`, and for `json_key` the whitespace and the colon looked for behind it.
+   */
+  readonly reach: ReadonlySet<number>;
+  /** At most `PROBES_MAX` distinct characters of `needle`: a text without one of them does not hold `needle`. */
+  readonly probes: readonly string[];
 }
 
 /** A patch prepared once per bundle: what matching reads. */
@@ -319,6 +331,45 @@ function decodeJsonEscapes(text: string): string {
   return parts.join("");
 }
 
+/**
+ * What the escapes of `text` decode to, without decoding it: the distinct code units, ASCII letters folded (as the
+ * form is folded before it is scanned); null when there are more than `ESCAPED_UNITS_MAX`; undefined when `text` has
+ * no escape that decodes, so that `decodeJsonEscapes` would change nothing. It reads `text` exactly as
+ * `decodeJsonEscapes` does: the same escapes count, in the same places.
+ */
+function escapedUnits(text: string): number[] | null | undefined {
+  let at = text.indexOf("\\u");
+  if (at === -1) return undefined;
+  const length = text.length;
+  const units: number[] = [];
+  let last = -1;
+  while (at !== -1) {
+    let value = 0;
+    let k = 2;
+    if (at + 5 < length) {
+      for (; k < 6; k++) {
+        const digit = hexValue(text.charCodeAt(at + k));
+        if (digit === -1) break;
+        value = value * 16 + digit;
+      }
+    }
+    if (k === 6) {
+      const unit = lower(value);
+      if (unit !== last) {
+        last = unit;
+        if (!units.includes(unit)) {
+          if (units.length === ESCAPED_UNITS_MAX) return null;
+          units.push(unit);
+        }
+      }
+      at = text.indexOf("\\u", at + 6);
+    } else {
+      at = text.indexOf("\\u", at + 1);
+    }
+  }
+  return units.length === 0 ? undefined : units;
+}
+
 const cap = (text: string, max: number): string => (text.length > max ? text.slice(0, max) : text);
 
 function trimOws(text: string): string {
@@ -348,16 +399,48 @@ function fold(text: string): string {
   return fromCodes(codes, length);
 }
 
-/** A condition prepared once per bundle: folded value, `length_over` bound. */
+/** Texts at least this long are probed for a needle's characters before they are scanned. */
+const PROBE_MIN = 1024;
+/** Characters of one needle probed for: each costs at most one pass over the text, once per text (`lacks`). */
+const PROBES_MAX = 8;
+/** Distinct decoded characters kept per escape form; with more, every condition scans the form. */
+const ESCAPED_UNITS_MAX = 16;
+/**
+ * The characters most often found in a benign body, the commonest last (letters by their frequency in English, then
+ * the space and JSON's punctuation). A needle's other characters are probed first: the likeliest to be absent. This
+ * order only decides how often a scan is spared, never an answer.
+ */
+const COMMON = 'zqxjkvbpygfwmucldrhsnioate ,:{}"';
+
+/** The characters of `needle` to probe a long text for: distinct, the rarest first, at most `PROBES_MAX`. */
+function probesOf(needle: string): readonly string[] {
+  const distinct: string[] = [];
+  for (let i = 0; i < needle.length; i++) {
+    const char = needle.charAt(i);
+    if (!distinct.includes(char)) distinct.push(char);
+  }
+  // Stable: characters of one rank stay in the needle's order.
+  distinct.sort((a, b) => COMMON.indexOf(a) - COMMON.indexOf(b));
+  return Object.freeze(distinct.slice(0, PROBES_MAX));
+}
+
+/** JSON whitespace and the colon: what `json_key` reads behind the quoted name. */
+const JSON_KEY_TAIL = [32, 9, 10, 13, 58];
+
+/** A condition prepared once per bundle: folded value, `length_over` bound, what the shortcuts read. */
 export function prepareCondition(condition: Condition): PreparedCondition {
   const value = condition.value ?? "";
   // `json_key` looks for the value written as a JSON string literal.
   const needle = fold(condition.op === "json_key" ? JSON.stringify(value) : value);
+  const reach = new Set<number>(condition.op === "json_key" ? JSON_KEY_TAIL : []);
+  for (let i = 0; i < needle.length; i++) reach.add(needle.charCodeAt(i));
   return Object.freeze({
     condition,
     needle,
     over: condition.op === "length_over" ? Number(value) : 0,
     foldedName: condition.target === "query_value" && condition.name !== undefined ? fold(condition.name) : null,
+    reach,
+    probes: probesOf(needle),
   });
 }
 
@@ -398,6 +481,70 @@ interface Candidates {
   readonly texts: readonly string[];
   readonly lengths: readonly number[];
   readonly undecodable?: boolean;
+  /** The body only. For each of `texts`: which characters it holds, as far as asked; null for a short text. */
+  readonly held?: readonly (Map<string, boolean> | null)[];
+  /** The body only: its JSON-escape forms, built when a condition first needs one. */
+  readonly escaped?: readonly EscapedForm[];
+}
+
+/**
+ * The JSON-escape form of one decoded body text, not built yet: the text with each `\uXXXX` replaced by its code
+ * unit, everything between copied as it is. So whatever a condition finds in it without touching a decoded unit lies
+ * in one copied piece, and the text it was decoded from — always scanned — holds it too.
+ */
+interface EscapedForm {
+  /** The decoded body text the escapes are read from. */
+  readonly source: string;
+  /** `source` percent-decoded: an escape form equal to it is not scanned twice. */
+  readonly percent: string;
+  /** The distinct code units the escapes decode to, ASCII letters folded; null when there are too many to keep. */
+  readonly units: readonly number[] | null;
+  /** The form folded, once built; null when it is the percent-decoded form again. */
+  text?: string | null;
+  held?: Map<string, boolean> | null;
+}
+
+/** New for a text long enough to be probed, else null. */
+const heldOf = (text: string): Map<string, boolean> | null => (text.length >= PROBE_MIN ? new Map() : null);
+
+/**
+ * Whether `text` lacks one of the probed characters of the needle: then it cannot hold the needle, and no operator
+ * that looks for it (`equals`, `starts_with`, `ends_with`, `contains`, `json_key`) can hold. Each character is looked
+ * for once per text with the native `indexOf`, the answer shared by every condition through `held`.
+ */
+function lacks(prepared: PreparedCondition, text: string, held: Map<string, boolean>): boolean {
+  for (const char of prepared.probes) {
+    let present = held.get(char);
+    if (present === undefined) {
+      present = text.indexOf(char) !== -1;
+      held.set(char, present);
+    }
+    if (!present) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the escape form can hold what the form it was decoded from does not: only if the needle — or, for
+ * `json_key`, the whitespace and colon behind it — has a character that some escape decodes to. Without one, a find
+ * in the escape form covers no decoded unit: it lies in a piece copied from the source, which is scanned anyway
+ * (a prefix of the form within its first piece, a suffix within its last; and a form with a decoded unit never
+ * equals a needle without it).
+ */
+function reaches(prepared: PreparedCondition, form: EscapedForm): boolean {
+  if (form.units === null) return true;
+  for (const unit of form.units) if (prepared.reach.has(unit)) return true;
+  return false;
+}
+
+/** The escape form's text, built on first use; null when it need not be scanned. */
+function escapedText(form: EscapedForm): string | null {
+  if (form.text === undefined) {
+    const escapes = decodeJsonEscapes(form.source);
+    form.text = escapes === form.percent ? null : fold(escapes);
+    form.held = form.text === null ? null : heldOf(form.text);
+  }
+  return form.text;
 }
 
 function test(prepared: PreparedCondition, candidates: Candidates): boolean {
@@ -408,7 +555,25 @@ function test(prepared: PreparedCondition, candidates: Candidates): boolean {
     for (const length of candidates.lengths) if (length > prepared.over) return true;
     return false;
   }
-  for (const text of candidates.texts) if (compare(prepared, text)) return true;
+  const { texts, held, escaped } = candidates;
+  if (held === undefined) {
+    for (const text of texts) if (compare(prepared, text)) return true;
+    return false;
+  }
+  for (let i = 0; i < texts.length; i++) {
+    const text = texts[i] as string;
+    const known = held[i] as Map<string, boolean> | null;
+    if (known !== null && lacks(prepared, text, known)) continue;
+    if (compare(prepared, text)) return true;
+  }
+  if (escaped === undefined) return false;
+  for (const form of escaped) {
+    if (!reaches(prepared, form)) continue;
+    const text = escapedText(form);
+    if (text === null) continue;
+    if (form.held !== null && form.held !== undefined && lacks(prepared, text, form.held)) continue;
+    if (compare(prepared, text)) return true;
+  }
   return false;
 }
 
@@ -596,14 +761,22 @@ function readBody(body: Uint8Array | null | undefined, contentType: string | und
   const decoded = decodeBody(body, contentType);
   if (decoded === null) return UNDECODABLE;
   const texts: string[] = [];
+  const held: (Map<string, boolean> | null)[] = [];
+  const escaped: EscapedForm[] = [];
+  const push = (text: string): void => {
+    texts.push(text);
+    held.push(heldOf(text));
+  };
   for (const text of decoded) {
-    texts.push(fold(text));
+    push(fold(text));
     const percent = decodeOnce(text, false);
-    if (percent !== text) texts.push(fold(percent));
-    const escapes = decodeJsonEscapes(text);
-    if (escapes !== text && escapes !== percent) texts.push(fold(escapes));
+    if (percent !== text) push(fold(percent));
+    // The escape form differs from `text` exactly when `text` has an escape that decodes. It is built when a
+    // condition first needs it (`escapedText`), where one equal to the percent-decoded form is dropped as before.
+    const units = escapedUnits(text);
+    if (units !== undefined) escaped.push({ source: text, percent, units });
   }
-  return { texts, lengths: [body.byteLength] };
+  return { texts, lengths: [body.byteLength], held, escaped };
 }
 
 // --- Body decoding (A6, F1): UTF-8, UTF-16LE/BE, UTF-32LE/BE by charset or byte order mark ------------------------
@@ -849,13 +1022,16 @@ function decodeUtf32(body: Uint8Array, big: boolean): string {
   return fromCodes(units, written);
 }
 
+/** One decoder for every body: a call that does not stream keeps nothing from the call before. */
+const UTF8 = new TextDecoder("utf-8");
+
 function decodeAs(body: Uint8Array, encoding: BodyEncoding): string {
   if (encoding === "latin1") return decodeLatin1(body);
   if (encoding === "utf-16le") return decodeUtf16(body, false);
   if (encoding === "utf-16be") return decodeUtf16(body, true);
   if (encoding === "utf-32le") return decodeUtf32(body, false);
   if (encoding === "utf-32be") return decodeUtf32(body, true);
-  return new TextDecoder("utf-8").decode(body);
+  return UTF8.decode(body);
 }
 
 /** The body as text in each encoding it is read in; null when its character set is not understood. */

@@ -273,6 +273,7 @@ A decision is recorded when it is **hard to reverse**, **surprising without cont
 | D-095 | 18d Console: operator session is a separate `ar_ops` cookie (httpOnly, Strict, path /ops, 8 h); a 401 from the API goes through the `/ops/expired` route handler, which clears the cookie and returns to sign-in | Jev 0.93 (2026-11-14) | accepted |
 | D-096 | Slice 18e = tri-state release-gate runner: every QASUITE §16 and SECURITY §12 line is pass / fail / not-checkable with evidence; releasable only when all pass; signed JSON+Markdown report; npm audit only with --online | Jev 1.0 (2026-11-14) | accepted |
 | D-097 | Release gate and RRS: TC-PRV-006 is not checkable until a real AI agent runs; the stand-in run stays as a regression criterion against a recorded per-profile baseline (24 on balanced and maximum, 2026-11-14); the missing ESM integrity check (W4 achieved by the stand-in) is a Harden finding for a follow-up slice | Owner (2026-11-14) after Jev 0.69 at confidence 0.63 | accepted |
+| D-098 | After 18e the next slice is 18f: bring Shield within PB-01 with margin on the 100 KB body scenario (behaviour unchanged, differential and growth tests), before Harden ESM integrity, probes or SDK supply chain | Jev 0.86 at confidence 0.84 (2026-11-14) | accepted |
 | D-033 | The harden engine must never change behaviour: one name per binding id node (classes), reserved-word exclusion, skip-on-eval, and a budget gate that emits unchanged rather than ship over budget | An independent review found all four as real behaviour/budget breaks; equivalence is the product's core promise | accepted |
 
 ## 5. Lessons
@@ -579,4 +580,5 @@ Next step for whoever continues:
 | 2026-11-14 | Slice 18c built; decisions D-085–D-088; configurable Event retention and the daily retention sweep |
 | 2026-11-14 | Slice 17a built; decisions D-089–D-091; usage metering (requests, Guard devices, sandbox minutes) and Settings → Usage |
 | 2026-11-14 | Slice 18d built; decisions D-092–D-095; SLO measurement, burn alerts, operator endpoints and the /ops dashboard |
+| 2026-11-14 | Slice 18f built; decision D-098; Shield body matcher within PB-01 (lazy escape form, character probes), behaviour identical by differential tests; gate: every runnable check passes |
 | 2026-11-14 | Slice 18e built; decisions D-096–D-097; release-gate runner with a signed tri-state report; first real verdict blocked (PB-01 breach, 13 lines not checkable) |

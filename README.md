@@ -212,7 +212,7 @@ Every administrative change writes an entry in the same transaction: who (the ad
 - **Options:** `--only <ids>`, `--skip-slow` (reported as not checked) and `--online` (allows `npm audit`, which contacts the registry).
 - **Signature:** the report is signed with an Ed25519 key kept outside the repository (`AR_GATE_KEY_FILE`, default `~/.config/airverse/gate-key.json`). `npm run gate:verify-report -- <dir>` accepts only the local key or `--expect <fingerprint>`.
 
-Today the verdict is `blocked`: 13 lines cannot be checked yet (real-agent RRS, Pentest Campaigns, the browser corpus, SDK signing, staging rehearsals and others), and the Shield bench misses PB-01 on the 100 KB body scenario.
+Today every check that can run passes, and the verdict is `blocked` with exit code 2: 15 lines cannot be fully checked yet (real-agent RRS, Pentest Campaigns, the browser corpus, SDK signing, staging rehearsals and others).
 
 ## Operator SLO dashboard
 
