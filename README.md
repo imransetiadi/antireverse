@@ -385,3 +385,7 @@ This is a local walking skeleton, not a deployable service.
 - **Route templates have limits.** Shield records the route template, never the concrete URL. Install it on the application rather than on a mounted router where you can: the path above Shield is recorded as `(mount)`. A regular-expression mount is recorded as `(unmatched)`; one without capture groups that matches non-numeric text is not detectable and is unsupported.
 
 The order in which these arrive is in [PRD.md](PRD.md) §18. The vocabulary used everywhere is in [MEMORY.md](MEMORY.md) §3.
+
+## License
+
+Airverse is licensed under the [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for the copyright notice.
