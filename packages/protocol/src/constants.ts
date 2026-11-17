@@ -59,6 +59,8 @@ export const ID_PATTERNS = {
   aud: /^aud_[0-9a-f]{24}$/,
   /** An Organization deletion request (slice 18b). */
   del: /^del_[0-9a-f]{24}$/,
+  /** A Pentest Campaign (slice 15a). */
+  cmp: /^cmp_[0-9a-f]{24}$/,
 } as const;
 export type IdPrefix = keyof typeof ID_PATTERNS;
 

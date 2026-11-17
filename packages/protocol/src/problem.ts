@@ -36,6 +36,19 @@ export const CONFLICT_REASONS = deepFreeze([
   "no-confirmed-recipients",
   // Slice 12a (Reverse Assessment): an Assessment request without files for a Build that has no kept artifact.
   "artifact-required",
+  // Slice 15a (Pentest Campaigns). Creation: the Organization already has a queued or running Campaign; the target's
+  // ownership check is not current; there are no signed Rules of Engagement, the target is not in their scope, they
+  // were signed more than 90 days ago, or they allow less than the intensity asked for. Stop: the Campaign has ended
+  // or is already being stopped.
+  "campaign-active",
+  "campaign-target-not-verified",
+  "campaign-no-rules",
+  "campaign-target-out-of-scope",
+  "campaign-rules-too-old",
+  "campaign-intensity-exceeds",
+  // The Rules of Engagement exclude the ownership file's path, which every Campaign must fetch at its start.
+  "campaign-verification-path-excluded",
+  "campaign-ended",
 ] as const);
 export type ConflictReason = (typeof CONFLICT_REASONS)[number];
 

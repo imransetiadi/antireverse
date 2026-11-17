@@ -133,10 +133,11 @@ export function createAuditStore({ now = () => Date.now() } = {}) {
     /**
      * Appends one entry to the Organization's chain and returns it.
      * @param {string} organizationId
-     * @param {{ keyId: string, action: string, appId?: string, target: { kind: string, id: string }, reason?: string, summary: string }} change
+     * `actor` (slice 15a): `admin_key` (the default, named by `keyId`), or `system` or `operator`, which name no key.
+     * @param {{ keyId?: string, actor?: "admin_key" | "system" | "operator", action: string, appId?: string, target: { kind: string, id: string }, reason?: string, summary: string }} change
      * @returns {any} the entry, in the shape of the protocol's `AuditEntry`
      */
-    record(organizationId, { keyId, action, appId, target, reason, summary }) {
+    record(organizationId, { keyId, actor = "admin_key", action, appId, target, reason, summary }) {
       const chain = chainOf(organizationId);
       const last = chain.at(-1);
       const entry = {
@@ -144,7 +145,7 @@ export function createAuditStore({ now = () => Date.now() } = {}) {
         organization_id: organizationId,
         seq: chain.length + 1,
         at: new Date(now()).toISOString(),
-        actor: { kind: "admin_key", key_id: keyId },
+        actor: actor === "admin_key" ? { kind: "admin_key", key_id: keyId } : { kind: actor },
         action,
         ...(appId === undefined ? {} : { app_id: appId }),
         target,

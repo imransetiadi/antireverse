@@ -202,6 +202,36 @@ describe("stub audit — the reason header", () => {
   });
 });
 
+describe("stub audit — the system and the operator as actors (slice 15a)", () => {
+  it("records an entry of the system or the operator without a key id, in the same chain", () => {
+    const { audit, write } = store();
+    const first = write("campaign.create", { target: { kind: "campaign", id: "cmp_0123456789abcdef01234567" } });
+    const system = audit.record(ORG, {
+      actor: "system",
+      action: "campaign.end",
+      target: { kind: "campaign", id: "cmp_0123456789abcdef01234567" },
+      summary: "The Campaign ended.",
+    });
+    const operator = audit.record(ORG, {
+      actor: "operator",
+      keyId: KEY_ID,
+      action: "campaign.operator_kill",
+      target: { kind: "campaign", id: "cmp_0123456789abcdef01234567" },
+      reason: "Incident 42",
+      summary: "The operator stopped all Campaigns.",
+    });
+    expect(first.actor).toEqual({ kind: "admin_key", key_id: KEY_ID });
+    expect(system.actor).toEqual({ kind: "system" });
+    expect(operator.actor).toEqual({ kind: "operator" });
+    for (const entry of [first, system, operator]) {
+      parsed(AuditEntrySchema, entry);
+      const { hash, ...rest } = entry;
+      expect(auditHash(rest)).toBe(hash);
+    }
+    expect(operator.prev_hash).toBe(system.hash);
+  });
+});
+
 describe("stub audit — what each change records", () => {
   it("maps every mutating route of the stub to an action of the protocol, with its target", () => {
     const INC = "inc_0123456789abcdef01234567";

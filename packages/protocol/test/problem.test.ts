@@ -109,6 +109,14 @@ describe("conflict reasons", () => {
       "recipient-confirmed",
       "no-confirmed-recipients",
       "artifact-required",
+      "campaign-active",
+      "campaign-target-not-verified",
+      "campaign-no-rules",
+      "campaign-target-out-of-scope",
+      "campaign-rules-too-old",
+      "campaign-intensity-exceeds",
+      "campaign-verification-path-excluded",
+      "campaign-ended",
     ]);
     expect(Object.isFrozen(CONFLICT_REASONS)).toBe(true);
   });

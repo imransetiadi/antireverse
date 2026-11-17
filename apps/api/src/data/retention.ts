@@ -1,6 +1,7 @@
 import { USAGE_DEVICE_DAILY_CAP, usageMonthOf } from "@antireverse/protocol";
 import type { OwnedDb } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
+import { sweepCampaigns } from "../stores/campaigns.ts";
 import {
   expireArtifactsByOrganization,
   recordRetentionRun,
@@ -43,6 +44,9 @@ export const RETENTION_CLASSES: Readonly<Record<string, RetentionClass>> = Objec
   assessments: { rule: "finished (scored, inconclusive or failed) more than 395 days ago" },
   artifacts: { rule: "30 days after the last Assessment that used them (the artifact expiry of 0026/0028)" },
   artifact_files: { rule: "with their artifact (cascade)" },
+  campaigns: { rule: "ended (completed, stopped, refused, failed or interrupted) more than 395 days ago (slice 15a)" },
+  campaign_requests: { rule: "with their Campaign (cascade): 395 days after it ended" },
+  campaign_findings: { rule: "with their Campaign (cascade): 395 days after it ended" },
   retention_runs: { rule: "the 30 most recent runs per Organization are kept" },
   usage_daily: { rule: "13 months of usage history: days before the 13th month before the current one" },
   usage_device_days: { rule: "with its month's rollup, once the month is closed (slice 17a)" },
@@ -206,6 +210,17 @@ export function createRetentionJob(options: RetentionOptions): RetentionJob {
     } catch (error) {
       result.failed++;
       logger.warn(`retention artifact expiry error ${errorName(error)}`);
+    }
+    try {
+      // Pentest Campaigns (slice 15a): 395 days after they ended, with their request log and Findings.
+      const campaigns = await db.owner((q) => sweepCampaigns(q, at, batch));
+      addCounts(
+        counts,
+        Object.fromEntries(Object.entries(campaigns).map(([organizationId, n]) => [organizationId, { campaigns: n }])),
+      );
+    } catch (error) {
+      result.failed++;
+      logger.warn(`retention campaign sweep error ${errorName(error)}`);
     }
     try {
       // Usage (slice 17a): the monthly rollup and the 13-month sweep, until a call leaves nothing, within its own

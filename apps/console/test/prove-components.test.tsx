@@ -124,6 +124,8 @@ describe("navigation", () => {
     ).toEqual([
       ["Targets", "/prove/targets"],
       ["Rules of Engagement", "/prove/rules-of-engagement"],
+      // Slice 15a.
+      ["Campaigns", "/prove/campaigns"],
     ]);
     expect(screen.getByTestId("nav-rules").getAttribute("aria-current")).toBe("page");
     expect(screen.getByTestId("nav-targets").getAttribute("aria-current")).toBeNull();

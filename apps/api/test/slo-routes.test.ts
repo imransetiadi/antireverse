@@ -135,6 +135,12 @@ describe("route classes", () => {
     expect([...TENANT_DESTINATION_ROUTES].sort()).toEqual([...tenantDestination].sort());
     const other = [
       "GET /v1/ops/slo",
+      // Slice 15a: the operator's switches of Pentest Campaigns (the operator token, not the Control API).
+      "GET /v1/ops/prove",
+      "POST /v1/ops/prove/kill",
+      "POST /v1/ops/prove/enable",
+      "POST /v1/ops/prove/organizations/:id/suspend",
+      "POST /v1/ops/prove/organizations/:id/resume",
       "GET /v1/apps/:appId/events/stream",
       "POST /v1/inventory",
       "OPTIONS /v1/attest",

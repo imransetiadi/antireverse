@@ -78,6 +78,9 @@ export const GLOBAL_TABLES: Readonly<Record<string, string>> = {
     "confirmation mails per keyed address hash and day, across Organizations (the abuse cap of slice 06b); no Organization id, expires with its day",
   organization_deletions: "the owner's deletion requests and tombstones: they outlive the Organization",
   retention_sweep_state: "where the retention sweep's rotation over Organizations stands: one number, no identifier",
+  prove_switch: "the operator's kill switch of Pentest Campaigns (slice 15a): one row, no tenant identifier",
+  prove_suspensions:
+    "the operator's list of Organizations whose Campaigns are suspended (slice 15a): an Organization id, a time and the operator's reason; removed with the Organization's row (cascade)",
   slo_alerts: "the burn rules firing now (slice 18d): SLO, rule and the episode's start, no tenant identifier",
   slo_flushes: "the ids of SLI batches written in the last day (slice 18d), so a retried batch is not counted twice",
   slo_minutes:
@@ -299,6 +302,33 @@ export async function seedOrganization(api: TestApi, name: string, options: Seed
        VALUES ($1, $2, 1, ARRAY[$3], ARRAY[]::text[], 'passive', ARRAY['mon'], '09:00', '17:00',
          ARRAY['security@acme.test'], $4, $5, $6)`,
       [organizationId, newId("roe"), target.target.id, keyId, now(), "0".repeat(64)],
+    );
+    // A Pentest Campaign that completed (slice 15a), with one logged request and one Finding. Its log and Findings
+    // are written while it runs (the database refuses them afterwards); then it ends.
+    const campaignId = newId("cmp");
+    await q.query(
+      `INSERT INTO campaigns (organization_id, id, target_id, host, roe_id, roe_sha256, intensity, engine, status,
+         staging_declared, created_by, created_at, started_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'passive', '{"name":"stand-in","version":"1","model":"stand-in"}', 'running',
+         true, $7, $8, $8)`,
+      [organizationId, campaignId, target.target.id, target.target.host, newId("roe"), "0".repeat(64), keyId, now()],
+    );
+    await q.query(
+      `INSERT INTO campaign_requests (organization_id, campaign_id, seq, at, method, target, outcome, status, bytes, ms)
+       VALUES ($1, $2, 1, $3, 'GET', '/', 'sent', 200, 120, 15)`,
+      [organizationId, campaignId, now()],
+    );
+    await q.query(
+      `INSERT INTO campaign_findings (organization_id, campaign_id, check_id, path, title, severity, state, evidence,
+         first_seen_at, last_seen_at)
+       VALUES ($1, $2, 'RW-01', '/', 'Missing security headers', 'low', 'unverified', $3, $4, $4)`,
+      [organizationId, campaignId, JSON.stringify({ method: "GET", target: "/", status: 200 }), now()],
+    );
+    await q.query(
+      `UPDATE campaigns SET status = 'completed', end_reason = 'checks_complete', checks_ran = 1, checks_reported = 1,
+         checks_inconclusive = 0, checks_skipped = 5, finished_at = $2
+       WHERE id = $1`,
+      [campaignId, now()],
     );
     // A retention run (slice 18c): written by the owner-only job.
     await q.query("INSERT INTO retention_runs (organization_id, ran_at, complete, counts) VALUES ($1, $2, true, $3)", [

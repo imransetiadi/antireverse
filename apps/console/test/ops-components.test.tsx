@@ -8,7 +8,11 @@ import { GENERATED_AT, OPS_TOKEN, sloReport } from "./helpers/slo.ts";
 // state of an SLO (normal, firing, overspent, no traffic, not measured) and each way the read can fail; rendered with
 // the API client and the operator session replaced.
 
-vi.mock("@/app/ops/actions.ts", () => ({ opsSignInAction: vi.fn(), opsSignOutAction: vi.fn() }));
+vi.mock("@/app/ops/actions.ts", () => ({
+  opsSignInAction: vi.fn(),
+  opsSignOutAction: vi.fn(),
+  proveSwitchAction: vi.fn(),
+}));
 vi.mock("@/app/actions.ts", () => ({ signOutAction: vi.fn() }));
 const opsSession = vi.hoisted(() => ({ token: undefined as string | undefined }));
 vi.mock("@/lib/ops-session.ts", () => ({ readOpsSession: vi.fn(async () => opsSession.token) }));
@@ -30,7 +34,11 @@ vi.mock("@/lib/api.ts", () => {
       super(message, 404);
     }
   }
-  return { getSloReport: vi.fn(), ApiError, UnauthorizedError, NotFoundError };
+  // Slice 15a: the Campaign switches are read beside the report; here, an API that does not have them (404).
+  const getProveOperatorState = vi.fn(async () => {
+    throw new NotFoundError("404");
+  });
+  return { getSloReport: vi.fn(), getProveOperatorState, ApiError, UnauthorizedError, NotFoundError };
 });
 vi.mock("next/navigation", async (original) => ({
   ...(await original<typeof import("next/navigation")>()),

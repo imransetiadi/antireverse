@@ -47,6 +47,7 @@ describe("newId", () => {
       "asm",
       "aud",
       "del",
+      "cmp",
     ];
     expect(Object.keys(ID_PATTERNS).sort()).toEqual([...prefixes].sort());
     for (const prefix of prefixes) {

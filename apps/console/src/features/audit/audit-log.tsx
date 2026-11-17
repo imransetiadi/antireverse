@@ -7,7 +7,7 @@ import { Button } from "@/components/button.tsx";
 import { EmptyState } from "@/components/empty-state.tsx";
 import { formatDateTime } from "@/lib/format.ts";
 import { t } from "@/lib/t.ts";
-import { ACTION_LABEL, TARGET_LABEL } from "./labels.ts";
+import { ACTION_LABEL, ACTOR_LABEL, TARGET_LABEL } from "./labels.ts";
 import type { AuditQuery } from "./query.ts";
 
 const HEAD = "h-10 px-3 text-start caption-1 text-fg-muted whitespace-nowrap";
@@ -47,6 +47,28 @@ function Fact({ term, children }: { term: string; children: ReactNode }) {
   );
 }
 
+/**
+ * Who acted (slice 15a). An admin key: its id, with "Admin key" before it for a screen reader. The system and the
+ * operator have no key: the word alone, in the body face, so that it never reads as an id.
+ */
+function Actor({ actor, testId }: { actor: AuditEntry["actor"]; testId?: string }) {
+  if (actor.kind === "admin_key" && actor.key_id !== undefined) {
+    return (
+      <>
+        <span className="sr-only">{t(ACTOR_LABEL.admin_key)} </span>
+        <span data-testid={testId} data-actor-kind={actor.kind} className={MONO}>
+          {actor.key_id}
+        </span>
+      </>
+    );
+  }
+  return (
+    <span data-testid={testId} data-actor-kind={actor.kind}>
+      {t(ACTOR_LABEL[actor.kind])}
+    </span>
+  );
+}
+
 /** What an entry holds beyond its row: its place in the chain and the ids that let anyone check it. */
 function EntryDetails({ entry, id }: { entry: AuditEntry; id: string }) {
   const time = formatDateTime(entry.at);
@@ -77,7 +99,9 @@ function EntryDetails({ entry, id }: { entry: AuditEntry; id: string }) {
           </span>
         </Fact>
         <Fact term={t("audit.details.actor")}>
-          <span className={MONO}>{entry.actor.key_id}</span>
+          <span data-testid="audit-detail-actor">
+            <Actor actor={entry.actor} />
+          </span>
         </Fact>
         <Fact term={t("audit.details.target")}>
           <span className={MONO}>{`${entry.target.kind} ${entry.target.id}`}</span>
@@ -233,10 +257,7 @@ export function AuditLog({ entries: first, nextCursor: firstCursor, query, apps,
                       </span>
                     </td>
                     <td className={`${CELL} min-w-40`}>
-                      <span className="sr-only">{t("audit.actor.key")} </span>
-                      <span data-testid="audit-actor" className={MONO}>
-                        {entry.actor.key_id}
-                      </span>
+                      <Actor actor={entry.actor} testId="audit-actor" />
                     </td>
                     <td
                       data-testid="audit-reason"

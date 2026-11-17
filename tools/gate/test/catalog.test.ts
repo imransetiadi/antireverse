@@ -1,9 +1,11 @@
 // Slice 18e: the criteria catalog has exactly one entry per checklist line of QASUITE §16 and SECURITY §12, read from
 // the documents themselves, so a new line in either fails here until it is mapped.
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CHECKS, CRITERIA, SOURCES, validateCatalog } from "../src/catalog.ts";
 import { checklist, section } from "../src/docs.ts";
+import { MATRICES } from "../src/matrix.ts";
 import { REPO_ROOT } from "../src/paths.ts";
 
 const read = (doc: string) => readFileSync(`${REPO_ROOT}/${doc}`, "utf8");
@@ -98,6 +100,7 @@ describe("the catalog", () => {
         "matrix-authz",
         "matrix-privacy",
         "rrs-stand-in",
+        "campaign-safety",
         "bench-shield",
         "load-smoke",
         "npm-audit",
@@ -111,11 +114,40 @@ describe("the catalog", () => {
       "matrix-authz",
       "matrix-privacy",
       "rrs-stand-in",
+      "campaign-safety",
       "load-smoke",
     ] as const) {
       expect(CHECKS[id].slow, id).toBe(false);
     }
     const security = CRITERIA.find((c) => c.source.text.startsWith("Cross-tenant matrix"));
     expect(security?.checks).toEqual(["matrix-tenant", "matrix-authz", "matrix-privacy"]);
+  });
+
+  it("slice 15a: the Campaign safety criterion runs the scope-escape and kill-switch tests; real-engine lines stay open", () => {
+    const safety = CRITERIA.find((c) => c.id === "gate-campaign-safety");
+    expect(safety).toMatchObject({ checks: ["campaign-safety"], gaps: [], requires: [], source: { doc: "gate" } });
+    expect(safety?.source.text).toMatch(/scope/i);
+    expect(safety?.source.text).toMatch(/kill switch/i);
+    expect(safety?.notes?.join(" ")).toMatch(/not a penetration test/);
+    const files = MATRICES.find((m) => m.id === "campaign-safety")?.files ?? [];
+    expect(files).toEqual(
+      expect.arrayContaining([
+        "tests/e2e/campaign-scope.http.test.ts",
+        "tests/e2e/campaign-never-destructive.http.test.ts",
+        "apps/api/test/campaign-gate.test.ts",
+      ]),
+    );
+    for (const file of files) expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
+    // The lines that need a real engine and a staging target are still not checkable, and say why.
+    for (const id of ["qa16-defects", "sec12-rrs-pentest"]) {
+      const entry = CRITERIA.find((c) => c.id === id);
+      expect(entry?.checks, id).toEqual([]);
+      const gap = entry?.gaps.find((g) => /Campaign/.test(g.reason));
+      expect(gap?.slice, id).toBe("15b");
+      expect(gap?.reason, id).toMatch(/real engine/);
+      expect(gap?.reason, id).toMatch(/staging/);
+      expect(gap?.reason, id).not.toMatch(/does not exist yet/);
+    }
+    expect(CRITERIA.find((c) => c.id === "sec12-kill-switches")?.gaps[0]?.reason).toMatch(/gate-campaign-safety/);
   });
 });

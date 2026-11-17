@@ -128,6 +128,31 @@ function target(targetId: string, options: { confirm?: "remove" } = {}): string 
   return `/prove/targets/${targetId}${options.confirm === "remove" ? "?confirm=remove" : ""}`;
 }
 
+/** What a Campaign's page says once, after a change: it had already ended, or its report could not be made. */
+export type CampaignNotice = "ended" | "report-failed";
+
+/**
+ * One Campaign (slice 15a). With `confirm: "stop"` it opens the step that asks for a reason before the Campaign is
+ * stopped; with `notice` the page says what happened to the last request.
+ */
+function campaign(campaignId: string, options: { confirm?: "stop"; notice?: CampaignNotice } = {}): string {
+  const query = new URLSearchParams();
+  if (options.confirm === "stop") query.set("confirm", "stop");
+  if (options.notice !== undefined) query.set("notice", options.notice);
+  const search = query.toString();
+  return `/prove/campaigns/${campaignId}${search ? `?${search}` : ""}`;
+}
+
+/** The operator's change of the Campaign switches that was just made. */
+export type OpsProveDone = "kill" | "enable" | "suspend" | "resume";
+
+/** `/ops` after an operator change of the Campaign switches: which one, and how many Campaigns it ended. */
+function opsProve(options: { done: OpsProveDone; stopped?: number }): string {
+  const query = new URLSearchParams({ prove: options.done });
+  if (options.stopped !== undefined) query.set("stopped", String(options.stopped));
+  return `/ops?${query.toString()}`;
+}
+
 // The Console's addresses. None of them ever carries a key, a signing secret or a channel URL.
 export const ROUTES = {
   home: "/",
@@ -179,12 +204,20 @@ export const ROUTES = {
   rulesOfEngagement: "/prove/rules-of-engagement",
   /** The form that writes and signs a new Rules of Engagement version. */
   newRulesOfEngagement: "/prove/rules-of-engagement/new",
+  /** The Organization's Pentest Campaigns (slice 15a). */
+  campaigns: "/prove/campaigns",
+  /** The form that launches a Campaign. */
+  newCampaign: "/prove/campaigns/new",
+  campaign,
+  /** The JSON report of one Campaign, through the Console's route handler that checks the session. */
+  campaignReport: (campaignId: string): string => `/api/campaigns/${campaignId}/report`,
   /** The list proxy the live feed reads whenever its stream opens. */
   events: (appId: string): string => `/api/apps/${appId}/events`,
   /** The set-up proxy the Set up page polls every 5 s. */
   setupApi: (appId: string, environment: Environment): string => `/api/apps/${appId}/setup?environment=${environment}`,
   /** The operator SLO dashboard (slice 18d). Not linked from the tenant navigation. */
   ops: "/ops",
+  opsProve,
   /** Operator sign-in with the operator token (slice 18d). */
   opsSignIn: "/ops/sign-in",
   /** Operator sign-in after the API stopped accepting the saved token. */

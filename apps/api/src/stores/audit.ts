@@ -1,4 +1,10 @@
-import { AUDIT_GENESIS_HASH, type AuditAction, type AuditEntry, type AuditTargetKind } from "@antireverse/protocol";
+import {
+  AUDIT_GENESIS_HASH,
+  type AuditAction,
+  type AuditActorKind,
+  type AuditEntry,
+  type AuditTargetKind,
+} from "@antireverse/protocol";
 import type { Queryable } from "../db/db.ts";
 
 // Reading the audit log (slice 18a). Writing is `audit` in src/audit.ts, inside the change's transaction.
@@ -8,8 +14,8 @@ interface EntryRow {
   organization_id: string;
   seq: string | number;
   at: Date;
-  actor_kind: "admin_key";
-  actor_key_id: string;
+  actor_kind: AuditActorKind;
+  actor_key_id: string | null;
   action: string;
   app_id: string | null;
   target_kind: string;
@@ -31,7 +37,7 @@ function toEntry(row: EntryRow): AuditEntry {
     organization_id: row.organization_id,
     seq: Number(row.seq),
     at: row.at.toISOString(),
-    actor: { kind: row.actor_kind, key_id: row.actor_key_id },
+    actor: row.actor_key_id === null ? { kind: row.actor_kind } : { kind: row.actor_kind, key_id: row.actor_key_id },
     action: row.action as AuditAction,
     ...(row.app_id === null ? {} : { app_id: row.app_id }),
     target: { kind: row.target_kind as AuditTargetKind, id: row.target_id },

@@ -3,6 +3,8 @@ import {
   ASSESSMENT_LIMITS,
   type AuditReasonErrorCode,
   BUILD_LIMITS,
+  CAMPAIGN_LIMITS,
+  CAMPAIGNS_VARIABLE,
   CONTAINMENT_LIMITS,
   type ConflictReason,
   EXPOSURE_LIMITS,
@@ -147,6 +149,29 @@ const PROBLEMS = {
     detail:
       "This Organization is scheduled for deletion. Until the deletion is cancelled, only its status (GET /v1/organization/deletion), its cancellation (DELETE /v1/organization/deletion) and the export (GET /v1/organization/export) are available.",
   },
+  // Slice 15a: Pentest Campaigns. Off unless the operator set AR_PROVE_CAMPAIGNS; stopped by the operator's kill
+  // switch; suspended for one Organization; and at most 5 per Organization and 3 per target in 24 hours.
+  "campaigns-disabled": {
+    status: 403,
+    title: "Campaigns are not enabled",
+    detail: `Pentest Campaigns are not enabled on this service. The operator turns them on by setting ${CAMPAIGNS_VARIABLE}=1.`,
+  },
+  "campaigns-stopped": {
+    status: 403,
+    title: "Campaigns are stopped",
+    detail: "The operator has stopped all Pentest Campaigns. None can be created until they are re-enabled.",
+  },
+  "campaigns-suspended": {
+    status: 403,
+    title: "Campaigns are suspended",
+    detail: "The operator has suspended Pentest Campaigns for this Organization.",
+  },
+  "too-many-campaigns": {
+    status: 429,
+    type: "too-many-requests",
+    title: "Too many requests",
+    detail: `At most ${CAMPAIGN_LIMITS.createdPerOrganizationPerDay} Campaigns per Organization and ${CAMPAIGN_LIMITS.createdPerTargetPerDay} per target in 24 hours. Try again after the time in Retry-After.`,
+  },
   "too-many-attestations": {
     status: 429,
     title: "Too many requests",
@@ -182,6 +207,17 @@ export const CONFLICT_DETAILS: Readonly<Record<ConflictReason, string>> = {
   "no-confirmed-recipients": "No recipient of this channel has confirmed yet. Alerts go to confirmed recipients only.",
   "artifact-required":
     "No artifact of this Build is kept any more. Send the protected artifact's files with the request.",
+  "campaign-active": "This Organization already has a queued or running Campaign. Wait for it to end, or stop it.",
+  "campaign-target-not-verified":
+    "The target is not verified, or its last ownership check is older than 26 hours. Verify it again first.",
+  "campaign-no-rules": "There are no signed Rules of Engagement. Sign them first.",
+  "campaign-target-out-of-scope":
+    "The target is not in the scope of the current Rules of Engagement. Sign a version that names it first.",
+  "campaign-rules-too-old": `The current Rules of Engagement were signed more than ${CAMPAIGN_LIMITS.roeMaxAgeDays} days ago. Sign them again first.`,
+  "campaign-intensity-exceeds": "The current Rules of Engagement allow less than the intensity asked for.",
+  "campaign-verification-path-excluded":
+    "The current Rules of Engagement exclude the ownership file's path (/.well-known/airverse-verification.txt), which every Campaign fetches at its start. Sign Rules that do not exclude it.",
+  "campaign-ended": "The Campaign has ended or is already being stopped. A stop is final.",
 };
 
 /**

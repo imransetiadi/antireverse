@@ -21,6 +21,32 @@ export {
 export { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 export type { AppEnv, Principal } from "./auth/authenticate.ts";
 export { createEventBus, type EventBus } from "./bus.ts";
+export {
+  CAMPAIGN_ID_HEADER,
+  CAMPAIGN_USER_AGENT,
+  createGate,
+  type Gate,
+  type GateControl,
+  type GateDeps,
+  type GateRecord,
+  type GateSend,
+} from "./campaign/gate.ts";
+export {
+  BODY_WITHHELD,
+  excerptAround,
+  locationOf,
+  redactBody,
+  redactHeaders,
+  redactText,
+} from "./campaign/redact.ts";
+export {
+  type CampaignEngineRunner,
+  type CampaignRunner,
+  type CampaignRunnerOptions,
+  type CampaignService,
+  type CampaignTesting,
+  createCampaignRunner,
+} from "./campaign/runner.ts";
 export { type Config, readConfig } from "./config.ts";
 export { type Db, type OwnedDb, openDb, type Queryable, type Scope } from "./db/db.ts";
 export { createDetector, type Detector, type DetectorDeps } from "./detect/detector.ts";
@@ -61,8 +87,12 @@ export {
   type GuardedFetcherOptions,
   type GuardedFetcherTesting,
   type OwnershipResult,
+  type PinnedRequest,
+  type PinnedResponse,
+  pinnedRequest,
   publicFileFailure,
   type Resolver,
+  resolvePinned,
 } from "./prove/verify.ts";
 export { type Listening, listen, type RunningApi, type StartApiOptions, startApi } from "./server.ts";
 export { createSigner, type Signer } from "./signer.ts";

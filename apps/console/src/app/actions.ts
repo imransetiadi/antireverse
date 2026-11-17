@@ -18,6 +18,9 @@ import {
   type AuditReasonErrorCode,
   AuditReasonSchema,
   type AuthorizeResult,
+  CAMPAIGN_INTENSITIES,
+  CAMPAIGN_LIMITS,
+  type CampaignIntensity,
   CONTAINMENT_LIMITS,
   CONTAINMENT_TTLS,
   type ContainmentTtl,
@@ -58,6 +61,7 @@ import {
   type SimulationResult,
   type SubjectEraseReport,
   TIER_IDS,
+  VERIFICATION_FILE_PATH,
   type VerifyResult,
 } from "@antireverse/protocol";
 import { revalidatePath } from "next/cache";
@@ -72,6 +76,8 @@ import { RULE_METHODS } from "@/features/policy/methods.ts";
 import { ruleFingerprint } from "@/features/policy/simulation.ts";
 import {
   ApiError,
+  type CampaignsUnavailable,
+  CampaignsUnavailableError,
   ConflictError,
   cancelDeletion,
   checkAuthorization,
@@ -79,6 +85,7 @@ import {
   createAllowlistEntry,
   createApp,
   createAssessment,
+  createCampaign,
   createContainment,
   createOrganization,
   createTarget,
@@ -105,6 +112,7 @@ import {
   setPatchMode,
   signRulesOfEngagement,
   simulatePolicy,
+  stopCampaign,
   testAlertChannel,
   UnauthorizedError,
   updateIncident,
@@ -1825,6 +1833,175 @@ export async function checkAuthorizationAction(
     }
     return { ok: false, errors: apiErrors(error, []), values };
   }
+}
+
+// ── Pentest Campaigns (slice 15a) ─────────────────────────────────────────────────────────────────────
+// Launching a Campaign needs a target, an intensity, the typed phrase `I authorise a test of <host>`, the staging
+// declaration and a reason; stopping one needs a reason. Each is checked here before anything is sent; the API checks
+// everything again — the phrase against the target's host among it — and alone decides. The API's own words are
+// never shown: each refusal is explained in the Console's words, at the field it is about.
+
+/** What the new Campaign form holds, sent back after a refusal. The phrase and the declaration are not. */
+export interface NewCampaignValues {
+  target: string;
+  intensity: string;
+}
+
+export type CreateCampaignState = null | {
+  ok: false;
+  errors: FieldError[];
+  values: NewCampaignValues;
+  /** The reason as typed; the phrase is never given back. */
+  reason?: string;
+};
+
+export type StopCampaignState = null | { ok: false; errors: FieldError[]; reason?: string };
+
+const isCampaignIntensity = (value: string): value is CampaignIntensity =>
+  (CAMPAIGN_INTENSITIES as readonly string[]).includes(value);
+
+/** The form field each field of the API's request is about, and what to say when the API refuses it. */
+const CAMPAIGN_FIELD_REFUSAL: Readonly<Record<string, FieldError>> = {
+  target_id: { path: "target", message: t("error.campaign.target.gone") },
+  intensity: { path: "intensity", message: t("error.campaign.intensity") },
+  confirm: { path: "confirm", message: t("error.campaign.confirm") },
+  staging: { path: "staging", message: t("error.campaign.staging") },
+};
+
+const CAMPAIGNS_UNAVAILABLE: Readonly<Record<CampaignsUnavailable, MessageKey>> = {
+  disabled: "error.campaign.disabled",
+  stopped: "error.campaign.stopped",
+  suspended: "error.campaign.suspended",
+};
+
+/** What to say for a 409 of a creation: the reason alone decides, and without a known one it is never guessed. */
+function campaignConflict(error: ConflictError): FieldError {
+  switch (error.reason) {
+    case "campaign-active":
+      return { path: "", message: t("error.campaign.active") };
+    case "campaign-target-not-verified":
+      return { path: "target", message: t("error.campaign.target.notVerified") };
+    case "campaign-no-rules":
+      return { path: "", message: t("error.campaign.noRules") };
+    case "campaign-target-out-of-scope":
+      return { path: "target", message: t("error.campaign.target.outOfScope") };
+    case "campaign-rules-too-old":
+      return { path: "", message: t("error.campaign.rulesTooOld", { days: CAMPAIGN_LIMITS.roeMaxAgeDays }) };
+    case "campaign-intensity-exceeds":
+      return { path: "intensity", message: t("error.campaign.intensity.exceeds") };
+    case "campaign-verification-path-excluded":
+      return { path: "", message: t("error.campaign.verificationPathExcluded", { path: VERIFICATION_FILE_PATH }) };
+    default:
+      return { path: "", message: t("error.campaign.conflict") };
+  }
+}
+
+/** When to try again after too many Campaigns: whole hours from an hour and a half on, else minutes. */
+function campaignLimited(retryAfter: number | undefined): string {
+  const limits = {
+    organization: CAMPAIGN_LIMITS.createdPerOrganizationPerDay,
+    target: CAMPAIGN_LIMITS.createdPerTargetPerDay,
+  };
+  if (retryAfter === undefined) return t("error.campaign.limited.soon", limits);
+  if (retryAfter >= 5400) return t("error.campaign.limited.hours", { ...limits, hours: Math.ceil(retryAfter / 3600) });
+  return t("error.campaign.limited", { ...limits, minutes: Math.max(1, Math.ceil(retryAfter / 60)) });
+}
+
+/** Launches a Campaign and opens its page. A refusal keeps the target, the intensity and the reason. */
+export async function createCampaignAction(
+  previous: CreateCampaignState,
+  formData: FormData,
+): Promise<CreateCampaignState> {
+  return keptReason(await createCampaignChange(previous, formData), formData);
+}
+
+async function createCampaignChange(_previous: CreateCampaignState, formData: FormData): Promise<CreateCampaignState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const values: NewCampaignValues = { target: text(formData, "target"), intensity: text(formData, "intensity") };
+  const refused = (errors: FieldError[]): CreateCampaignState => ({ ok: false, errors, values });
+  const confirm = text(formData, "confirm");
+  const read = reasonFrom(formData, true);
+  const errors: FieldError[] = [];
+  if (!ID_PATTERNS.tgt.test(values.target))
+    errors.push({ path: "target", message: t("error.campaign.target.required") });
+  if (!isCampaignIntensity(values.intensity))
+    errors.push({ path: "intensity", message: t("error.campaign.intensity") });
+  if (confirm.length === 0 || confirm.length > 300)
+    errors.push({ path: "confirm", message: t("error.campaign.confirm") });
+  // The declaration is the checkbox itself, ticked for this attempt.
+  if (formData.get("staging") !== "on") errors.push({ path: "staging", message: t("error.campaign.staging") });
+  if ("error" in read) errors.push(read.error);
+  if (errors.length > 0 || "error" in read || !isCampaignIntensity(values.intensity)) return refused(errors);
+
+  let campaignId: string;
+  try {
+    ({
+      campaign: { id: campaignId },
+    } = await createCampaign(
+      key,
+      { target_id: values.target, intensity: values.intensity, confirm, staging: true },
+      withReason(read.reason),
+    ));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return refused(refusal);
+    if (error instanceof CampaignsUnavailableError) {
+      return refused([{ path: "", message: t(CAMPAIGNS_UNAVAILABLE[error.kind]) }]);
+    }
+    if (error instanceof ConflictError) return refused([campaignConflict(error)]);
+    if (error instanceof RateLimitedError) return refused([{ path: "", message: campaignLimited(error.retryAfter) }]);
+    if (error instanceof ValidationError) {
+      const known = error.errors.flatMap((entry) => {
+        const field = CAMPAIGN_FIELD_REFUSAL[entry.path];
+        return field === undefined ? [] : [field];
+      });
+      return refused(known.length > 0 ? known : [{ path: "", message: t("error.api.failed") }]);
+    }
+    return refused(apiErrors(error, []));
+  }
+  revalidatePath(ROUTES.campaigns);
+  redirect(ROUTES.campaign(campaignId));
+}
+
+/**
+ * Stops a Campaign for good. Refused unless the form carries the confirmation: the id of the Campaign named in the
+ * question. A Campaign that had already ended is not an error: its page says so.
+ */
+export async function stopCampaignAction(previous: StopCampaignState, formData: FormData): Promise<StopCampaignState> {
+  return keptReason(await stopCampaignChange(previous, formData), formData);
+}
+
+async function stopCampaignChange(_previous: StopCampaignState, formData: FormData): Promise<StopCampaignState> {
+  const key = await readSession();
+  if (!key) redirect(ROUTES.home);
+
+  const campaignId = text(formData, "campaignId");
+  if (!ID_PATTERNS.cmp.test(campaignId)) return failed("", t("campaign.gone"));
+  if (text(formData, "confirm") !== campaignId) return failed("confirm", t("campaign.confirm.required"));
+  const read = reasonFrom(formData, true);
+  if ("error" in read) return { ok: false, errors: [read.error] };
+
+  try {
+    await stopCampaign(key, campaignId, withReason(read.reason));
+  } catch (error) {
+    if (error instanceof UnauthorizedError) redirect(ROUTES.signInExpired);
+    const refusal = reasonRefusal(error);
+    if (refusal) return { ok: false, errors: refusal };
+    if (error instanceof NotFoundError) return failed("", t("campaign.gone"));
+    if (error instanceof ConflictError) {
+      if (error.reason !== "campaign-ended") return failed("", t("error.target.conflict"));
+      // It ended on its own, or another stop came first: what was asked for is true.
+      revalidatePath(ROUTES.campaign(campaignId));
+      redirect(ROUTES.campaign(campaignId, { notice: "ended" }));
+    }
+    return { ok: false, errors: apiErrors(error, []) };
+  }
+  revalidatePath(ROUTES.campaign(campaignId));
+  revalidatePath(ROUTES.campaigns);
+  redirect(ROUTES.campaign(campaignId));
 }
 
 // ── Reverse Assessment (slice 12a) ────────────────────────────────────────────────────────────────────

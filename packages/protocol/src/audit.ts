@@ -47,6 +47,16 @@ export const AUDIT_ACTIONS = deepFreeze([
   "subject.erase",
   // Slice 18c: the Event retention. Shortening it needs a reason.
   "organization.retention.update",
+  // Slice 15a: Pentest Campaigns. Creating and stopping one need a reason (admin key). Start, end and refusal are the
+  // system's entries; the kill switch and a suspension are the operator's, one entry per affected Organization.
+  "campaign.create",
+  "campaign.stop",
+  "campaign.start",
+  "campaign.end",
+  "campaign.refuse",
+  "campaign.operator_kill",
+  "campaign.operator_suspend",
+  "campaign.operator_resume",
 ] as const);
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -69,6 +79,8 @@ export const AUDIT_TARGET_KINDS = deepFreeze([
   // Slice 18b: a deletion request (its `del_` id) and an end user named by actor hash (`iph_`).
   "organization_deletion",
   "subject",
+  // Slice 15a.
+  "campaign",
 ] as const);
 export type AuditTargetKind = (typeof AUDIT_TARGET_KINDS)[number];
 
@@ -177,14 +189,29 @@ const HashSchema = z.string().regex(/^[0-9a-f]{64}$/);
  */
 export const AuditReasonSchema = nameText(AUDIT_LIMITS.reasonMax);
 
+/** Who can act in an entry. */
+export const AUDIT_ACTOR_KINDS = ["admin_key", "system", "operator"] as const;
+export type AuditActorKind = (typeof AUDIT_ACTOR_KINDS)[number];
+
+const AuditActorSchema = z
+  .object({ kind: z.enum(AUDIT_ACTOR_KINDS), key_id: z.string().regex(ID_PATTERNS.key).optional() })
+  .refine((actor) => (actor.kind === "admin_key") === (actor.key_id !== undefined), {
+    message: "An admin key's entry names the key; the system's and the operator's name none.",
+    path: ["key_id"],
+  });
+
 /** One audit entry. Optional members are absent, never null: the hash covers exactly the members present. */
 export const AuditEntrySchema = z.object({
   id: z.string().regex(ID_PATTERNS.aud),
   organization_id: z.string().regex(ID_PATTERNS.org),
   seq: z.int().min(1).max(Number.MAX_SAFE_INTEGER),
   at: isoDateTime(),
-  /** Who acted: the admin key (there are no user accounts yet). */
-  actor: z.object({ kind: z.literal("admin_key"), key_id: z.string().regex(ID_PATTERNS.key) }),
+  /**
+   * Who acted. `admin_key`: an admin key, named by `key_id` (there are no user accounts yet). `system`: the API itself
+   * (a Campaign it started, ended or refused; slice 15a). `operator`: the service's operator, through the operator
+   * routes. Only an admin key has a `key_id`; the others have none.
+   */
+  actor: AuditActorSchema,
   action: z.enum(AUDIT_ACTIONS),
   app_id: z.string().regex(ID_PATTERNS.app).optional(),
   target: z.object({ kind: z.enum(AUDIT_TARGET_KINDS), id: text(AUDIT_LIMITS.targetIdMax).min(1) }),

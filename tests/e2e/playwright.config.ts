@@ -65,6 +65,10 @@ export default defineConfig({
         E2E_FAKE_MAIL_FILE: FAKE_MAIL_FILE,
         E2E_ASSESS_HOLD_FILE: ASSESS_HOLD_FILE,
         AR_OPS_TOKEN: OPS_TOKEN,
+        // Slice 15a: Pentest Campaigns are on for the e2e API. Its resolver never resolves a host (see
+        // fixtures/api-fixture-patches.ts) and no test-only transport option is set here, so no Campaign of this API
+        // ever sends a request: each is refused at its start checks, or stopped while it waits for them.
+        AR_PROVE_CAMPAIGNS: "1",
       },
       url: `${API_URL}/healthz`,
       reuseExistingServer: false,

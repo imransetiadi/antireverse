@@ -29,6 +29,12 @@ export const CHECKS = {
     slow: false,
     online: false,
   },
+  "campaign-safety": {
+    title:
+      "Pentest Campaign safety: the request gate, the pinned transport, the scope-escape and kill-switch suite and the never-destructive suite (slice 15a)",
+    slow: false,
+    online: false,
+  },
   "bench-shield": { title: "Shield overhead bench against PB-01 and PB-02", slow: true, online: false },
   "load-smoke": {
     title: "Local load smoke of the API against PB-21, SLO-02 and SLO-01 (client-side percentiles)",
@@ -146,7 +152,11 @@ export const CRITERIA: readonly Criterion[] = [
     checks: [],
     gaps: [
       { reason: "defects are not tracked in a system the gate can read", slice: "unplanned" },
-      { reason: "TS-PENTEST needs the Pentest Campaign", slice: "15" },
+      {
+        reason:
+          "TS-PENTEST needs a Campaign with a real engine against a staging target; slice 15a has the pipeline with a scripted stand-in, which is not a penetration test (its safety controls: gate-campaign-safety)",
+        slice: "15b",
+      },
     ],
     requires: [],
   },
@@ -236,7 +246,11 @@ export const CRITERIA: readonly Criterion[] = [
           "the RRS gate's thresholds need a real AI agent (D-097); the stand-in's score is tracked against a baseline instead (gate-rrs-regression)",
         slice: "unplanned",
       },
-      { reason: "the staging Pentest Campaign does not exist yet", slice: "15" },
+      {
+        reason:
+          "the staging Pentest Campaign needs a real engine and a staging target; slice 15a's Campaigns run a scripted stand-in, whose Findings say nothing about real exposure (its safety controls: gate-campaign-safety)",
+        slice: "15b",
+      },
     ],
     requires: [],
   },
@@ -258,7 +272,13 @@ export const CRITERIA: readonly Criterion[] = [
     title: "Kill switches and rollback exercised in staging",
     source: sec("Kill switches and rollback were exercised in staging for this release."),
     checks: [],
-    gaps: [{ reason: "there is no staging environment to exercise them in", slice: "18" }],
+    gaps: [
+      {
+        reason:
+          "there is no staging environment to exercise them in; the Campaign kill switches (owner stop, operator kill and suspension) are exercised locally by gate-campaign-safety",
+        slice: "18",
+      },
+    ],
     requires: [],
   },
   {
@@ -283,6 +303,22 @@ export const CRITERIA: readonly Criterion[] = [
     notes: [
       "Baseline recorded 2026-11-14: balanced 24, maximum 24 (stand-in, T1).",
       "W4 Tamper is achieved because an ES module Build gets no integrity check (Harden --integrity refuses ESM input): a Harden follow-up.",
+    ],
+  },
+  {
+    id: "gate-campaign-safety",
+    title: "Pentest Campaigns stay in scope and stop on a kill switch",
+    source: {
+      doc: "gate",
+      section: "D-105",
+      text: "No Campaign request leaves its scope (redirects, a changing resolver, private addresses, excluded paths, other methods, absolute URLs, the budgets), and the owner's stop and the operator's kill switch end a Campaign at once: proven from the test target's own request log.",
+    },
+    checks: ["campaign-safety"],
+    gaps: [],
+    requires: [],
+    notes: [
+      "The engine is the scripted stand-in of slice 15a: it measures the pipeline and its safety controls. This is not a penetration test.",
+      "The request gate is application code in the API process: there is no VM or egress proxy behind it (ticket 15a, honest limits).",
     ],
   },
 ];

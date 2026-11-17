@@ -22,12 +22,28 @@ import { problem } from "./problem.ts";
 // entries of one Organization get consecutive `seq` values even under concurrent requests; the database's trigger
 // refuses an entry that does not follow the head and moves the head (migration 0032).
 
-/** Who acts, in which request, and why: everything an entry takes from the request. */
-export interface AuditActor {
+/**
+ * Who acts, in which request, and why: everything an entry takes from the request. An admin key's entry names the key
+ * (`keyId`). Slice 15a: the API itself (`kind: "system"`: a Campaign it started, ended or refused) and the operator
+ * (`kind: "operator"`, through the operator routes) act without a key.
+ */
+interface ActorBase {
   organizationId: string;
-  keyId: string;
   requestId: string;
   reason?: string | undefined;
+}
+/** An admin key as the actor: what `auditActor` reads from a request. */
+export type AdminAuditActor = ActorBase & { keyId: string; kind?: undefined };
+export type AuditActor = AdminAuditActor | (ActorBase & { kind: "system" | "operator"; keyId?: undefined });
+
+/** The API itself as the actor of an entry in `organizationId`'s chain, with a request id of its own. */
+export function systemActor(organizationId: string): AuditActor {
+  return { organizationId, kind: "system", requestId: randomUUID() };
+}
+
+/** The operator as the actor of an entry in `organizationId`'s chain. */
+export function operatorActor(organizationId: string, requestId: string, reason: string): AuditActor {
+  return { organizationId, kind: "operator", requestId, reason };
 }
 
 /** What an entry says about the change. */
@@ -73,7 +89,7 @@ export async function audit(q: Queryable, actor: AuditActor, change: AuditChange
     organization_id: actor.organizationId,
     seq: Number(head.seq) + 1,
     at: change.at.toISOString(),
-    actor: { kind: "admin_key", key_id: actor.keyId },
+    actor: actor.kind === undefined ? { kind: "admin_key", key_id: actor.keyId } : { kind: actor.kind },
     action: change.action,
     ...(change.appId === undefined ? {} : { app_id: change.appId }),
     target: change.target,
@@ -93,7 +109,7 @@ export async function audit(q: Queryable, actor: AuditActor, change: AuditChange
       entry.seq,
       change.at,
       entry.actor.kind,
-      entry.actor.key_id,
+      entry.actor.key_id ?? null,
       entry.action,
       entry.app_id ?? null,
       entry.target.kind,
@@ -204,7 +220,7 @@ export function requestIdOf(c: Context): string {
 type AuditVariables = Partial<AppEnv["Variables"]>;
 
 /** The actor of an admin request: its key, its request id and its reason, if any. */
-export function auditActor(c: Context): AuditActor {
+export function auditActor(c: Context): AdminAuditActor {
   const { principal, reason } = c.var as AuditVariables;
   if (principal?.kind !== "admin") throw new Error("Only an admin key's changes are audited.");
   return {

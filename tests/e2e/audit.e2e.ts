@@ -58,7 +58,7 @@ test("a Rule promoted with a reason appears in the audit log with its actor, its
   );
   const promoted = listed.entries[0] as AuditEntry;
   expect(promoted.reason).toBe(REASON);
-  const keyId = promoted.actor.key_id;
+  const keyId = promoted.actor.key_id ?? "";
 
   // 2. Settings → Audit log: the entry, newest first, in words, with the actor, the reason and the chain verified.
   await page.getByTestId("nav-audit").click();

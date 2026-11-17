@@ -1,5 +1,6 @@
 import {
   AUDIT_ACTIONS,
+  AUDIT_TARGET_KINDS,
   type AuditEntry,
   type AuditVerifyResponse,
   EXAMPLE_AUDIT_ENTRY,
@@ -32,7 +33,7 @@ import { AuditPublicKey } from "@/features/audit/audit-public-key.tsx";
 import { ChainCheck } from "@/features/audit/chain-check.tsx";
 import { ChainStatus } from "@/features/audit/chain-status.tsx";
 import { ExportNotice, exportNoticeFrom } from "@/features/audit/export-notice.tsx";
-import { ACTION_LABEL } from "@/features/audit/labels.ts";
+import { ACTION_LABEL, TARGET_LABEL } from "@/features/audit/labels.ts";
 import { auditFilterFrom, auditQueryFrom, rangeReversed } from "@/features/audit/query.ts";
 import { RuleList } from "@/features/policy/rule-list.tsx";
 import { VersionHistory } from "@/features/policy/version-history.tsx";
@@ -98,6 +99,19 @@ describe("audit query", () => {
     }
     expect(t(ACTION_LABEL["policy.rule.promote"])).toBe("Rule promoted to enforce");
   });
+
+  it("names the Campaign actions and the Campaign target kind (slice 15a)", () => {
+    expect(t(ACTION_LABEL["campaign.create"])).toBe("Campaign created");
+    expect(t(ACTION_LABEL["campaign.stop"])).toBe("Campaign stopped");
+    expect(t(ACTION_LABEL["campaign.start"])).toBe("Campaign started");
+    expect(t(ACTION_LABEL["campaign.end"])).toBe("Campaign ended");
+    expect(t(ACTION_LABEL["campaign.refuse"])).toBe("Campaign refused");
+    expect(t(ACTION_LABEL["campaign.operator_kill"])).toBe("Campaigns stopped by the operator");
+    expect(t(ACTION_LABEL["campaign.operator_suspend"])).toBe("Campaigns suspended by the operator");
+    expect(t(ACTION_LABEL["campaign.operator_resume"])).toBe("Campaign suspension lifted by the operator");
+    for (const kind of AUDIT_TARGET_KINDS) expect(t(TARGET_LABEL[kind]).length).toBeGreaterThan(0);
+    expect(t(TARGET_LABEL.campaign)).toBe("Campaign");
+  });
 });
 
 describe("AuditLog", () => {
@@ -129,6 +143,55 @@ describe("AuditLog", () => {
     render(<AuditLog entries={[orgWide]} nextCursor={null} query={{}} apps={apps} filtered={false} />);
     expect(screen.getByTestId("audit-reason").textContent).toBe("None given");
     expect(screen.getByTestId("audit-app").textContent).toBe("Organization");
+  });
+
+  it("names the system and the operator as actors in words, without a key id (slice 15a)", () => {
+    const { reason: _r, app_id: _a, ...base } = EXAMPLE_AUDIT_ENTRY;
+    const system = {
+      ...base,
+      id: "aud_bbbbbbbbbbbbbbbbbbbbbbbb",
+      seq: 3,
+      actor: { kind: "system" },
+      action: "campaign.end",
+      target: { kind: "campaign", id: "cmp_0123456789abcdef01234567" },
+      summary: "The Campaign ended: checks_complete.",
+    } as AuditEntry;
+    const operator = {
+      ...base,
+      id: "aud_cccccccccccccccccccccccc",
+      seq: 4,
+      actor: { kind: "operator" },
+      action: "campaign.operator_kill",
+      target: { kind: "campaign", id: "cmp_0123456789abcdef01234567" },
+      reason: "Incident 42",
+      summary: "The operator stopped all Campaigns.",
+    } as AuditEntry;
+    render(
+      <AuditLog
+        entries={[operator, system, EXAMPLE_AUDIT_ENTRY]}
+        nextCursor={null}
+        query={{}}
+        apps={apps}
+        filtered={false}
+      />,
+    );
+    const rows = screen.getAllByTestId("audit-row");
+    const cell = (row: HTMLElement | undefined) => within(row as HTMLElement).getByTestId("audit-actor");
+    expect(cell(rows[0]).textContent).toBe("Operator");
+    expect(cell(rows[0]).getAttribute("data-actor-kind")).toBe("operator");
+    expect(cell(rows[1]).textContent).toBe("System");
+    expect(cell(rows[1]).className).not.toMatch(MONO);
+    // No "Admin key" prefix and no "undefined" where there is no key.
+    expect((cell(rows[1]).parentElement as HTMLElement).textContent).toBe("System");
+    expect((cell(rows[2]).parentElement as HTMLElement).textContent).toBe(
+      `Admin key ${EXAMPLE_AUDIT_ENTRY.actor.key_id}`,
+    );
+    expect(within(rows[1] as HTMLElement).getByTestId("audit-action").textContent).toBe("Campaign ended");
+    expect(within(rows[1] as HTMLElement).getByTestId("audit-target").textContent).toContain("Campaign");
+    fireEvent.click(within(rows[1] as HTMLElement).getByRole("button", { name: "Show details" }));
+    const details = screen.getByTestId("audit-details");
+    expect(within(details).getByTestId("audit-detail-actor").textContent).toBe("System");
+    expect(details.textContent).not.toContain("undefined");
   });
 
   it("names an App that is no longer listed by its id", () => {

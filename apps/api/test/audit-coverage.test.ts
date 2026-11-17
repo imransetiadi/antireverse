@@ -11,6 +11,7 @@ import {
   type Component,
   ContainmentResponseSchema,
   CreateAlertChannelResponseSchema,
+  campaignAuthorisationPhrase,
   confirmationPhrase,
   DETECTION_RULES,
   EXAMPLE_CANARIES,
@@ -57,6 +58,12 @@ const EXCLUDED: Readonly<Record<string, string>> = {
   "POST /v1/alert-recipients/confirm": "public: the link of a confirmation mail",
   "POST /v1/apps/:appId/policy/simulate": "admin, but a dry replay: it changes nothing",
   "POST /v1/prove/authorize": "admin, but a dry check: it changes nothing",
+  // Slice 15a: the operator's switches take the operator token, not a key. A kill or a suspension writes its entry
+  // into the chain of each Organization it affects (campaign-routes.test.ts and the scope-escape suite check them).
+  "POST /v1/ops/prove/kill": "operator token: one operator entry per affected Organization, checked elsewhere",
+  "POST /v1/ops/prove/enable": "operator token: affects no Organization; recorded with the switch",
+  "POST /v1/ops/prove/organizations/:id/suspend": "operator token: an operator entry in that Organization's chain",
+  "POST /v1/ops/prove/organizations/:id/resume": "operator token: an operator entry in that Organization's chain",
 };
 
 /** The Organization signup: public, and its entry is the new Organization's first (checked on its own below). */
@@ -148,6 +155,7 @@ describe("audit coverage", () => {
     spareTargetId: "",
     host: "shop.acme-shop.io",
     token: "",
+    campaignId: "",
   };
 
   beforeAll(async () => {
@@ -159,6 +167,15 @@ describe("audit coverage", () => {
       allowPrivateAlertUrls: false,
       email: { mailer, sender: { address: "alerts@airverse.test", name: "Airverse" } },
       prove: { resolver, fetcher },
+      // Slice 15a: Campaigns on, with a runner that takes nothing: a created Campaign stays queued.
+      campaigns: {
+        enabled: true,
+        wake() {},
+        abort: async () => {},
+        isActive: () => false,
+        operatorStop: async () => 0,
+        activeCount: async () => 0,
+      },
       auditReadsPerMinute: 10_000,
     });
     await syncAdvisories(api.db, fixtureSource(FIXTURES));
@@ -448,6 +465,34 @@ describe("audit coverage", () => {
           },
           h,
         ),
+    },
+    // Slice 15a: a Campaign against the verified target under the Rules just signed, then its stop.
+    {
+      route: "POST /v1/campaigns",
+      action: "campaign.create",
+      sensitive: true,
+      status: 202,
+      run: (h) =>
+        post(
+          "/v1/campaigns",
+          {
+            target_id: s.targetId,
+            intensity: "passive",
+            confirm: campaignAuthorisationPhrase(s.host),
+            staging: true,
+          },
+          h,
+        ),
+      async after(res) {
+        s.campaignId = ((await res.json()) as { campaign: { id: string } }).campaign.id;
+      },
+    },
+    {
+      route: "POST /v1/campaigns/:id/stop",
+      action: "campaign.stop",
+      sensitive: true,
+      status: 200,
+      run: (h) => bare("POST", `/v1/campaigns/${s.campaignId}/stop`, h),
     },
     {
       route: "DELETE /v1/targets/:targetId",

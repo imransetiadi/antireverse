@@ -2,6 +2,7 @@
   "name": "@antireverse/e2e",
   "version": "0.0.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "e2e": "playwright test"
@@ -9,6 +10,8 @@
   "devDependencies": {
     "@antireverse/api": "*",
     "@antireverse/protocol": "*",
+    "@antireverse/prove": "*",
+    "@antireverse/range": "*",
     "@antireverse/shield-node": "*",
     "@types/express": "5.0.6",
     "express": "5.3.0"

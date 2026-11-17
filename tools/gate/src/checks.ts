@@ -178,6 +178,8 @@ export function createExecutors(ctx: CheckContext): Executors {
     "matrix-tenant": matrix("matrix-tenant"),
     "matrix-authz": matrix("matrix-authz"),
     "matrix-privacy": matrix("matrix-privacy"),
+    // Slice 15a: fixed files, run and judged like a matrix (every test of every file ran and passed).
+    "campaign-safety": matrix("campaign-safety"),
 
     "rrs-stand-in": async () => {
       const command = "tsx tools/gate/src/rrs-run.ts";

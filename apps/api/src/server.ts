@@ -1,6 +1,7 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
+import { CAMPAIGNS_VARIABLE } from "@antireverse/protocol";
 import { serve } from "@hono/node-server";
 import { type AppDeps, createApp } from "./app.ts";
 import type { Assessor } from "./assess/assessor.ts";
@@ -8,6 +9,12 @@ import { proveAssessor } from "./assess/prove-assessor.ts";
 import { type AssessmentRunner, type AssessmentRunnerOptions, createAssessmentRunner } from "./assess/runner.ts";
 import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.ts";
 import { createEventBus, type EventBus } from "./bus.ts";
+import {
+  type CampaignEngineRunner,
+  type CampaignRunner,
+  type CampaignTesting,
+  createCampaignRunner,
+} from "./campaign/runner.ts";
 import { DEFAULT_HOST } from "./config.ts";
 import { createPurgeJob, type PurgeJob, type PurgeOptions } from "./data/purge.ts";
 import { createRetentionJob, type RetentionJob, type RetentionOptions } from "./data/retention.ts";
@@ -120,6 +127,12 @@ export interface StartApiOptions {
    * start, naming the variable.
    */
   ops?: OpsSettings;
+  /**
+   * Pentest Campaigns (slice 15a). `enabled`: default true only when the environment variable `AR_PROVE_CAMPAIGNS` is
+   * `1`; otherwise none can be created or started. `testing` and `engine` are for tests only: no environment variable
+   * and no request field sets them (a local TLS target with a test CA; a scripted engine in place of the worker).
+   */
+  campaigns?: { enabled?: boolean; testing?: CampaignTesting; engine?: CampaignEngineRunner };
 }
 
 export interface RunningApi extends Listening {
@@ -138,6 +151,8 @@ export interface RunningApi extends Listening {
   authorize: Authorize;
   /** The Assessment runner (slice 12a): started with the server, stopped on close. */
   assessments: AssessmentRunner;
+  /** The Campaign runner (slice 15a): started with the server, stopped on close. */
+  campaigns: CampaignRunner;
   /** The daily purge of Organizations past their deletion grace (slice 18b): started with the server, flushed on close. */
   purge: PurgeJob;
   /** The daily retention job (slice 18c): started with the server, flushed on close. */
@@ -264,6 +279,19 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   });
   deps.assessor = assessor;
   deps.assessments = assessments;
+  // Slice 15a: off unless AR_PROVE_CAMPAIGNS=1. The test-only transport option comes from `options` alone.
+  const authorize = createAuthorize({ db, now: options.now });
+  const campaigns = createCampaignRunner({
+    db,
+    enabled: options.campaigns?.enabled ?? process.env[CAMPAIGNS_VARIABLE] === "1",
+    resolver: network.resolver,
+    authorize,
+    now: options.now,
+    logger,
+    engine: options.campaigns?.engine,
+    testing: options.campaigns?.testing,
+  });
+  deps.campaigns = campaigns;
   const app = createApp(deps);
 
   let listening: Listening;
@@ -309,6 +337,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const stopSlo = slo.start();
   // Fails the Assessments a previous process left running, then takes the queued ones.
   await assessments.start();
+  // Campaigns a previous process left running become interrupted and are never resumed; queued ones are taken again.
+  await campaigns.start();
 
   let closing: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
@@ -334,6 +364,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     stopSlo();
     // Running Assessments are aborted and recorded as failed (interrupted) while the database is still open.
     await assessments.stop();
+    // Running Campaigns are cut (request in flight, engine) and recorded as interrupted.
+    await campaigns.stop();
     await recheck.flush();
     await purge.flush();
     await retention.flush();
@@ -355,8 +387,9 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     signer,
     attestation,
     notifier,
-    authorize: createAuthorize({ db, now: options.now }),
+    authorize,
     assessments,
+    campaigns,
     purge,
     retention,
     slo,

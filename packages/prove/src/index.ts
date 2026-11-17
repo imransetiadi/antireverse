@@ -12,6 +12,19 @@ export {
   type WorkerAssessInput,
 } from "./assess-worker-host.ts";
 export { Budget, type BudgetEnd, BudgetExhaustedError, resolveTiers } from "./budget.ts";
+export { CAMPAIGN_WORKER_LIMITS, type RunCampaignEngineOptions, runCampaignEngine } from "./campaign/host.ts";
+export {
+  type CampaignEngineModule,
+  type EngineCheck,
+  type EngineContext,
+  type EngineFinding,
+  runStandIn,
+  STAND_IN_CATALOG,
+  STAND_IN_MARKER,
+  STAND_IN_REDIRECT,
+  type StandInCheck,
+  standInEngine,
+} from "./campaign/stand-in.ts";
 export { type ChildOptions, type ChildOutcome, parseChildLines, probeSandbox, runChild } from "./child.ts";
 export {
   LOGIC_RUN_LIMITS,

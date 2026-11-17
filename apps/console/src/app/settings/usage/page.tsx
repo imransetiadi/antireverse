@@ -90,6 +90,10 @@ export default async function UsagePage({ searchParams }: UsagePageProps) {
         </p>
       ) : null}
       {loaded.kind === "usage" ? <UsageReport usage={loaded.usage} /> : null}
+      {/* Slice 15a (D-105): Pentest Campaigns are not metered yet, and the page says so rather than showing a zero. */}
+      <p data-testid="usage-campaigns" className="max-w-3xl body-5 text-fg-muted">
+        {t("usage.campaigns")}
+      </p>
     </AppShell>
   );
 }

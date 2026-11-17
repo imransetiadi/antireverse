@@ -9,6 +9,7 @@ import { type AttestationKeys, createAttestationKeys } from "./attestation/keys.
 import { auditRequest } from "./audit.ts";
 import type { AppEnv, Principal } from "./auth/authenticate.ts";
 import type { EventBus } from "./bus.ts";
+import { type CampaignService, createCampaignRunner } from "./campaign/runner.ts";
 import type { Db } from "./db/db.ts";
 import { type BeaconRecorder, createBeaconRecorder } from "./detect/beacon.ts";
 import type { PolicyPublished } from "./detect/detector.ts";
@@ -20,6 +21,7 @@ import { createNotifier, type EmailDeps, type Notifier } from "./notify/notifier
 import { defaultResolve, type Resolve } from "./notify/ssrf.ts";
 import { PATCH_CATALOG, type PatchCatalog } from "./patches/catalog.ts";
 import { problem } from "./problem.ts";
+import { createAuthorize } from "./prove/authorize.ts";
 import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { alertChannelRoutes } from "./routes/alert-channels.ts";
 import { allowlistRoutes } from "./routes/allowlist.ts";
@@ -30,6 +32,7 @@ import { auditRoutes, createAuditReadLimiter } from "./routes/audit.ts";
 import { beaconRoutes, type ClientAddress } from "./routes/beacon.ts";
 import { buildRoutes } from "./routes/builds.ts";
 import { bundleRoutes } from "./routes/bundle.ts";
+import { campaignRoutes } from "./routes/campaigns.ts";
 import { containmentRoutes } from "./routes/containments.ts";
 import { dataControlRoutes } from "./routes/data-controls.ts";
 import { eventRoutes } from "./routes/events.ts";
@@ -159,6 +162,12 @@ export interface AppDeps {
   opsToken?: string;
   /** The millisecond clock of request latency for the SLIs. Default `performance.now`; tests pass a fake. */
   monotonic?: () => number;
+  /**
+   * Pentest Campaigns (slice 15a): the runner the routes queue on and stop through. Default: a runner with Campaigns
+   * off, never started — creation answers 403 `campaigns-disabled` (`startApi` passes the one it starts and stops,
+   * on only when `AR_PROVE_CAMPAIGNS=1`).
+   */
+  campaigns?: CampaignService;
 }
 
 /** The socket's peer address; undefined outside a Node server (e.g. `app.request` in tests). */
@@ -226,7 +235,21 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   const patches = deps.patches ?? PATCH_CATALOG;
 
   app.route("/", healthRoutes());
-  app.route("/", opsRoutes({ slo: deps.slo, token: deps.opsToken }));
+  const network = proveNetwork(deps.prove);
+  const campaigns =
+    deps.campaigns ??
+    createCampaignRunner({
+      db: deps.db,
+      enabled: false,
+      resolver: network.resolver,
+      authorize: createAuthorize({ db: deps.db, now: deps.now }),
+      now: deps.now,
+      logger,
+    });
+  app.route(
+    "/",
+    opsRoutes({ slo: deps.slo, token: deps.opsToken, prove: { db: deps.db, campaigns, now: deps.now, logger } }),
+  );
   app.route("/", organizationRoutes(deps));
   app.route("/", appRoutes(deps));
   app.route(
@@ -277,7 +300,8 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
       ...(deps.email?.confirmationsPerDay === undefined ? {} : { confirmationsPerDay: deps.email.confirmationsPerDay }),
     }),
   );
-  app.route("/", proveRoutes({ db: deps.db, network: proveNetwork(deps.prove), now: deps.now }));
+  app.route("/", proveRoutes({ db: deps.db, network, now: deps.now }));
+  app.route("/", campaignRoutes({ db: deps.db, campaigns, now: deps.now }));
   const assessor = deps.assessor ?? unavailableAssessor();
   const assessmentQueue = deps.assessments ?? createAssessmentRunner({ db: deps.db, assessor, now: deps.now, logger });
   app.route("/", assessmentRoutes({ db: deps.db, assessor, queue: assessmentQueue, now: deps.now }));

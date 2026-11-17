@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export interface Matrix {
-  id: "matrix-audit" | "matrix-tenant" | "matrix-authz" | "matrix-privacy";
+  id: "matrix-audit" | "matrix-tenant" | "matrix-authz" | "matrix-privacy" | "campaign-safety";
   /** Vitest projects (root vitest.config.ts) whose test directories are scanned. */
   projects: string[];
   /** A test or describe name matching this selects the file. */
@@ -19,6 +19,7 @@ export const PROJECT_DIRS: Record<string, string> = {
   api: "apps/api/test",
   protocol: "packages/protocol/test",
   "shield-node": "packages/shield-node/test",
+  e2e: "tests/e2e",
 };
 
 export const MATRICES: readonly Matrix[] = [
@@ -38,6 +39,28 @@ export const MATRICES: readonly Matrix[] = [
     id: "matrix-privacy",
     projects: ["protocol", "shield-node", "api"],
     pattern: /privacy|allowlisted (?:keys|members)|from the allowlist only/,
+  },
+  // Slice 15a: the safety controls of Pentest Campaigns. The request gate alone (every refusal reason, the budgets,
+  // arbitrary engine output), the pinned transport (the pin assertion, no redirects, the read cap), the restart rule,
+  // and — over HTTP against a local target, proven from the target's own request log — the scope-escape suite with
+  // both kill switches and the never-destructive suite.
+  {
+    id: "campaign-safety",
+    projects: ["api", "e2e"],
+    files: [
+      "apps/api/test/campaign-gate.test.ts",
+      "apps/api/test/campaign-transport.test.ts",
+      "apps/api/test/campaign-runner.test.ts",
+      // The independent safety review's tests: write failures, redaction gaps, shutdown, one address under two names.
+      "apps/api/test/campaign-review-redact.test.ts",
+      "apps/api/test/campaign-review-runner.test.ts",
+      "apps/api/test/campaign-review2-redact.test.ts",
+      "apps/api/test/campaign-review2-transport.test.ts",
+      "apps/api/test/campaign-review2-runner.test.ts",
+      "tests/e2e/campaign-scope.http.test.ts",
+      "tests/e2e/campaign-never-destructive.http.test.ts",
+      "tests/e2e/campaign-review.http.test.ts",
+    ],
   },
 ];
 

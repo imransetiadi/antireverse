@@ -12,7 +12,7 @@ import {
   RollbackPolicyRequestSchema,
 } from "@antireverse/protocol";
 import { Hono } from "hono";
-import { type AuditActor, audit, auditActor } from "../audit.ts";
+import { type AdminAuditActor, audit, auditActor } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
 import type { Db, Queryable } from "../db/db.ts";
@@ -102,7 +102,7 @@ export function policyRoutes(deps: {
    */
   async function publish(
     target: PolicyTarget | null,
-    actor: AuditActor,
+    actor: AdminAuditActor,
     kind: PublishKind,
     expectedVersion: number | undefined,
     allowBroad: boolean,

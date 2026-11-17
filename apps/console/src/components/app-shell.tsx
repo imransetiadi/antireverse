@@ -15,6 +15,7 @@ export type ShellSection =
   | "findings"
   | "targets"
   | "rules"
+  | "campaigns"
   | "alerts"
   | "allowlist"
   | "audit"
@@ -96,6 +97,7 @@ export function AppShell({ organization, deletion, width = "wide", current, chil
             <nav aria-label={t("nav.prove")} className="flex flex-wrap items-center gap-3">
               <NavLink section="targets" current={current} href={ROUTES.targets} label={t("nav.targets")} />
               <NavLink section="rules" current={current} href={ROUTES.rulesOfEngagement} label={t("nav.rules")} />
+              <NavLink section="campaigns" current={current} href={ROUTES.campaigns} label={t("nav.campaigns")} />
             </nav>
             <nav aria-label={t("nav.settings")} className="flex flex-wrap items-center gap-3">
               <NavLink section="alerts" current={current} href={ROUTES.alerts()} label={t("nav.alerts")} />

@@ -4,7 +4,30 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a) and SLO measurement with the operator dashboard (18d). The release-gate runner (18e) is built too. Not built yet: Pentest Campaigns (15), plans and billing (17b), synthetic probes, and the rest of GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a), SLO measurement with the operator dashboard (18d), the release-gate runner (18e), tamper detection (21) and the Pentest Campaign pipeline with a scripted stand-in engine (15a). Not built yet: a real Campaign engine (15b), plans and billing (17b), synthetic probes, and the rest of GA hardening (18).
+
+## How to use Airverse
+
+The product is used in this order. Each step links to the section that explains it.
+
+| Step | What you do | Where |
+|---|---|---|
+| 1 | Install and start the API and the Console | [Quickstart](#quickstart) |
+| 2 | Create an Organization and an App; keep the admin key and the Shield key | [Quickstart](#quickstart) |
+| 3 | Add Shield to your server, so every request shows in the live feed | [docs/shield.md](docs/shield.md) |
+| 4 | Add Guard to your pages, so browsers attest and sign requests | [Guard and attestation](#guard-and-attestation), [docs/guard.md](docs/guard.md) |
+| 5 | Harden your bundle and register the Build | [Hardening a bundle](#hardening-a-bundle), [docs/harden.md](docs/harden.md) |
+| 6 | Write a Policy, simulate it, then promote it to Enforce | [What works today](#what-works-today), [Policy simulation](#policy-simulation) |
+| 7 | Add alert channels and handle Incidents; block an attacker | [Detection and alerts](#detection-and-alerts), [Containment](#containment) |
+| 8 | Measure resistance with a Reverse Assessment, and gate CI on the score | [Reverse Assessment](#reverse-assessment) |
+| 9 | Verify a host you own, sign Rules of Engagement, and run a Campaign against it | [Verified Targets and Rules of Engagement](#verified-targets-and-rules-of-engagement), [Pentest Campaigns](#pentest-campaigns) |
+| 10 | Govern: audit log, usage, data export and deletion, retention | [Audit log](#audit-log), [Usage](#usage), [Data controls](#data-controls) |
+| 11 | Operate: SLO dashboard, Campaign kill switch, release gate | [Operator SLO dashboard](#operator-slo-dashboard), [Release gate](#release-gate) |
+
+Two kinds of people use it:
+
+- **A customer** signs in to the Console with the Organization's admin key and does steps 2 to 10.
+- **An operator** runs the API, sets its variables ([Configuration](#configuration)), and uses `/ops` in the Console with the operator token.
 
 ## What works today
 
@@ -177,6 +200,67 @@ On the Policy page, **Simulate** replays the last 24 hours of recorded requests 
 Before Airverse may test a host, prove you own it under **Prove → Targets**: add the host, then publish the shown TXT record at `_airverse-challenge.<host>` or serve the token at `https://<host>/.well-known/airverse-verification.txt`, and press Verify. Ownership is re-checked daily. Under **Rules of Engagement**, sign what may be tested (hosts, excluded paths, intensity, UTC window, contacts) by typing the shown phrase; signed versions cannot be changed. **Check a test** shows whether a given test would be allowed.
 
 - **Honest limits:** without user accounts, "signed" means signed with the Organization's admin key; DNS and the file prove control of the name at check time only.
+
+## Pentest Campaigns
+
+A Campaign is a scoped test that Airverse runs against a host **you own**, under the Rules of Engagement you signed. In this version the engine is a scripted stand-in. The product says so on every result: "Scripted checks. They measure the pipeline and its safety controls. This is not a penetration test."
+
+**Switch it on (operator).** Campaigns are off unless the API is started with `AR_PROVE_CAMPAIGNS=1`. Without it, creating a Campaign answers 403.
+
+**Before you can launch one:**
+
+1. Under **Prove → Targets**, verify the host. Whichever method verified it, a Campaign also needs the token served at `https://<host>/.well-known/airverse-verification.txt`: at the start of every Campaign that file must be answered by the very address the Campaign will test.
+2. Under **Prove → Rules of Engagement**, sign Rules that put the host in scope. They must be at most 90 days old and must not exclude the verification path.
+
+**Launch (Prove → Campaigns → New Campaign):**
+
+1. Choose the Target and an intensity: `passive` or `safe-active`, never above the signed one.
+2. Type the phrase `I authorise a test of <host>`.
+3. Tick "This target is a staging or test system".
+4. Give a reason. It is written to the audit log.
+
+**What a Campaign sends.** These limits are fixed in code:
+
+| Limit | Value |
+|---|---|
+| Methods | GET and HEAD only; never a body, a cookie or a credential |
+| Requests | At most 60, the ownership check included |
+| Rate | One request per second, one at a time |
+| Time | At most 300 seconds |
+| Response data | 64 KB read per response, about 2 MB in all |
+| Where | HTTPS on port 443, to the one address resolved at the start; redirects are never followed |
+| Running at once | One per Organization and one per server |
+| Created | 5 per Organization and 3 per Target in 24 hours |
+
+Every request carries `User-Agent: Airverse-Campaign/1` and `X-Airverse-Campaign: <id>`, so you can recognise it in your logs.
+
+**Watch and stop.** The Campaign page refreshes while it runs and shows the request log, refusals included. **Stop** is there for as long as the Campaign is queued or running. A stop is final, and no request follows it.
+
+**Read the result.**
+
+- **Findings** have a severity and redacted evidence. A Finding is *Unverified* until one repeat confirms it.
+- **The report** says how many checks ran, reported a finding, were inconclusive or were skipped. It never says "no vulnerabilities found".
+- **A Campaign ends** as completed, stopped, refused (a start check failed, with the reason), failed or interrupted (the API restarted; it is never resumed).
+
+**Operator controls** (`/ops` in the Console, or the API with `Authorization: Bearer $AR_OPS_TOKEN`):
+
+| Action | Route |
+|---|---|
+| See the switch, suspensions and active Campaigns | `GET /v1/ops/prove` |
+| Stop everything and refuse new Campaigns | `POST /v1/ops/prove/kill` |
+| Allow Campaigns again | `POST /v1/ops/prove/enable` |
+| Suspend or resume one Organization | `POST /v1/ops/prove/organizations/<id>/suspend`, `…/resume` |
+
+Each takes a JSON body `{ "reason": "…" }`.
+
+**Honest limits:**
+
+- **The stand-in is not a penetration test.** It runs six fixed checks written against the reference target's seeded weaknesses. Its results say nothing about your real exposure.
+- **There is no VM or egress proxy yet.** The request gate is code inside the API, and requests leave from the API host's own address.
+- **A GET can change state on a careless application.** Exclude such paths in the Rules.
+- **"Staging" and "signed by an Owner" are declarations made with an admin key.** Nothing verifies them.
+- **Evidence is redacted by patterns.** Keys, tokens, passwords, emails, card numbers and cookies are removed where they are recognised; treat evidence as sensitive anyway.
+- **The query string is not part of what the Rules authorise;** only the path is.
 
 ## Reverse Assessment
 
@@ -351,6 +435,8 @@ npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out 
 | `npm run dev` | API and Console |
 | `npm run dev:range` | The reference target (needs `AR_SHIELD_KEY`) |
 | `npm run fix` | Apply formatting and safe lint fixes |
+| `npm run gate:release` | The release gate: every check that can run, and a signed report (see Release gate) |
+| `npm run gate:verify-report -- <dir>` | Checks a gate report's signature |
 
 ## Configuration
 
@@ -366,6 +452,11 @@ npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out 
 | `AR_ALLOW_PRIVATE_ALERT_URLS=1` | API | off — alert channels must be public `https` |
 | `AR_ACTOR_KEY` | any server using Shield | none — without it no Actor identities are sent and only network blocks are possible |
 | `AR_CONSOLE_URL` | API (links in alerts) | `http://127.0.0.1:3000` |
+| `AR_SMTP_*` | API (email alerts) | none — email alerts are off; see Detection and alerts |
+| `AR_OPS_TOKEN` | API (operator routes, `/ops`) | none — operator routes answer 404 |
+| `AR_OPS_WEBHOOK_URL`, `AR_OPS_WEBHOOK_SECRET` | API (SLO burn alerts) | none — alerts are logged only |
+| `AR_PROVE_CAMPAIGNS=1` | API | off — Campaigns cannot be created |
+| `AR_GATE_KEY_FILE` | release gate | `~/.config/airverse/gate-key.json` |
 | `AR_NEXT_DIST_DIR` | Console | `.next` — the browser e2e sets `.next/e2e` so it can run beside a dev server |
 
 ## What is deliberately missing

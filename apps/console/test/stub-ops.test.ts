@@ -2,9 +2,15 @@
 import { ProblemSchema, SLO_CATALOG, SloReportSchema } from "@antireverse/protocol";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { opsRoutes } from "../../api/src/routes/ops.ts";
-import type { SloService } from "../../api/src/slo/service.ts";
 import { createOpsStore } from "../scripts/stub-ops.mjs";
+
+// The API's operator routes, loaded at run time through a computed specifier. Since slice 15a they reach the Campaign
+// runner and the prove package, which are type-checked under the API's own compiler settings, not the Console's: a
+// static import would pull those files into the Console's type check.
+const OPS_ROUTES = new URL("../../api/src/routes/ops.ts", import.meta.url).href;
+const { opsRoutes } = (await import(/* @vite-ignore */ OPS_ROUTES)) as {
+  opsRoutes: (deps: { slo?: unknown; token?: string | undefined; prove?: unknown }) => Hono;
+};
 
 // Slice 18d: the stand-in API answers `GET /v1/ops/slo` as the API does — 404 without an operator token configured,
 // 401 for any other bearer (an admin key included), the report in the shape of the protocol for the token — with
@@ -22,7 +28,7 @@ interface Answer {
 /** The real operator routes of the API, with a stand-in SLO service: what the stub's refusals must equal. */
 async function real(token: string | undefined, authorization?: string): Promise<Answer> {
   const app = new Hono();
-  app.route("/", opsRoutes({ slo: { report: async () => ({}) } as unknown as SloService, token }));
+  app.route("/", opsRoutes({ slo: { report: async () => ({}) }, token }));
   const response = await app.request("/v1/ops/slo", {
     headers: authorization === undefined ? {} : { authorization },
   });

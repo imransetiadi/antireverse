@@ -1,6 +1,8 @@
 import { Resolver as DnsResolver } from "node:dns/promises";
-import { request } from "node:https";
-import { isIP } from "node:net";
+import type { ClientRequest, IncomingHttpHeaders } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIP, connect as netConnect, type Socket } from "node:net";
+import { type TLSSocket, connect as tlsConnect } from "node:tls";
 import {
   challengeRecordName,
   type DnsVerifyFailure,
@@ -188,6 +190,66 @@ function isLoopback(address: string): boolean {
   return (isIP(address) === 4 && address.startsWith("127.")) || address === "::1";
 }
 
+/** One spelling per address: IPv6 lower case and compressed, an IPv4-mapped IPv6 address as its IPv4 address. */
+function canonicalAddress(address: string): string | null {
+  const family = isIP(address);
+  if (family === 4) return address;
+  if (family !== 6) return null;
+  let canonical: string;
+  try {
+    canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+  // An IPv4-mapped address in any spelling (`::ffff:1.2.3.4`, `::ffff:102:304`, written out in full) is its IPv4
+  // address: the URL parser gives all of them as `::ffff:hhhh:hhhh`.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (mapped === null) return canonical;
+  const high = Number.parseInt(mapped[1] as string, 16);
+  const low = Number.parseInt(mapped[2] as string, 16);
+  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+}
+
+/** Whether two address texts name the same address. False for anything that is not an address. */
+export function sameAddress(a: string | undefined, b: string | undefined): boolean {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const left = canonicalAddress(a);
+  return left !== null && left === canonicalAddress(b);
+}
+
+export type PinFailure = "resolve_failed" | "address_not_public" | "timeout";
+
+/**
+ * Resolves `host` once and pins its first address: unless **every** A and AAAA address is public (`isPublicAddress`;
+ * loopback too with the test-only option) nothing is pinned (`address_not_public`). The caller connects to the
+ * pinned address only and never resolves the name again.
+ */
+export async function resolvePinned(
+  host: string,
+  options: { resolver: Resolver; signal: AbortSignal; testing?: GuardedFetcherTesting | undefined },
+): Promise<{ ok: true; address: string } | { ok: false; reason: PinFailure }> {
+  normalised(host);
+  const { resolver, signal, testing } = options;
+  const allowed = (address: string): boolean =>
+    isPublicAddress(address) || (testing?.allowLoopback === true && isLoopback(address));
+  if (signal.aborted) return { ok: false, reason: "timeout" };
+  let addresses: string[] | typeof TIMED_OUT;
+  try {
+    addresses = await new Promise<string[] | typeof TIMED_OUT>((resolve, reject) => {
+      signal.addEventListener("abort", () => resolve(TIMED_OUT), { once: true });
+      resolver.addresses(host).then(resolve, reject);
+    });
+  } catch {
+    return { ok: false, reason: "resolve_failed" };
+  }
+  if (addresses === TIMED_OUT) return { ok: false, reason: "timeout" };
+  if (!Array.isArray(addresses) || addresses.length === 0) return { ok: false, reason: "resolve_failed" };
+  if (!addresses.every((address) => typeof address === "string" && allowed(address))) {
+    return { ok: false, reason: "address_not_public" };
+  }
+  return { ok: true, address: addresses[0] as string };
+}
+
 /**
  * The production `Fetcher`: a guarded HTTPS GET of `https://<host>/.well-known/airverse-verification.txt`.
  *
@@ -203,8 +265,6 @@ export function createGuardedFetcher(options: GuardedFetcherOptions): Fetcher {
   const timeoutMs = options.timeoutMs ?? TARGET_LIMITS.fetchTimeoutMs;
   const bodyBytesMax = options.bodyBytesMax ?? TARGET_LIMITS.fetchBodyBytesMax;
   const { resolver, testing } = options;
-  const allowed = (address: string): boolean =>
-    isPublicAddress(address) || (testing?.allowLoopback === true && isLoopback(address));
 
   return async (host) => {
     normalised(host);
@@ -212,89 +272,288 @@ export function createGuardedFetcher(options: GuardedFetcherOptions): Fetcher {
     const timer = setTimeout(() => deadline.abort(), timeoutMs);
     timer.unref?.();
     try {
-      let addresses: string[] | typeof TIMED_OUT;
-      try {
-        addresses = await new Promise<string[] | typeof TIMED_OUT>((resolve, reject) => {
-          deadline.signal.addEventListener("abort", () => resolve(TIMED_OUT), { once: true });
-          resolver.addresses(host).then(resolve, reject);
-        });
-      } catch {
-        return { ok: false, reason: "resolve_failed" };
-      }
-      if (addresses === TIMED_OUT) return { ok: false, reason: "timeout" };
-      if (!Array.isArray(addresses) || addresses.length === 0) return { ok: false, reason: "resolve_failed" };
-      if (!addresses.every((address) => typeof address === "string" && allowed(address))) {
-        return { ok: false, reason: "address_not_public" };
-      }
-      const pinned = addresses[0] as string;
-      return await get(host, pinned, deadline.signal, bodyBytesMax, testing);
+      const pinned = await resolvePinned(host, { resolver, signal: deadline.signal, testing });
+      if (!pinned.ok) return pinned;
+      return await fetchVerificationFile(host, pinned.address, { signal: deadline.signal, bodyBytesMax, testing });
     } finally {
       clearTimeout(timer);
     }
   };
 }
 
-function get(
+/**
+ * The guarded GET of the verification file from one pinned address: only a 200 whose whole body fits `bodyBytesMax`
+ * counts. Slice 15a also uses it for the ownership check at the start of a Campaign, from the Campaign's own pin.
+ */
+export async function fetchVerificationFile(
   host: string,
   address: string,
-  signal: AbortSignal,
-  bodyBytesMax: number,
-  testing: GuardedFetcherTesting | undefined,
+  options: {
+    signal: AbortSignal;
+    bodyBytesMax?: number;
+    testing?: GuardedFetcherTesting | undefined;
+    /** Replace the identifying headers (a Campaign's `user-agent` and `x-airverse-campaign`). */
+    headers?: Readonly<Record<string, string>>;
+  },
 ): Promise<FetchOutcome> {
-  return new Promise<FetchOutcome>((resolve) => {
+  const response = await pinnedRequest({
+    host,
+    address,
+    method: "GET",
+    path: VERIFICATION_FILE_PATH,
+    headers: { "user-agent": USER_AGENT, ...options.headers, accept: "text/plain" },
+    signal: options.signal,
+    bodyBytesMax: options.bodyBytesMax ?? TARGET_LIMITS.fetchBodyBytesMax,
+    testing: options.testing,
+  });
+  if (!response.ok) {
+    if (response.reason === "address_mismatch") return { ok: false, reason: "connect_failed" };
+    return { ok: false, reason: response.reason === "invalid_response" ? "status" : response.reason };
+  }
+  if (response.status >= 300 && response.status < 400) return { ok: false, reason: "redirect" };
+  if (response.status !== 200) return { ok: false, reason: "status" };
+  if (response.truncated) return { ok: false, reason: "too_large" };
+  return { ok: true, body: response.body.toString("utf8") };
+}
+
+/** One HTTPS request to a pinned address, as the Prove file fetch and the Campaign gate (slice 15a) send it. */
+export interface PinnedRequest {
+  /** The name: SNI, the Host header and the certificate's subject. Normalised. */
+  host: string;
+  /** The checked address the connection goes to. The name is never resolved here. */
+  address: string;
+  method: "GET" | "HEAD";
+  /** The request target: starts with one `/`, at most 1,024 characters. */
+  path: string;
+  /** Only `user-agent`, `accept` and `x-airverse-campaign` may be set; everything else is fixed or absent. */
+  headers: Readonly<Record<string, string>>;
+  /** Aborting ends the request (`timeout`). */
+  signal: AbortSignal;
+  /** Bytes of the body read at most; the connection is then dropped and the response says `truncated`. */
+  bodyBytesMax: number;
+  /** For tests only (see `GuardedFetcherTesting`). */
+  testing?: GuardedFetcherTesting | undefined;
+}
+
+export type PinnedResponse =
+  | {
+      ok: true;
+      status: number;
+      headers: IncomingHttpHeaders;
+      /** Bytes of the status line's headers as received (names, values and separators): at most 16 KB. */
+      headerBytes: number;
+      /** At most `bodyBytesMax` bytes. */
+      body: Buffer;
+      /** True when the body was longer than `bodyBytesMax` (announced or streamed). */
+      truncated: boolean;
+      remoteAddress: string;
+      /** Bytes the connection read in all: the TLS handshake, any 1xx responses, the headers and the body. */
+      bytesRead: number;
+    }
+  | {
+      ok: false;
+      reason: "timeout" | "connect_failed" | "tls_failed" | "address_mismatch" | "invalid_response";
+      /** Bytes the connection read before it failed (0 or absent when it was never made). */
+      bytesRead?: number;
+    };
+
+/** Not configuration: only a unit test of the pin assertion passes it. No option of the API reaches it. */
+export interface PinnedRequestInternals {
+  /** Opens the TCP connection instead of `net.connect` to the pinned address. */
+  dial?: () => Socket;
+}
+
+/** Bytes of response headers read at most; a response with more fails (`invalid_response`). */
+export const RESPONSE_HEADER_BYTES_MAX = 16_384;
+/**
+ * Bytes a connection may read beyond the header and body caps: the TLS handshake and the records' framing. A
+ * connection that reads more than the three together is dropped (`invalid_response`), whatever it was sending — a
+ * flood of 1xx responses, for instance.
+ */
+export const TLS_OVERHEAD_BYTES_MAX = 16_384;
+/** Characters of a request target at most. */
+export const REQUEST_TARGET_MAX = 1024;
+
+const SETTABLE_HEADERS = new Set(["user-agent", "accept", "x-airverse-campaign"]);
+const HEADER_VALUE = /^[\x20-\x7e]{1,256}$/;
+const REQUEST_TARGET = /^\/(?!\/)[\x21-\x7e]*$/;
+
+/**
+ * One guarded HTTPS request:
+ *
+ * - The address must be public (`isPublicAddress`; loopback too with the test-only option): checked here as well,
+ *   whoever resolved it.
+ * - A plain TCP connection is opened to `address` on port 443 — by this function itself, with no agent, so no proxy
+ *   setting of the environment applies. Its remote address must be the pinned one, or it is destroyed
+ *   (`address_mismatch`). Only then does TLS start on that socket, with SNI set to `host`: no ClientHello and no byte
+ *   of a request can reach another address. The certificate is validated for the name (TLS 1.2 or later), whatever
+ *   `NODE_TLS_REJECT_UNAUTHORIZED` says.
+ * - GET or HEAD only, never a body; no cookie, no credential, no keep-alive; `accept-encoding: identity`.
+ * - A redirect is never followed: a 3xx is answered like any other status. A status outside 100–599, or more than
+ *   16 KB of response headers, is `invalid_response`.
+ * - At most `bodyBytesMax` bytes are read; then the socket is destroyed.
+ *
+ * Throws a TypeError (before any connection) for another method, an address that is not public, a target that does
+ * not start with one `/` or is longer than 1,024 characters, or a header outside the three it may set. Never rejects
+ * otherwise.
+ */
+export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestInternals = {}): Promise<PinnedResponse> {
+  const { host, address, method, path, signal, bodyBytesMax, testing } = options;
+  try {
+    normalised(host);
+    if (method !== "GET" && method !== "HEAD") throw new TypeError("A pinned request is a GET or a HEAD.");
+    if (typeof path !== "string" || path.length > REQUEST_TARGET_MAX || !REQUEST_TARGET.test(path)) {
+      throw new TypeError(
+        "A request target starts with one /, holds printable ASCII only and at most 1,024 characters.",
+      );
+    }
+    if (isIP(address) === 0) throw new TypeError("The pinned address must be an IP address.");
+    if (!isPublicAddress(address) && !(testing?.allowLoopback === true && isLoopback(address))) {
+      throw new TypeError("The pinned address must be a public address.");
+    }
+    if (!Number.isInteger(bodyBytesMax) || bodyBytesMax < 0) {
+      throw new TypeError("The body cap is a whole number of bytes.");
+    }
+    for (const [name, value] of Object.entries(options.headers)) {
+      if (!SETTABLE_HEADERS.has(name) || typeof value !== "string" || !HEADER_VALUE.test(value)) {
+        throw new TypeError("Only user-agent, accept and x-airverse-campaign may be set on a pinned request.");
+      }
+    }
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  return new Promise<PinnedResponse>((resolve) => {
     let settled = false;
-    const finish = (outcome: FetchOutcome): void => {
+    let tcp: Socket | undefined;
+    let secure: TLSSocket | undefined;
+    let req: ClientRequest | undefined;
+    let watch: ReturnType<typeof setInterval> | undefined;
+    type Outcome = PinnedResponse extends infer R ? (R extends unknown ? Omit<R, "bytesRead"> : never) : never;
+    const finish = (outcome: Outcome): void => {
       if (settled) return;
       settled = true;
-      resolve(outcome);
-      req.destroy();
+      clearInterval(watch);
+      signal.removeEventListener("abort", onAbort);
+      // What the connection read, whatever came of it: it counts toward the Campaign's bytes.
+      resolve({ ...outcome, bytesRead: tcp?.bytesRead ?? 0 } as PinnedResponse);
+      req?.destroy();
+      secure?.destroy();
+      tcp?.destroy();
     };
+    const onAbort = (): void => finish({ ok: false, reason: "timeout" });
     if (signal.aborted) {
-      resolve({ ok: false, reason: "timeout" });
+      resolve({ ok: false, reason: "timeout", bytesRead: 0 });
       return;
     }
-    const req = request({
-      // The checked address itself: the name is never resolved again.
-      host: address,
-      family: isIP(address) === 6 ? 6 : 4,
-      port: testing?.port ?? 443,
-      servername: host,
-      path: VERIFICATION_FILE_PATH,
-      method: "GET",
-      headers: {
-        host,
-        "user-agent": USER_AGENT,
-        accept: "text/plain",
-        "accept-encoding": "identity",
-        connection: "close",
-      },
-      agent: false,
-      rejectUnauthorized: true,
-      minVersion: "TLSv1.2",
-      ...(testing?.ca === undefined ? {} : { ca: testing.ca }),
-      signal,
-    });
-    req.on("response", (response) => {
-      const status = response.statusCode ?? 0;
-      if (status >= 300 && status < 400) return finish({ ok: false, reason: "redirect" });
-      if (status !== 200) return finish({ ok: false, reason: "status" });
-      const announced = Number(response.headers["content-length"]);
-      if (Number.isFinite(announced) && announced > bodyBytesMax) return finish({ ok: false, reason: "too_large" });
-      const chunks: Buffer[] = [];
-      let received = 0;
-      response.on("data", (chunk: Buffer) => {
-        received += chunk.byteLength;
-        if (received > bodyBytesMax) return finish({ ok: false, reason: "too_large" });
-        chunks.push(chunk);
+    // Before its response has come, no connection may read more than a response can hold: a flood of 1xx responses
+    // is cut here. Once the response is there, the body cap below ends the reading.
+    const readMax = RESPONSE_HEADER_BYTES_MAX + bodyBytesMax + TLS_OVERHEAD_BYTES_MAX;
+    let responded = false;
+    const overRead = (): boolean => {
+      if (responded || (tcp?.bytesRead ?? 0) <= readMax) return false;
+      finish({ ok: false, reason: "invalid_response" });
+      return true;
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const failed = (error: unknown, phase: "connect" | "tls"): void => {
+      const code = String((error as { code?: unknown } | null)?.code ?? "");
+      if (signal.aborted) finish({ ok: false, reason: "timeout" });
+      else if (code === "HPE_HEADER_OVERFLOW") finish({ ok: false, reason: "invalid_response" });
+      else finish({ ok: false, reason: phase === "tls" || TLS_ERROR.test(code) ? "tls_failed" : "connect_failed" });
+    };
+
+    // 1. TCP, to the checked address itself: the name is never resolved again, and no agent or proxy is involved.
+    try {
+      tcp =
+        internals.dial?.() ??
+        netConnect({ host: address, family: isIP(address) === 6 ? 6 : 4, port: testing?.port ?? 443 });
+    } catch (error) {
+      return failed(error, "connect");
+    }
+    const socket = tcp;
+    watch = setInterval(overRead, 10);
+    watch.unref?.();
+    socket.once("error", (error) => failed(error, "connect"));
+    socket.once("connect", () => {
+      // 2. The pin, asserted on the connected socket before anything is written to it.
+      const remoteAddress = socket.remoteAddress ?? "";
+      if (!sameAddress(remoteAddress, address)) return finish({ ok: false, reason: "address_mismatch" });
+
+      // 3. TLS on that socket, for the name.
+      let handshake = true;
+      const tlsSocket = tlsConnect({
+        socket,
+        servername: host,
+        rejectUnauthorized: true,
+        minVersion: "TLSv1.2",
+        ALPNProtocols: ["http/1.1"],
+        ...(testing?.ca === undefined ? {} : { ca: testing.ca }),
       });
-      response.on("end", () => finish({ ok: true, body: Buffer.concat(chunks).toString("utf8") }));
-      response.on("error", () => finish({ ok: false, reason: signal.aborted ? "timeout" : "connect_failed" }));
+      secure = tlsSocket;
+      tlsSocket.once("error", (error) => failed(error, handshake ? "tls" : "connect"));
+      tlsSocket.once("secureConnect", () => {
+        handshake = false;
+        if (!tlsSocket.authorized) return finish({ ok: false, reason: "tls_failed" });
+
+        // 4. The request, on that connection only.
+        const request = httpsRequest({
+          createConnection: () => tlsSocket,
+          host,
+          path,
+          method,
+          headers: { ...options.headers, host, "accept-encoding": "identity", connection: "close" },
+          maxHeaderSize: RESPONSE_HEADER_BYTES_MAX,
+        });
+        req = request;
+        request.on("information", overRead);
+        // A 101, or a connection that ends without a response, is no response: answered at once, not at the deadline.
+        request.on("upgrade", () => finish({ ok: false, reason: "invalid_response" }));
+        request.on("close", () => finish({ ok: false, reason: "invalid_response" }));
+        request.on("response", (response) => {
+          responded = true;
+          const status = response.statusCode ?? 0;
+          if (!Number.isInteger(status) || status < 100 || status > 599) {
+            return finish({ ok: false, reason: "invalid_response" });
+          }
+          let headerBytes = 0;
+          for (const part of response.rawHeaders) headerBytes += Buffer.byteLength(part, "latin1") + 2;
+          if (headerBytes > RESPONSE_HEADER_BYTES_MAX) return finish({ ok: false, reason: "invalid_response" });
+          const announced = Number(response.headers["content-length"]);
+          const chunks: Buffer[] = [];
+          let received = 0;
+          const done = (truncated: boolean): void =>
+            finish({
+              ok: true,
+              status,
+              headers: response.headers,
+              headerBytes,
+              body: Buffer.concat(chunks),
+              truncated,
+              remoteAddress,
+            });
+          if (method === "HEAD") return done(false);
+          if (bodyBytesMax === 0) return done(Number.isFinite(announced) ? announced > 0 : true);
+          response.on("data", (chunk: Buffer) => {
+            const room = bodyBytesMax - received;
+            if (chunk.byteLength > room) {
+              if (room > 0) chunks.push(chunk.subarray(0, room));
+              received = bodyBytesMax;
+              return done(true);
+            }
+            received += chunk.byteLength;
+            chunks.push(chunk);
+          });
+          response.on("end", () => done(Number.isFinite(announced) && announced > received));
+          response.on("error", () => finish({ ok: false, reason: signal.aborted ? "timeout" : "connect_failed" }));
+        });
+        request.on("error", (error) => {
+          // The target closed the connection without answering.
+          if (!signal.aborted && (error as { code?: unknown }).code === "ECONNRESET") {
+            finish({ ok: false, reason: "invalid_response" });
+          } else failed(error, "connect");
+        });
+        request.end();
+      });
     });
-    req.on("error", (error) => {
-      if (signal.aborted) return finish({ ok: false, reason: "timeout" });
-      const code = String((error as { code?: unknown }).code ?? "");
-      finish({ ok: false, reason: TLS_ERROR.test(code) ? "tls_failed" : "connect_failed" });
-    });
-    req.end();
   });
 }

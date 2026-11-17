@@ -6,6 +6,7 @@ export * from "./attestation.ts";
 export * from "./audit.ts";
 export * from "./beacon.ts";
 export * from "./build.ts";
+export * from "./campaign.ts";
 export * from "./canaries.ts";
 export * from "./constants.ts";
 export * from "./containment.ts";

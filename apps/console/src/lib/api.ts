@@ -22,6 +22,10 @@ import {
   AuthorizeResultSchema,
   type BuildResponse,
   BuildResponseSchema,
+  type CampaignReportResponse,
+  CampaignReportResponseSchema,
+  type CampaignResponse,
+  CampaignResponseSchema,
   type ConfirmAlertRecipientResponse,
   ConfirmAlertRecipientResponseSchema,
   type ConflictReason,
@@ -37,6 +41,7 @@ import {
   CreateAppResponseSchema,
   type CreateAssessmentResponse,
   CreateAssessmentResponseSchema,
+  type CreateCampaignRequest,
   type CreateContainmentRequest,
   type CreateOrganizationRequestInput,
   type CreateOrganizationResponse,
@@ -75,6 +80,10 @@ import {
   ListAuditResponseSchema,
   type ListBuildsResponse,
   ListBuildsResponseSchema,
+  type ListCampaignRequestsResponse,
+  ListCampaignRequestsResponseSchema,
+  type ListCampaignsResponse,
+  ListCampaignsResponseSchema,
   type ListContainmentsResponse,
   ListContainmentsResponseSchema,
   type ListEventsResponse,
@@ -98,6 +107,8 @@ import {
   PolicyVersionsResponseSchema,
   type ProblemError,
   ProblemSchema,
+  type ProveOperatorState,
+  ProveOperatorStateSchema,
   type ResendConfirmationResponse,
   ResendConfirmationResponseSchema,
   type RetentionResponse,
@@ -228,6 +239,25 @@ export class DeletionPendingError extends ApiError {
 /** The problem type of a pending deletion; matched on its last segment, whatever the API's base. */
 const DELETION_PENDING_TYPE = /\/organization-deletion-pending$/;
 
+/** Why no Campaign can be created (slice 15a), by the last segment of the API's problem type. */
+export type CampaignsUnavailable = "disabled" | "stopped" | "suspended";
+
+/**
+ * 403 `campaigns-disabled`, `campaigns-stopped` or `campaigns-suspended` (slice 15a): Campaigns are switched off on
+ * this API, stopped by the operator's kill switch, or suspended for this Organization. Nothing was created.
+ */
+export class CampaignsUnavailableError extends ApiError {
+  readonly kind: CampaignsUnavailable;
+  constructor(message: string, kind: CampaignsUnavailable) {
+    super(message, 403);
+    this.name = "CampaignsUnavailableError";
+    this.kind = kind;
+  }
+}
+
+/** The problem types of Campaigns that cannot be created; matched on the last segment, whatever the API's base. */
+const CAMPAIGNS_UNAVAILABLE_TYPE = /\/campaigns-(disabled|stopped|suspended)$/;
+
 /** The problem type of a missing reason; matched on its last segment, whatever the API's base. */
 const REASON_REQUIRED_TYPE = /\/reason-required$/;
 
@@ -305,6 +335,10 @@ async function failure(what: string, response: Response): Promise<ApiError> {
   if (response.status === 401) return new UnauthorizedError(message);
   if (response.status === 403 && parsed.success && DELETION_PENDING_TYPE.test(parsed.data.type)) {
     return new DeletionPendingError(message);
+  }
+  if (response.status === 403 && parsed.success) {
+    const kind = CAMPAIGNS_UNAVAILABLE_TYPE.exec(parsed.data.type)?.[1];
+    if (kind !== undefined) return new CampaignsUnavailableError(message, kind as CampaignsUnavailable);
   }
   if (response.status === 404) return new NotFoundError(message);
   if (response.status === 409) return new ConflictError(message, parsed.success ? parsed.data.reason : undefined);
@@ -886,6 +920,68 @@ export function checkAuthorization(key: string, request: AuthorizeRequest): Prom
   return call("/v1/prove/authorize", AuthorizeResultSchema, { method: "POST", key, body: request });
 }
 
+// ── Pentest Campaigns (slice 15a) ─────────────────────────────────────────────────────────────────────
+// The engine of this slice is a scripted stand-in: every answer that shows a result carries the engine tag and the
+// notice that says what it is not. Creation rejects with CampaignsUnavailableError (403: switched off, stopped by the
+// operator, suspended), ValidationError (`target_id`, `intensity`, `confirm`, `staging`), ReasonRequiredError,
+// ConflictError (`campaign-*`) or RateLimitedError (at most 5 per Organization and 3 per target in 24 hours).
+
+const campaignPath = (campaignId: string): string => `/v1/campaigns/${encodeURIComponent(campaignId)}`;
+
+/** `GET /v1/campaigns` — the newest 50, whether Campaigns are on (`enabled`) and why none can start (`blocked`). */
+export function listCampaigns(key: string): Promise<ListCampaignsResponse> {
+  return call("/v1/campaigns", ListCampaignsResponseSchema, { key });
+}
+
+/**
+ * `POST /v1/campaigns` — queues a Campaign against a Verified Target in the scope of the current Rules of Engagement:
+ * the typed phrase `I authorise a test of <host>`, the staging declaration and a reason (required).
+ */
+export function createCampaign(
+  key: string,
+  request: CreateCampaignRequest,
+  options: ReasonOption = {},
+): Promise<CampaignResponse> {
+  return call("/v1/campaigns", CampaignResponseSchema, {
+    method: "POST",
+    key,
+    body: {
+      target_id: request.target_id,
+      intensity: request.intensity,
+      confirm: request.confirm,
+      staging: request.staging,
+    },
+    reason: options.reason,
+  });
+}
+
+/** `GET /v1/campaigns/:id` — one Campaign; 404 for an unknown one or one of another Organization. */
+export function getCampaign(key: string, campaignId: string): Promise<CampaignResponse> {
+  return call(campaignPath(campaignId), CampaignResponseSchema, { key });
+}
+
+/** `GET /v1/campaigns/:id/requests` — the request log, refused probes with their reasons included; never a body. */
+export function listCampaignRequests(key: string, campaignId: string): Promise<ListCampaignRequestsResponse> {
+  return call(`${campaignPath(campaignId)}/requests`, ListCampaignRequestsResponseSchema, { key });
+}
+
+/** `GET /v1/campaigns/:id/report` — the Campaign, its checks, its Findings with redacted evidence, and its limits. */
+export function getCampaignReport(key: string, campaignId: string): Promise<CampaignReportResponse> {
+  return call(`${campaignPath(campaignId)}/report`, CampaignReportResponseSchema, { key });
+}
+
+/**
+ * `POST /v1/campaigns/:id/stop` — the owner's stop (reason required). Final. 409 `campaign-ended` when the Campaign
+ * has ended or is already being stopped.
+ */
+export function stopCampaign(key: string, campaignId: string, options: ReasonOption = {}): Promise<CampaignResponse> {
+  return call(`${campaignPath(campaignId)}/stop`, CampaignResponseSchema, {
+    method: "POST",
+    key,
+    reason: options.reason,
+  });
+}
+
 // ── Audit log (slice 18a) ─────────────────────────────────────────────────────────────────────────────
 
 /** Narrows the audit log. Every member is optional; `from` is inclusive and `to` exclusive (ISO times). */
@@ -1035,4 +1131,37 @@ export function getUsage(key: string, month?: string): Promise<UsageResponse> {
  */
 export function getSloReport(token: string): Promise<SloReport> {
   return call("/v1/ops/slo", SloReportSchema, { key: token });
+}
+
+// ── The operator's Campaign switches (slice 15a) ──────────────────────────────────────────────────────
+// Behind the operator token, as the SLO report: 404 (NotFoundError) when operator access is not enabled on the API or
+// the Organization does not exist (or is already in the state asked for); 401 (UnauthorizedError) for another token.
+// The reason travels in the body: these are not tenant changes and carry no reason header.
+
+/** `GET /v1/ops/prove` — whether Campaigns are on, the kill switch, suspended Organizations and the active count. */
+export function getProveOperatorState(token: string): Promise<ProveOperatorState> {
+  return call("/v1/ops/prove", ProveOperatorStateSchema, { key: token });
+}
+
+const proveChange = (token: string, path: string, reason: string): Promise<ProveOperatorState> =>
+  call(path, ProveOperatorStateSchema, { method: "POST", key: token, body: { reason } });
+
+/** `POST /v1/ops/prove/kill` — ends every queued or running Campaign and refuses new ones until enabled again. */
+export function killCampaigns(token: string, reason: string): Promise<ProveOperatorState> {
+  return proveChange(token, "/v1/ops/prove/kill", reason);
+}
+
+/** `POST /v1/ops/prove/enable` — lifts the kill switch. Nothing that was stopped runs again. */
+export function enableCampaigns(token: string, reason: string): Promise<ProveOperatorState> {
+  return proveChange(token, "/v1/ops/prove/enable", reason);
+}
+
+/** `POST /v1/ops/prove/organizations/:id/suspend` — ends and refuses the Campaigns of one Organization. */
+export function suspendCampaigns(token: string, organizationId: string, reason: string): Promise<ProveOperatorState> {
+  return proveChange(token, `/v1/ops/prove/organizations/${encodeURIComponent(organizationId)}/suspend`, reason);
+}
+
+/** `POST /v1/ops/prove/organizations/:id/resume` — lifts the suspension of one Organization. */
+export function resumeCampaigns(token: string, organizationId: string, reason: string): Promise<ProveOperatorState> {
+  return proveChange(token, `/v1/ops/prove/organizations/${encodeURIComponent(organizationId)}/resume`, reason);
 }

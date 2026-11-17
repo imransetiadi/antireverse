@@ -74,11 +74,16 @@
 // Slice 18d: `GET /v1/ops/slo` (stub-ops.mjs, checked by a test against the protocol) takes the operator token of
 // `AR_STUB_OPS_TOKEN` as a bearer: 404 when it is unset, 401 for anything else (admin keys included), as the API does.
 // Made-up figures show every state of the operator dashboard `/ops`.
+// Slice 15a: Pentest Campaigns (stub-campaigns.mjs, checked by a test against the protocol): every Organization has
+// four ended Campaigns to look at; a new one is checked as the API checks it and then runs as a script by the clock
+// (nothing is sent anywhere); the first label of the target's host picks another end. `AR_STUB_CAMPAIGNS=off` answers
+// as an API with Campaigns switched off. With `AR_STUB_OPS_TOKEN`, `/v1/ops/prove…` are the operator's switches.
 // Channel URLs, signing secrets and confirmation tokens are never logged; URLs and secrets never returned after
 // creation. The server is not used by any test.
 //
 //   PORT=39201 npx tsx apps/console/scripts/stub-api.mjs   (tsx: the audit log reads the TypeScript protocol)
 //   (add AR_STUB_OPS_TOKEN=<32+ characters> to open the operator dashboard at /ops)
+//   (add AR_STUB_CAMPAIGNS=off to see the Console against an API with Campaigns switched off)
 //   AR_API_URL=http://127.0.0.1:39201 PORT=39200 npm run dev -w @antireverse/console
 //
 // `POST /__stub/outage?ms=6000` simulates an API restart. It never logs a key.
@@ -87,6 +92,7 @@ import http from "node:http";
 import { createAlertStore } from "./stub-alerts.mjs";
 import { createAssessmentStore } from "./stub-assessments.mjs";
 import { auditOf, createAuditStore, promotedRules } from "./stub-audit.mjs";
+import { createCampaignStore, createProveOperator, createProveSwitch } from "./stub-campaigns.mjs";
 import { createDataStore } from "./stub-data.mjs";
 import { createOpsStore } from "./stub-ops.mjs";
 import { createProveStore } from "./stub-prove.mjs";
@@ -130,6 +136,16 @@ const simulations = new Map();
 const SIMULATIONS_PER_MINUTE = 6;
 /** @type {Map<string, ReturnType<typeof createProveStore>>} Organization id → its Prove state (slice 14) */
 const proveStores = new Map();
+/** Pentest Campaigns (slice 15a): the operator's switches, each Organization's Campaigns, the operator's routes. */
+const proveSwitch = createProveSwitch({ enabled: process.env.AR_STUB_CAMPAIGNS !== "off" });
+/** @type {Map<string, ReturnType<typeof createCampaignStore>>} Organization id → its Campaigns */
+const campaignStores = new Map();
+const proveOperator = createProveOperator({
+  token: process.env.AR_STUB_OPS_TOKEN || undefined,
+  control: proveSwitch,
+  stores: () => campaignStores,
+  isOrganization: (id) => [...organizations.values()].some((organization) => organization.id === id),
+});
 /** Reverse Assessments of every Organization (slice 12a): stub-assessments.mjs. */
 const assessments = createAssessmentStore();
 /** When each set-up step of each App Environment was first done (slice 16): stub-setup.mjs. */
@@ -1415,6 +1431,18 @@ const server = http.createServer(async (req, res) => {
     adminKeyIds.set(adminKey.key, newId("key"));
     apps.set(organization.id, []);
     proveStores.set(organization.id, createProveStore({ keyId: adminKeyIds.get(adminKey.key) }));
+    campaignStores.set(
+      organization.id,
+      createCampaignStore({
+        organizationId: organization.id,
+        keyId: adminKeyIds.get(adminKey.key),
+        prove: proveStores.get(organization.id),
+        control: proveSwitch,
+        // Each entry goes into the Organization's audit chain, under the actor that made it.
+        record: (entry) => audits.record(organization.id, { keyId: adminKeyIds.get(adminKey.key), ...entry }),
+        seed: true,
+      }),
+    );
     alerts.seed(organization.id);
     audits.record(organization.id, {
       keyId: adminKeyIds.get(adminKey.key),
@@ -1434,6 +1462,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && path === "/v1/alert-recipients/confirm")
     return send(res, alerts.confirm(await readBody(req)));
 
+  // The operator's switches of Campaigns (slice 15a): the operator token only, never an admin key.
+  if (path.startsWith("/v1/ops/prove")) {
+    const body = req.method === "POST" ? await readBody(req) : undefined;
+    const answer = proveOperator.handle(req.method, path, req.headers.authorization, body);
+    if (answer) return sendData(res, answer);
+  }
   // Operator SLOs (slice 18d): the operator token only, never an admin key.
   const operator = ops.handle(req.method, path, req.headers.authorization);
   if (operator) return sendData(res, operator);
@@ -1489,6 +1523,12 @@ const server = http.createServer(async (req, res) => {
   if (path.startsWith("/v1/audit")) {
     const answer = audits.handle(organization.id, req.method, path, url.searchParams);
     if (answer) return sendAudit(res, answer);
+  }
+  // Pentest Campaigns (slice 15a). The store records its own audit entries (admin key, system and operator).
+  if (path.startsWith("/v1/campaigns")) {
+    const body = req.method === "POST" && path === "/v1/campaigns" ? await readBody(req) : undefined;
+    const answer = campaignStores.get(organization.id)?.handle(req.method, path, body, reason);
+    if (answer) return sendData(res, answer);
   }
   if (req.method === "POST" && path === "/__stub/retention-run") {
     const run = {

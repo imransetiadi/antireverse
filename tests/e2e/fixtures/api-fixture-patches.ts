@@ -10,6 +10,12 @@
 // lookup (and any name not in the file) answers ENOTFOUND, so the file method fails as not_reachable and the e2e
 // API never asks real DNS. The fetcher stays the default guarded fetcher, without its test-only option.
 //
+// Pentest Campaigns (slice 15a): they are on for this API (AR_PROVE_CAMPAIGNS=1 in playwright.config.ts), and no host
+// ever resolves, so every Campaign is refused at its start checks (`target_not_reachable`) and none sends a request.
+// A host whose name starts with `slow-` takes 30 s to not resolve: a Campaign against it stays queued in its start
+// checks until the runner's own 5 s start deadline, long enough for the browser journey to stop it. This delays an
+// answer and nothing else: no address is ever returned, and the Campaign transport keeps its production settings.
+//
 // Email (slice 06b): when E2E_FAKE_MAIL_FILE is set, this process starts the local SMTP server of the API tests
 // (apps/api/test/fake-smtp.ts, STARTTLS, its own test CA) on a free port, gives the API SMTP settings for it through
 // the real AR_SMTP_* reader, and writes every mail it receives to that JSON file ([{ from, to, data, overTls }]),
@@ -39,6 +45,9 @@ const logger = {
   warn: (line: string) => console.warn(line),
 };
 
+/** How long a `slow-…` host takes to not resolve: longer than the Campaign runner's start deadline. */
+const SLOW_HOST_MS = 30_000;
+
 const notFound = (name: string) => Object.assign(new Error(`${name}: not found`), { code: "ENOTFOUND" });
 
 function fileResolver(file: string): Resolver {
@@ -55,6 +64,7 @@ function fileResolver(file: string): Resolver {
       return answer;
     },
     async addresses(host) {
+      if (host.startsWith("slow-")) await new Promise((resolve) => setTimeout(resolve, SLOW_HOST_MS).unref());
       throw notFound(host);
     },
   };
