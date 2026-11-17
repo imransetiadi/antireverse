@@ -1628,7 +1628,18 @@ export const en = {
     "The Rules of Engagement were replaced by a newer version after this Campaign was created.",
   "campaign.end.request_budget": "The budget of {requests} requests was used up.",
   "campaign.end.time_budget": "The time budget of {minutes} minutes was used up.",
-  "campaign.end.byte_budget": "The budget of response bytes was used up.",
+  "campaign.end.not_in_catalog":
+    "The engine asked for a request that is not one of its declared probes. The Campaign was ended at once.",
+  "campaign.end.malformed_probe":
+    "The engine asked for a request that is not one of its declared probes (it was malformed). The Campaign was ended at once.",
+  "campaign.end.method_not_allowed":
+    "The engine asked for a request that is not one of its declared probes (another method than GET or HEAD). The Campaign was ended at once.",
+  "campaign.end.path_not_canonical":
+    "The engine asked for a request that is not one of its declared probes (its path was not canonical). The Campaign was ended at once.",
+  "campaign.end.query_not_canonical":
+    "The engine asked for a request that is not one of its declared probes (its query was not canonical). The Campaign was ended at once.",
+  "campaign.end.byte_budget":
+    "The budget of response bytes was used up, or one response sent more than a single request may read.",
   "campaign.end.verification_path_excluded":
     "The Rules of Engagement exclude the path of the ownership file, which every Campaign reads at its start. No request was sent.",
   "campaign.end.rules_too_old": "The Rules of Engagement were signed more than {days} days ago.",
@@ -1650,6 +1661,7 @@ export const en = {
   "campaign.refusal.method_not_allowed": "Method not allowed",
   "campaign.refusal.path_not_canonical": "Path not canonical",
   "campaign.refusal.query_not_canonical": "Query not canonical",
+  "campaign.refusal.not_in_catalog": "Not one of the engine's declared probes",
   "campaign.refusal.target_unknown": "Target unknown",
   "campaign.refusal.target_not_verified": "Target not verified",
   "campaign.refusal.no_rules_of_engagement": "No Rules of Engagement",
@@ -1668,6 +1680,7 @@ export const en = {
   "campaign.failure.tls_failed": "TLS failed",
   "campaign.failure.aborted": "Cut off by a stop",
   "campaign.failure.invalid_response": "Invalid response",
+  "campaign.failure.read_limit": "Read limit passed",
   "campaign.effect":
     "At most {requests} GET or HEAD requests, {rate} per second, for at most {minutes} minutes. No request bodies, cookies or credentials. Redirects are never followed.",
   "campaign.back": "All Campaigns",
@@ -1719,16 +1732,15 @@ export const en = {
   "campaign.finding.seen": "First seen {first} UTC, last seen {last} UTC",
   "campaign.evidence.title": "Evidence",
   "campaign.evidence.note":
-    "Redacted before it was stored: keys, tokens, email addresses, card numbers and cookie values are replaced.",
+    "Only the text around what the check matched is kept, redacted before it was stored: keys, tokens, email addresses, card numbers and cookie values are replaced. Nothing else of a response is stored.",
   "campaign.evidence.request": "Request",
   "campaign.evidence.status": "Response status",
   "campaign.evidence.headers": "Response headers",
   "campaign.evidence.headers.none": "None kept",
-  "campaign.evidence.excerpt": "Response excerpt",
-  "campaign.evidence.excerpt.label": "Response excerpt of check {id}, redacted",
-  "campaign.evidence.excerpt.none": "The response had no body.",
+  "campaign.evidence.excerpt": "Matched text, at most 200 characters",
+  "campaign.evidence.excerpt.label": "Matched text of check {id}, redacted",
+  "campaign.evidence.excerpt.none": "This check keeps no text of the response.",
   "campaign.evidence.truncated": "Only the first part of the response was read.",
-  "campaign.evidence.hash": "SHA-256 of the bytes read",
   "campaign.evidence.location": "Redirect",
   "campaign.evidence.location.same-host": "To the same host. It was not followed.",
   "campaign.evidence.location.other-host": "To another host. It was not followed.",
@@ -1752,6 +1764,9 @@ export const en = {
   "campaign.requests.noResponse": "No response: {failure}",
   "campaign.requests.reason": "Reason: {reason}",
   "campaign.requests.unknown": "Not stated",
+  "campaign.requests.other-method": "Another method",
+  "campaign.requests.not-kept": "{method}. Not kept: {chars} characters asked for",
+  "campaign.requests.not-kept.one": "{method}. Not kept: {chars} character asked for",
   "campaign.report.title": "Report",
   "campaign.report.lead":
     "The report holds this Campaign, its checks, its Findings with redacted evidence, and its limits, as JSON.",

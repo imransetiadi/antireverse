@@ -257,7 +257,7 @@ describe("review 15a: the runner", () => {
         title: "Admin data",
         severity: "high",
         seq,
-        at: 0,
+        window: "",
       };
       await options.onFinding(finding);
       options.onCheck({ id: "RW-03", result: "reported" });

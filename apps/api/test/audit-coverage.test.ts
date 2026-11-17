@@ -173,6 +173,7 @@ describe("audit coverage", () => {
         wake() {},
         abort: async () => {},
         isActive: () => false,
+        cut() {},
         operatorStop: async () => 0,
         activeCount: async () => 0,
       },

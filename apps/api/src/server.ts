@@ -1,7 +1,7 @@
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
-import { CAMPAIGNS_VARIABLE } from "@antireverse/protocol";
+import { CAMPAIGNS_VARIABLE, type CampaignCatalogProbe } from "@antireverse/protocol";
 import { serve } from "@hono/node-server";
 import { type AppDeps, createApp } from "./app.ts";
 import type { Assessor } from "./assess/assessor.ts";
@@ -132,7 +132,13 @@ export interface StartApiOptions {
    * `1`; otherwise none can be created or started. `testing` and `engine` are for tests only: no environment variable
    * and no request field sets them (a local TLS target with a test CA; a scripted engine in place of the worker).
    */
-  campaigns?: { enabled?: boolean; testing?: CampaignTesting; engine?: CampaignEngineRunner };
+  campaigns?: {
+    enabled?: boolean;
+    testing?: CampaignTesting;
+    engine?: CampaignEngineRunner;
+    /** With a scripted `engine` only (tests): the probes that script may send. Default: the stand-in's catalog. */
+    probes?: readonly CampaignCatalogProbe[];
+  };
 }
 
 export interface RunningApi extends Listening {
@@ -289,6 +295,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     now: options.now,
     logger,
     engine: options.campaigns?.engine,
+    probes: options.campaigns?.probes,
     testing: options.campaigns?.testing,
   });
   deps.campaigns = campaigns;

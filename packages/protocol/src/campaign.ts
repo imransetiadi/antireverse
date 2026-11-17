@@ -43,8 +43,11 @@ export const CAMPAIGN_LIMITS = deepFreeze({
   roeMaxAgeDays: 90,
   /** Rows of the request log kept per Campaign. */
   storedRequestsMax: 200,
-  /** Bytes of a Finding's evidence excerpt. */
-  excerptBytesMax: 2048,
+  /**
+   * Characters of a Finding's evidence window: the short piece of a response around what a check matched. Nothing
+   * else of a response body is kept anywhere (D-107).
+   */
+  evidenceWindowMax: 200,
   /** Bytes of one response's headers read at most; a response with more is a failed request. They count as read. */
   responseHeaderBytesMax: 16_384,
   /** Characters of a request target (`path?query`, after encoding) at most. */
@@ -57,6 +60,10 @@ export const CAMPAIGN_LIMITS = deepFreeze({
   queryNameMax: 64,
   /** Characters of a query parameter's value. */
   queryValueMax: 512,
+  /** Probes an engine's catalog may declare. */
+  catalogProbesMax: 64,
+  /** Characters a refused probe's row says it asked for, at most (the count is cut there, not the text: none is kept). */
+  askedCharsMax: 1_000_000,
   /** Findings kept per Campaign. */
   findingsMax: 50,
   /** Characters of a Finding's title. */
@@ -121,6 +128,8 @@ export const CAMPAIGN_REFUSAL_REASONS = [
   "method_not_allowed",
   "path_not_canonical",
   "query_not_canonical",
+  /** The probe is well-formed and is not one the engine's catalog declares (D-110). */
+  "not_in_catalog",
   ...AUTHORIZE_REASONS,
   "rules_replaced",
   "request_budget",
@@ -131,12 +140,21 @@ export const CAMPAIGN_REFUSAL_REASONS = [
 ] as const;
 export type CampaignRefusalReason = (typeof CAMPAIGN_REFUSAL_REASONS)[number];
 
-/** The refusals that end the Campaign at once: they hold for every further probe, not for this one only. */
+/**
+ * The refusals that end the Campaign at once: they hold for every further probe, not for this one only — or, for the
+ * five that say a probe is not one of the engine's declared catalog (malformed, another method, a path or query that
+ * is not canonical, not in the catalog), they show an engine that is not doing what was reviewed (D-110).
+ */
 export const FATAL_CAMPAIGN_REFUSALS = [
   "operator_kill",
   "organization_suspended",
   "owner_stop",
   "deletion_pending",
+  "malformed_probe",
+  "method_not_allowed",
+  "path_not_canonical",
+  "query_not_canonical",
+  "not_in_catalog",
   "target_unknown",
   "target_not_verified",
   "no_rules_of_engagement",
@@ -273,13 +291,115 @@ export function campaignRequestTarget(probe: CampaignProbe): string | null {
   return target.length > CAMPAIGN_LIMITS.requestTargetMax ? null : target;
 }
 
+// --- The probe catalog (D-110) ---------------------------------------------------------------------------
+
+const TOKEN_PREFIX = /^[A-Za-z0-9._~-]{0,64}$/;
+const TOKEN_HEX_MIN = 8;
+const TOKEN_HEX_MAX = 64;
+
+/**
+ * The shape of one query value an engine may send: exactly one text, or a token — a fixed prefix followed by exactly
+ * `hex` lowercase hexadecimal characters (a marker made per Campaign). There is no free text.
+ */
+export const CampaignQueryShapeSchema = z.union([
+  z.strictObject({ exact: z.string().max(CAMPAIGN_LIMITS.queryValueMax) }),
+  z.strictObject({
+    token: z.strictObject({
+      prefix: z.string().regex(TOKEN_PREFIX),
+      hex: z.int().min(TOKEN_HEX_MIN).max(TOKEN_HEX_MAX),
+    }),
+  }),
+]);
+export type CampaignQueryShape = z.infer<typeof CampaignQueryShapeSchema>;
+
+/** One probe an engine declares: the exact method and path, and the shape of each query value it may carry. */
+export const CampaignCatalogProbeSchema = z.strictObject({
+  method: z.enum(CAMPAIGN_METHODS),
+  path: z.string().max(CAMPAIGN_LIMITS.pathMax),
+  query: z.record(z.string(), CampaignQueryShapeSchema).optional(),
+});
+export type CampaignCatalogProbe = z.infer<typeof CampaignCatalogProbeSchema>;
+
+/** The longest value a shape admits, for the bound of the request target. */
+function longestOf(shape: CampaignQueryShape): string {
+  return "exact" in shape ? shape.exact : `${shape.token.prefix}${"f".repeat(shape.token.hex)}`;
+}
+
+/**
+ * An engine's probe catalog, validated and deeply frozen (a copy: what was passed in is not kept). At most 64
+ * probes; each path canonical; each query at most 8 names with a shape per value; each request target within 1,024
+ * characters; no probe twice. Throws a TypeError otherwise. It is read from the engine's definition by the host — an
+ * engine that runs cannot add to it.
+ */
+export function campaignCatalog(probes: unknown): readonly CampaignCatalogProbe[] {
+  const fail = (why: string): never => {
+    throw new TypeError(`A Campaign probe catalog ${why}.`);
+  };
+  if (!Array.isArray(probes) || probes.length > CAMPAIGN_LIMITS.catalogProbesMax) {
+    return fail(`is a list of at most ${CAMPAIGN_LIMITS.catalogProbesMax} probes`);
+  }
+  const seen = new Set<string>();
+  const catalog: CampaignCatalogProbe[] = [];
+  for (const value of probes) {
+    const parsed = CampaignCatalogProbeSchema.safeParse(value);
+    if (!parsed.success) return fail("holds a probe that is not { method, path, query? } with a shape per value");
+    const probe = parsed.data;
+    if (canonicalCampaignPath(probe.path) !== probe.path) return fail("holds a path that is not canonical");
+    const longest: Record<string, string> = {};
+    for (const [name, shape] of Object.entries(probe.query ?? {})) longest[name] = longestOf(shape);
+    const query = probe.query === undefined ? "" : canonicalCampaignQuery(longest);
+    if (query === null) return fail("holds a query that is not canonical");
+    if (probe.path.length + 1 + query.length > CAMPAIGN_LIMITS.requestTargetMax) {
+      return fail("holds a probe whose request target is longer than 1,024 characters");
+    }
+    const names = Object.keys(probe.query ?? {}).sort();
+    const key = `${probe.method} ${probe.path} ${probe.query === undefined ? "-" : names.join("&")}`;
+    if (seen.has(key)) return fail("holds a probe twice");
+    seen.add(key);
+    catalog.push(probe);
+  }
+  return deepFreeze(catalog);
+}
+
+function matchesShape(shape: CampaignQueryShape, value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if ("exact" in shape) return value === shape.exact;
+  const { prefix, hex } = shape.token;
+  if (value.length !== prefix.length + hex || !value.startsWith(prefix)) return false;
+  return /^[0-9a-f]+$/.test(value.slice(prefix.length));
+}
+
+/**
+ * Whether `probe` is exactly one of the catalog's: the same method and path, the same query names (none more, none
+ * fewer), each value of its declared shape, and no other member. Anything else — whatever it is — is not.
+ */
+export function inCampaignCatalog(catalog: readonly CampaignCatalogProbe[], probe: unknown): boolean {
+  if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return false;
+  const asked = probe as Record<string, unknown>;
+  if (Object.keys(asked).some((key) => key !== "method" && key !== "path" && key !== "query")) return false;
+  const query = asked.query;
+  if (query !== undefined && (typeof query !== "object" || query === null || Array.isArray(query))) return false;
+  const values = query as Record<string, unknown> | undefined;
+  return catalog.some((entry) => {
+    if (entry.method !== asked.method || entry.path !== asked.path) return false;
+    if (entry.query === undefined || values === undefined) return entry.query === undefined && values === undefined;
+    const names = Object.keys(entry.query);
+    if (Object.keys(values).length !== names.length) return false;
+    return names.every(
+      (name) => Object.hasOwn(values, name) && matchesShape(entry.query?.[name] as CampaignQueryShape, values[name]),
+    );
+  });
+}
+
 /** Where a redirect points, which is all that is kept of a Location header: it is never followed. */
 export const CAMPAIGN_LOCATIONS = ["same-host", "other-host"] as const;
 export type CampaignLocation = (typeof CAMPAIGN_LOCATIONS)[number];
 
 /**
  * Why a sent request has no response. `aborted`: a stop cut it off in flight. `invalid_response`: the target answered
- * with a status outside 100–599 or with more than 16 KB of headers; nothing of it is handed on.
+ * with a status outside 100–599 or with more than 16 KB of headers; nothing of it is handed on. `read_limit`: the
+ * connection read more than one request may (headers, body and a fixed allowance for TLS and framing) and was
+ * destroyed; the Campaign ends on its byte budget.
  */
 export const CAMPAIGN_SEND_FAILURES = [
   "timeout",
@@ -287,13 +407,15 @@ export const CAMPAIGN_SEND_FAILURES = [
   "tls_failed",
   "aborted",
   "invalid_response",
+  "read_limit",
 ] as const;
 export type CampaignSendFailure = (typeof CAMPAIGN_SEND_FAILURES)[number];
 
 /**
  * What the gate hands an engine for a probe. A response is redacted before the engine sees it: `headers` is an
- * allowlist with cookie values removed, `body` at most 64 KB of text with keys, tokens, emails, card-like numbers and
- * high-entropy strings replaced.
+ * allowlist with cookie values removed (of a Content-Security-Policy only `[present]`), `body` at most 64 KB of text
+ * with keys, tokens, emails, card-like numbers and high-entropy strings replaced. The body is the engine's to read
+ * while the Campaign runs; it is stored nowhere (a Finding keeps a window of at most 200 characters of it).
  */
 export type CampaignExchange =
   | {
@@ -306,8 +428,10 @@ export type CampaignExchange =
       truncated: boolean;
       location: CampaignLocation | null;
       /**
-       * The body was not text (a NUL in it, or UTF-16) and was withheld whole: `body` is a fixed marker. A check that
-       * needed the body cannot tell: it is inconclusive, never clean.
+       * The body could not be read as UTF-8 text and was withheld whole: `body` is a fixed marker. That is a body
+       * with a `content-encoding` other than `identity`, a declared charset other than UTF-8 or US-ASCII, bytes that
+       * are not valid UTF-8, a NUL, or a UTF-16 byte order mark. A check that needed the body cannot tell: it is
+       * inconclusive, never clean.
        */
       withheld: boolean;
     }
@@ -393,8 +517,10 @@ export const CampaignSchema = z.object({
   /** Null until the Campaign ended. */
   checks: CampaignChecksSchema.nullable(),
   /**
-   * Findings the engine reported that could not be stored. Any makes the Campaign end as failed (`engine_error`): a
-   * report never silently lacks a Finding.
+   * Findings the engine reported that were not stored, whatever the reason: the runner rejected the report (not a
+   * known check, not the gate's own record of a sent request, an evidence window that is too long or not in that
+   * response), the 50 Findings of a Campaign were full, or the write failed. Any makes a Campaign that ran all its
+   * checks end as failed (`engine_error`): a report never silently lacks a Finding.
    */
   findings_dropped: count(),
   /** The owner's stop request, if any: when, by which admin key, and why. */
@@ -427,10 +553,21 @@ export type ListCampaignsResponse = z.infer<typeof ListCampaignsResponseSchema>;
 export const CampaignRequestSchema = z.object({
   seq: z.int().min(1).max(CAMPAIGN_LIMITS.storedRequestsMax),
   at: isoDateTime(),
-  /** Null when the probe was too malformed to have one. */
+  /**
+   * `GET` or `HEAD` for a sent request. For a refused probe: `GET` or `HEAD` if it asked for exactly that, the fixed
+   * label `OTHER` for any other text, null when it named none. Never the engine's own word.
+   */
   method: z.string().max(16).nullable(),
-  /** The request target as sent (`path` or `path?query`); for a refused probe, what it asked for, shortened. */
+  /**
+   * The request target as sent (`path` or `path?query`): always a probe of the engine's catalog, or the ownership
+   * file. Null for a refused probe: nothing an engine asked for is kept as text (D-110), only how much it was.
+   */
   target: z.string().max(1024).nullable(),
+  /**
+   * For a refused probe: how many characters its path and query held (counted up to 1,000,000). Null for a request
+   * that was sent.
+   */
+  asked_chars: z.int().min(0).max(CAMPAIGN_LIMITS.askedCharsMax).nullable(),
   /**
    * `sending`: the row is written before the request goes out, so a request that reached the target is always in the
    * log; it becomes `sent` with the result. A row still `sending` after the Campaign ended was sent, and its result
@@ -445,7 +582,10 @@ export const CampaignRequestSchema = z.object({
   status: z.int().min(100).max(599).nullable(),
   /** Why a sent request has no response. */
   failure: z.enum(CAMPAIGN_SEND_FAILURES).nullable(),
-  /** Bytes the connection read: the TLS handshake, any 1xx responses, the headers and the body, failed or not. */
+  /**
+   * Bytes the connection read, as counted — never rounded down to a cap: the TLS handshake, any 1xx responses, the
+   * headers, the body and its framing, failed or not.
+   */
   bytes: count(),
   ms: count(),
 });
@@ -463,20 +603,22 @@ export type CampaignSeverity = (typeof CAMPAIGN_SEVERITIES)[number];
 export const CAMPAIGN_FINDING_STATES = ["unverified", "confirmed"] as const;
 export type CampaignFindingState = (typeof CAMPAIGN_FINDING_STATES)[number];
 
-/** What a Finding rests on: the request, and the response as the gate redacted it. Never a whole body. */
+/**
+ * What a Finding rests on: the request, the response's status and allowlisted headers, and a window of at most 200
+ * characters of the redacted body around what the check matched. Nothing else of the body is kept: no longer excerpt
+ * and no hash of it (D-107).
+ */
 export const CampaignEvidenceSchema = z.object({
   method: z.enum(CAMPAIGN_METHODS),
   target: z.string().max(4096),
   status: z.int().min(100).max(599),
   /** An allowlist of response headers; a cookie's value is never among them. */
   headers: z.record(z.string(), z.string()),
-  /** At most 2 KB of the redacted body. */
-  excerpt: z.string(),
   /**
-   * SHA-256 (hex) of the body as kept: the bytes read (at most 64 KB), decoded and redacted. Never of the raw body,
-   * so that the hash cannot be used to test guesses of what was redacted.
+   * The evidence window: at most `evidenceWindowMax` (200) characters of the redacted body, around what the check
+   * matched (a marker, a reflected probe value, a stack-trace line). Empty for a check that reads no body.
    */
-  body_sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  excerpt: z.string().max(CAMPAIGN_LIMITS.evidenceWindowMax),
   truncated: z.boolean(),
   location: z.enum(CAMPAIGN_LOCATIONS).nullable(),
 });
@@ -518,7 +660,7 @@ export const CampaignReportSchema = z.object({
   summary: z.string().nullable(),
   checks: CampaignChecksSchema.nullable(),
   findings: z.array(CampaignFindingSchema).max(CAMPAIGN_LIMITS.findingsMax),
-  /** Findings reported but not stored (see `CampaignSchema`). */
+  /** Findings reported but not stored, rejected ones included (see `CampaignSchema`). */
   findings_dropped: count(),
   limits: z.array(z.string()),
 });

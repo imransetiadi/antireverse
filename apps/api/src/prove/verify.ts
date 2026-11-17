@@ -2,6 +2,7 @@ import { Resolver as DnsResolver } from "node:dns/promises";
 import type { ClientRequest, IncomingHttpHeaders } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP, connect as netConnect, type Socket } from "node:net";
+import { Duplex } from "node:stream";
 import { type TLSSocket, connect as tlsConnect } from "node:tls";
 import {
   challengeRecordName,
@@ -308,6 +309,8 @@ export async function fetchVerificationFile(
   });
   if (!response.ok) {
     if (response.reason === "address_mismatch") return { ok: false, reason: "connect_failed" };
+    // The connection read more than a response may hold: the file is not one this check accepts.
+    if (response.reason === "read_limit") return { ok: false, reason: "too_large" };
     return { ok: false, reason: response.reason === "invalid_response" ? "status" : response.reason };
   }
   if (response.status >= 300 && response.status < 400) return { ok: false, reason: "redirect" };
@@ -352,7 +355,11 @@ export type PinnedResponse =
     }
   | {
       ok: false;
-      reason: "timeout" | "connect_failed" | "tls_failed" | "address_mismatch" | "invalid_response";
+      /**
+       * `read_limit`: the connection read more than one request may (`requestReadMax`) and was destroyed, whatever it
+       * was sending — a flood of 1xx responses, chunk framing that carries no body, tiny TLS records.
+       */
+      reason: "timeout" | "connect_failed" | "tls_failed" | "address_mismatch" | "invalid_response" | "read_limit";
       /** Bytes the connection read before it failed (0 or absent when it was never made). */
       bytesRead?: number;
     };
@@ -365,12 +372,33 @@ export interface PinnedRequestInternals {
 
 /** Bytes of response headers read at most; a response with more fails (`invalid_response`). */
 export const RESPONSE_HEADER_BYTES_MAX = 16_384;
-/**
- * Bytes a connection may read beyond the header and body caps: the TLS handshake and the records' framing. A
- * connection that reads more than the three together is dropped (`invalid_response`), whatever it was sending — a
- * flood of 1xx responses, for instance.
- */
+/** Bytes kept for the TLS handshake of a connection (the certificate chain, mostly). */
 export const TLS_OVERHEAD_BYTES_MAX = 16_384;
+/**
+ * Bytes kept for framing: TLS record headers and tags, and chunked transfer coding (chunk sizes, extensions, line
+ * ends). Fixed, whatever the body cap: as much again as the largest body a Campaign reads (64 KB). A body streamed in
+ * 100-byte writes carries about 24 KB of framing for 64 KB of body and passes; one-byte chunks (five bytes of framing
+ * per byte of body) and chunk extensions do not.
+ */
+export const FRAMING_OVERHEAD_BYTES_MAX = 65_536;
+/**
+ * Bytes one connection can have read beyond its cap when it is cut: one TCP read. The cap is counted on each raw
+ * read as it arrives, before TLS sees it; the read that crosses the cap is not handed on, and the socket is destroyed
+ * in the same turn. Node reads at most 64 KB from a socket at a time, so `bytesRead` of a `read_limit` answer is at
+ * most `requestReadMax(…) + READ_OVERSHOOT_BYTES_MAX`. (Measured with `openssl s_server -tls1_3 -www -num_tickets
+ * 20000`, a flood of TLS records without application data: 79 to 262 KB over the cap when the cap was only checked
+ * on decrypted data and a 10 ms timer; at most one read over it since.)
+ */
+export const READ_OVERSHOOT_BYTES_MAX = 65_536;
+/**
+ * Bytes the socket of one request may read in all, from the first byte of the TLS handshake to the last of the body:
+ * the header cap, the body cap and the two fixed allowances. Checked on every raw TCP read, whatever the bytes are
+ * — TLS records that carry nothing included — before and after the response's headers; a connection over it is
+ * destroyed (`read_limit`), at most one read (`READ_OVERSHOOT_BYTES_MAX`) late.
+ */
+export function requestReadMax(bodyBytesMax: number): number {
+  return RESPONSE_HEADER_BYTES_MAX + bodyBytesMax + TLS_OVERHEAD_BYTES_MAX + FRAMING_OVERHEAD_BYTES_MAX;
+}
 /** Characters of a request target at most. */
 export const REQUEST_TARGET_MAX = 1024;
 
@@ -384,14 +412,17 @@ const REQUEST_TARGET = /^\/(?!\/)[\x21-\x7e]*$/;
  * - The address must be public (`isPublicAddress`; loopback too with the test-only option): checked here as well,
  *   whoever resolved it.
  * - A plain TCP connection is opened to `address` on port 443 — by this function itself, with no agent, so no proxy
- *   setting of the environment applies. Its remote address must be the pinned one, or it is destroyed
+ *   setting of the environment applies. TLS does not take that socket itself: it runs over a pass-through that
+ *   counts every raw read against the cap first. Its remote address must be the pinned one, or it is destroyed
  *   (`address_mismatch`). Only then does TLS start on that socket, with SNI set to `host`: no ClientHello and no byte
  *   of a request can reach another address. The certificate is validated for the name (TLS 1.2 or later), whatever
  *   `NODE_TLS_REJECT_UNAUTHORIZED` says.
  * - GET or HEAD only, never a body; no cookie, no credential, no keep-alive; `accept-encoding: identity`.
  * - A redirect is never followed: a 3xx is answered like any other status. A status outside 100–599, or more than
  *   16 KB of response headers, is `invalid_response`.
- * - At most `bodyBytesMax` bytes are read; then the socket is destroyed.
+ * - At most `bodyBytesMax` bytes of body are read; then the socket is destroyed.
+ * - The socket reads at most `requestReadMax(bodyBytesMax)` bytes in all, whatever they are (TLS, 1xx responses,
+ *   headers, chunk framing, body): beyond it the socket is destroyed and the answer is `read_limit`.
  *
  * Throws a TypeError (before any connection) for another method, an address that is not public, a target that does
  * not start with one `/` or is longer than 1,024 characters, or a header outside the three it may set. Never rejects
@@ -427,12 +458,10 @@ export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestIn
     let tcp: Socket | undefined;
     let secure: TLSSocket | undefined;
     let req: ClientRequest | undefined;
-    let watch: ReturnType<typeof setInterval> | undefined;
     type Outcome = PinnedResponse extends infer R ? (R extends unknown ? Omit<R, "bytesRead"> : never) : never;
     const finish = (outcome: Outcome): void => {
       if (settled) return;
       settled = true;
-      clearInterval(watch);
       signal.removeEventListener("abort", onAbort);
       // What the connection read, whatever came of it: it counts toward the Campaign's bytes.
       resolve({ ...outcome, bytesRead: tcp?.bytesRead ?? 0 } as PinnedResponse);
@@ -445,13 +474,13 @@ export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestIn
       resolve({ ok: false, reason: "timeout", bytesRead: 0 });
       return;
     }
-    // Before its response has come, no connection may read more than a response can hold: a flood of 1xx responses
-    // is cut here. Once the response is there, the body cap below ends the reading.
-    const readMax = RESPONSE_HEADER_BYTES_MAX + bodyBytesMax + TLS_OVERHEAD_BYTES_MAX;
-    let responded = false;
+    // No connection may read more than a response can hold, before its headers or after them: a flood of 1xx
+    // responses is cut here, chunk framing that never becomes body (the body cap below counts decoded bytes only),
+    // and TLS records that carry nothing. Checked on every raw read of the TCP socket, before TLS is given it.
+    const readMax = requestReadMax(bodyBytesMax);
     const overRead = (): boolean => {
-      if (responded || (tcp?.bytesRead ?? 0) <= readMax) return false;
-      finish({ ok: false, reason: "invalid_response" });
+      if (settled || (tcp?.bytesRead ?? 0) <= readMax) return false;
+      finish({ ok: false, reason: "read_limit" });
       return true;
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -471,18 +500,39 @@ export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestIn
       return failed(error, "connect");
     }
     const socket = tcp;
-    watch = setInterval(overRead, 10);
-    watch.unref?.();
     socket.once("error", (error) => failed(error, "connect"));
     socket.once("connect", () => {
       // 2. The pin, asserted on the connected socket before anything is written to it.
       const remoteAddress = socket.remoteAddress ?? "";
       if (!sameAddress(remoteAddress, address)) return finish({ ok: false, reason: "address_mismatch" });
 
-      // 3. TLS on that socket, for the name.
+      // 3. TLS for the name, over that socket and no other — through a pass-through that counts each raw read
+      // against the cap before TLS sees it. The read that crosses the cap is not handed on: the connection ends.
+      const raw = new Duplex({
+        read() {
+          socket.resume();
+        },
+        write(chunk: Buffer, _encoding, callback) {
+          socket.write(chunk, callback);
+        },
+        final(callback) {
+          socket.end();
+          callback();
+        },
+        destroy(error, callback) {
+          socket.destroy();
+          callback(error);
+        },
+      });
+      socket.on("data", (chunk: Buffer) => {
+        if (overRead()) return;
+        if (!raw.push(chunk)) socket.pause();
+      });
+      socket.once("end", () => raw.push(null));
+      socket.once("close", () => raw.destroy());
       let handshake = true;
       const tlsSocket = tlsConnect({
-        socket,
+        socket: raw,
         servername: host,
         rejectUnauthorized: true,
         minVersion: "TLSv1.2",
@@ -510,7 +560,7 @@ export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestIn
         request.on("upgrade", () => finish({ ok: false, reason: "invalid_response" }));
         request.on("close", () => finish({ ok: false, reason: "invalid_response" }));
         request.on("response", (response) => {
-          responded = true;
+          if (overRead()) return;
           const status = response.statusCode ?? 0;
           if (!Number.isInteger(status) || status < 100 || status > 599) {
             return finish({ ok: false, reason: "invalid_response" });
@@ -534,6 +584,7 @@ export function pinnedRequest(options: PinnedRequest, internals: PinnedRequestIn
           if (method === "HEAD") return done(false);
           if (bodyBytesMax === 0) return done(Number.isFinite(announced) ? announced > 0 : true);
           response.on("data", (chunk: Buffer) => {
+            if (overRead()) return;
             const room = bodyBytesMax - received;
             if (chunk.byteLength > room) {
               if (room > 0) chunks.push(chunk.subarray(0, room));

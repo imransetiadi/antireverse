@@ -12,7 +12,12 @@ export {
   type WorkerAssessInput,
 } from "./assess-worker-host.ts";
 export { Budget, type BudgetEnd, BudgetExhaustedError, resolveTiers } from "./budget.ts";
-export { CAMPAIGN_WORKER_LIMITS, type RunCampaignEngineOptions, runCampaignEngine } from "./campaign/host.ts";
+export {
+  CAMPAIGN_WORKER_LIMITS,
+  campaignWorkerOptions,
+  type RunCampaignEngineOptions,
+  runCampaignEngine,
+} from "./campaign/host.ts";
 export {
   type CampaignEngineModule,
   type EngineCheck,

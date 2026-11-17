@@ -309,7 +309,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Audit verifications and exports and the Organization export take from one budget per Organization.
   const auditReads = createAuditReadLimiter(deps.auditReadsPerMinute);
   app.route("/", auditRoutes({ db: deps.db, signer: auditSigner, now: deps.now, reads: auditReads }));
-  app.route("/", dataControlRoutes({ db: deps.db, signer: auditSigner, reads: auditReads, now: deps.now }));
+  app.route("/", dataControlRoutes({ db: deps.db, signer: auditSigner, reads: auditReads, now: deps.now, campaigns }));
   // Usage reads (slice 17a) take from the same budget.
   app.route("/", usageRoutes({ db: deps.db, reads: auditReads, now: deps.now }));
 

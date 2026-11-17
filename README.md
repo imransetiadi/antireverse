@@ -227,20 +227,24 @@ A Campaign is a scoped test that Airverse runs against a host **you own**, under
 | Requests | At most 60, the ownership check included |
 | Rate | One request per second, one at a time |
 | Time | At most 300 seconds |
-| Response data | 64 KB read per response, about 2 MB in all |
+| Response data | 64 KB of body read per response, about 2 MB in all. One response may make its connection read at most 64 KB of body, 16 KB of headers and 80 KB of TLS and framing overhead; beyond that the connection is cut, at most one network read (64 KB) late |
+| What is asked | Only the probes the engine declares in its catalog: exact method and path, and fixed query values. Any other request the engine asks for is refused and ends the Campaign |
 | Where | HTTPS on port 443, to the one address resolved at the start; redirects are never followed |
 | Running at once | One per Organization and one per server |
 | Created | 5 per Organization and 3 per Target in 24 hours |
 
 Every request carries `User-Agent: Airverse-Campaign/1` and `X-Airverse-Campaign: <id>`, so you can recognise it in your logs.
 
-**Watch and stop.** The Campaign page refreshes while it runs and shows the request log, refusals included. **Stop** is there for as long as the Campaign is queued or running. A stop is final, and no request follows it.
+**Watch and stop.** The Campaign page refreshes while it runs and shows the request log, refusals included. **Stop** is there for as long as the Campaign is queued or running. A stop is final, and no request follows it: the stop, the operator's switch and a suspension are read from the database before every request — the ownership check at the start included — and once more at the moment it is sent, and a Campaign is not started past one that is already recorded. A Campaign that was stopped never ends as completed, even when the stop arrived as its last check finished; what it did until then is still reported. Requesting the Organization's deletion stops its running Campaign the same way.
 
 **Read the result.**
 
 - **Findings** have a severity and redacted evidence. A Finding is *Unverified* until one repeat confirms it.
+- **Evidence is small on purpose.** Of a response, a Finding keeps the status, a short list of headers (of a Content-Security-Policy only that it was sent) and at most 200 characters of the body around what the check matched. Nothing else of a response body is stored: no longer excerpt, no hash, nothing in the request log or the audit log. A Finding's title and severity are the check's own, never text taken from a response.
 - **The report** says how many checks ran, reported a finding, were inconclusive or were skipped. It never says "no vulnerabilities found".
-- **A Campaign ends** as completed, stopped, refused (a start check failed, with the reason), failed or interrupted (the API restarted; it is never resumed).
+- **Inconclusive** means the check got an answer it could not read: a body cut at 64 KB, or one that is not plain UTF-8 text. A body sent with a `Content-Encoding` (gzip, br), with a declared charset other than UTF-8 or US-ASCII, or with bytes that are not valid UTF-8 is not decoded or guessed at; the check is counted as inconclusive, never as "ran, nothing reported".
+- **The request log shows what each connection really read**, in bytes, failed requests included. The number is never rounded down to a limit. A request marked *Read limit passed* means the target sent more than one request may read; that Campaign ends as failed, on its byte budget.
+- **A Campaign ends** as completed, stopped, refused (a start check failed, with the reason), failed or interrupted (the API restarted; it is never resumed). If a Finding was reported and not stored, for any reason, the Campaign ends as failed and the report says how many.
 
 **Operator controls** (`/ops` in the Console, or the API with `Authorization: Bearer $AR_OPS_TOKEN`):
 
@@ -259,7 +263,9 @@ Each takes a JSON body `{ "reason": "…" }`.
 - **There is no VM or egress proxy yet.** The request gate is code inside the API, and requests leave from the API host's own address.
 - **A GET can change state on a careless application.** Exclude such paths in the Rules.
 - **"Staging" and "signed by an Owner" are declarations made with an admin key.** Nothing verifies them.
-- **Evidence is redacted by patterns.** Keys, tokens, passwords, emails, card numbers and cookies are removed where they are recognised; treat evidence as sensitive anyway.
+- **Evidence is redacted by patterns, over a window of at most 200 characters.** Keys, tokens, passwords, emails, card numbers and cookies are removed where they are recognised. The patterns miss many shapes of secret; what protects you is that so little is kept. A secret that stands within those 200 characters of a match, in a shape the patterns do not know, is stored. Treat evidence as sensitive.
+- **A refused request shows no text.** If the engine asks for something that is not one of its declared probes, the request log shows the reason, the method as GET, HEAD or "Another method", and how many characters were asked for. What was asked for is not stored: it is text the engine chose, possibly out of a response.
+- **The engine runs in a worker thread, not a sandbox.** It is started without the API's environment variables, and it can only ask the gate for requests; a real engine needs a real isolation boundary.
 - **The query string is not part of what the Rules authorise;** only the path is.
 
 ## Reverse Assessment

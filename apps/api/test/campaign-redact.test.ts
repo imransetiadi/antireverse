@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { excerptAround, locationOf, redactHeaders, redactText } from "../src/campaign/redact.ts";
+import { evidenceWindow, locationOf, redactHeaders, redactText } from "../src/campaign/redact.ts";
 
 // Slice 15a: what the gate removes from a response before the engine, a Finding or a log can hold it.
 
@@ -153,15 +153,17 @@ describe("locationOf", () => {
   });
 });
 
-describe("excerptAround", () => {
-  it("is at most 2 KB of UTF-8 around the position, whole characters only", () => {
+// Third review (D-107): `excerptAround` — up to 2 KB of a body around a position — is gone. What is kept of a body is
+// the evidence window a check cut around its match: at most 200 characters.
+describe("evidenceWindow", () => {
+  it("is at most 200 characters, whole characters only", () => {
     const body = `${"é".repeat(3000)}MARK${"x".repeat(5000)}`;
-    const excerpt = excerptAround(body, body.indexOf("MARK"));
-    expect(Buffer.byteLength(excerpt, "utf8")).toBeLessThanOrEqual(2048);
-    expect(excerpt).toContain("MARK");
-    expect(excerpt).not.toContain("�");
-    expect(excerptAround("short", 0)).toBe("short");
-    expect(excerptAround("short", 999)).toBe("short");
-    expect(excerptAround("", -5)).toBe("");
+    const at = body.indexOf("MARK");
+    const window = evidenceWindow(body.slice(at - 40, at + 400));
+    expect(window.length).toBe(200);
+    expect(window).toContain("MARK");
+    expect(window).not.toContain("�");
+    expect(evidenceWindow("short")).toBe("short");
+    expect(evidenceWindow("")).toBe("");
   });
 });

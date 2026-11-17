@@ -49,6 +49,11 @@ export const END_REASON_LABEL: Readonly<Record<CampaignEndReason, MessageKey>> =
   organization_suspended: "campaign.end.organization_suspended",
   owner_stop: "campaign.end.owner_stop",
   deletion_pending: "campaign.end.deletion_pending",
+  malformed_probe: "campaign.end.malformed_probe",
+  method_not_allowed: "campaign.end.method_not_allowed",
+  path_not_canonical: "campaign.end.path_not_canonical",
+  query_not_canonical: "campaign.end.query_not_canonical",
+  not_in_catalog: "campaign.end.not_in_catalog",
   target_unknown: "campaign.end.target_unknown",
   target_not_verified: "campaign.end.target_not_verified",
   no_rules_of_engagement: "campaign.end.no_rules_of_engagement",
@@ -94,6 +99,7 @@ export const REFUSAL_LABEL: Readonly<Record<CampaignRefusalReason, MessageKey>> 
   method_not_allowed: "campaign.refusal.method_not_allowed",
   path_not_canonical: "campaign.refusal.path_not_canonical",
   query_not_canonical: "campaign.refusal.query_not_canonical",
+  not_in_catalog: "campaign.refusal.not_in_catalog",
   target_unknown: "campaign.refusal.target_unknown",
   target_not_verified: "campaign.refusal.target_not_verified",
   no_rules_of_engagement: "campaign.refusal.no_rules_of_engagement",
@@ -116,6 +122,7 @@ export const SEND_FAILURE_LABEL: Readonly<Record<CampaignSendFailure, MessageKey
   tls_failed: "campaign.failure.tls_failed",
   aborted: "campaign.failure.aborted",
   invalid_response: "campaign.failure.invalid_response",
+  read_limit: "campaign.failure.read_limit",
 };
 
 export const FINDING_STATE_LABEL: Readonly<Record<CampaignFindingState, MessageKey>> = {

@@ -88,9 +88,7 @@ describe("never destructive", () => {
         for (const secret of SYNTHETIC) expect(kept).not.toContain(secret);
         expect(kept).not.toMatch(/@acme-shop\.io/);
         for (const finding of findings) {
-          expect(Buffer.byteLength(finding.evidence.excerpt, "utf8")).toBeLessThanOrEqual(
-            CAMPAIGN_LIMITS.excerptBytesMax,
-          );
+          expect(finding.evidence.excerpt.length).toBeLessThanOrEqual(CAMPAIGN_LIMITS.evidenceWindowMax);
           expect(finding.evidence.headers["set-cookie"] ?? "").not.toMatch(/SYNTHETIC/);
         }
         if (hostile === "secrets" && intensity === "safe-active") {

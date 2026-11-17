@@ -65,6 +65,7 @@ describe("Campaign words", () => {
       "The Rules of Engagement exclude the path of the ownership file, which every Campaign reads at its start. No request was sent.",
     );
     expect(t(SEND_FAILURE_LABEL.invalid_response)).toBe("Invalid response");
+    expect(t(SEND_FAILURE_LABEL.read_limit)).toBe("Read limit passed");
   });
 
   it("states the effect in the numbers of the protocol's limits", () => {

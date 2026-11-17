@@ -57,6 +57,22 @@ export const MATRICES: readonly Matrix[] = [
       "apps/api/test/campaign-review2-redact.test.ts",
       "apps/api/test/campaign-review2-transport.test.ts",
       "apps/api/test/campaign-review2-runner.test.ts",
+      // The third review's: the socket read cap, unreadable bodies, a kill committed while a Campaign starts, the
+      // evidence window and idempotent redaction, and what the database refuses (migration 0040).
+      "apps/api/test/campaign-review3-transport.test.ts",
+      "apps/api/test/campaign-review3-gate.test.ts",
+      "apps/api/test/campaign-review3-runner.test.ts",
+      "apps/api/test/campaign-review3-redact.test.ts",
+      "apps/api/test/campaign-review3-db.test.ts",
+      // The fourth review's: the probe catalog and text-free refusal rows, the operator's stop while the queue
+      // moves, a stop that is final, the charset of a Content-Type, raw-read counting, and the states the database
+      // lets a Campaign pass through.
+      "apps/api/test/campaign-review4-gate.test.ts",
+      "apps/api/test/campaign-review4-runner.test.ts",
+      "apps/api/test/campaign-review4-routes.test.ts",
+      "apps/api/test/campaign-review4-redact.test.ts",
+      "apps/api/test/campaign-review4-transport.test.ts",
+      "apps/api/test/campaign-review4-db.test.ts",
       "tests/e2e/campaign-scope.http.test.ts",
       "tests/e2e/campaign-never-destructive.http.test.ts",
       "tests/e2e/campaign-review.http.test.ts",

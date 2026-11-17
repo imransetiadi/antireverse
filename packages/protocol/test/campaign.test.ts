@@ -43,7 +43,7 @@ describe("campaign limits", () => {
       createdPerTargetPerDay: 3,
       roeMaxAgeDays: 90,
       storedRequestsMax: 200,
-      excerptBytesMax: 2048,
+      evidenceWindowMax: 200,
       retentionDays: 395,
     });
     expect(Object.isFrozen(CAMPAIGN_LIMITS)).toBe(true);
@@ -199,7 +199,9 @@ describe("statuses and end reasons", () => {
       expect(CAMPAIGN_END_REASONS as readonly string[]).toContain(reason);
     }
     expect(FATAL_CAMPAIGN_REFUSALS).not.toContain("path_excluded");
-    expect(FATAL_CAMPAIGN_REFUSALS).not.toContain("method_not_allowed");
+    // Fourth review (D-110): a probe that is not one of the engine's catalog — another method included — ends the
+    // Campaign.
+    expect(FATAL_CAMPAIGN_REFUSALS).toContain("method_not_allowed");
   });
 });
 
@@ -246,6 +248,7 @@ describe("slice 15a review", () => {
       failure: null,
       bytes: 0,
       ms: 0,
+      asked_chars: null,
     };
     expect(CampaignRequestSchema.safeParse(row).success).toBe(true);
     expect(CampaignRequestSchema.safeParse({ ...row, outcome: "sent", failure: "invalid_response" }).success).toBe(
@@ -293,6 +296,7 @@ describe("slice 15a second review", () => {
       failure: null,
       bytes: 0,
       ms: 0,
+      asked_chars: null,
     };
     expect(CampaignRequestSchema.safeParse(row).success).toBe(true);
   });

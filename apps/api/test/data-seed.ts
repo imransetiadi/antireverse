@@ -303,15 +303,20 @@ export async function seedOrganization(api: TestApi, name: string, options: Seed
          ARRAY['security@acme.test'], $4, $5, $6)`,
       [organizationId, newId("roe"), target.target.id, keyId, now(), "0".repeat(64)],
     );
-    // A Pentest Campaign that completed (slice 15a), with one logged request and one Finding. Its log and Findings
-    // are written while it runs (the database refuses them afterwards); then it ends.
+    // A Pentest Campaign that completed (slice 15a), with one logged request and one Finding. It goes through the
+    // states a real one does: born queued (the database refuses any other INSERT, migration 0040), then running; its
+    // log and Findings are written while it runs (the database refuses them afterwards); then it ends.
     const campaignId = newId("cmp");
     await q.query(
       `INSERT INTO campaigns (organization_id, id, target_id, host, roe_id, roe_sha256, intensity, engine, status,
-         staging_declared, created_by, created_at, started_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'passive', '{"name":"stand-in","version":"1","model":"stand-in"}', 'running',
-         true, $7, $8, $8)`,
+         staging_declared, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'passive', '{"name":"stand-in","version":"1","model":"stand-in"}', 'queued',
+         true, $7, $8)`,
       [organizationId, campaignId, target.target.id, target.target.host, newId("roe"), "0".repeat(64), keyId, now()],
+    );
+    await q.query(
+      "UPDATE campaigns SET status = 'running', started_at = $2, pinned_address = '203.0.113.10' WHERE id = $1",
+      [campaignId, now()],
     );
     await q.query(
       `INSERT INTO campaign_requests (organization_id, campaign_id, seq, at, method, target, outcome, status, bytes, ms)

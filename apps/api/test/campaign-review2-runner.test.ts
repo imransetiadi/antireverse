@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:https";
 import type { AddressInfo } from "node:net";
 import { type CampaignExchange, STAND_IN_ENGINE, VERIFICATION_FILE_PATH } from "@antireverse/protocol";
 import { generateVerificationToken, newId } from "@antireverse/protocol/server";
+import { standInEngine } from "@antireverse/prove";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type CampaignEngineRunner, createCampaignRunner } from "../src/campaign/runner.ts";
 import type { Db } from "../src/db/db.ts";
@@ -113,6 +114,11 @@ describe("review2 15a: the runner", () => {
       now,
       logger: silent,
       engine,
+      // Fourth review (D-110): what the scripted engines of this file may send, beside the stand-in's own catalog.
+      probes: [
+        ...standInEngine.probes,
+        ...Array.from({ length: 40 }, (_, i) => ({ method: "GET" as const, path: `/p${i}` })),
+      ],
       testing: { ca: fixture("ca.pem"), port, allowLoopback: true, minSpacingMs, requestTimeoutMs: 1000 },
     });
   const read = (s: Seeded) => api.db.tx({ organizationId: s.organizationId }, (q) => findCampaign(q, s.campaignId));
@@ -256,7 +262,8 @@ describe("review2 15a: the runner", () => {
     handler = (_req, res) => void held.push(res);
     const greedy: CampaignEngineRunner = async (options) => {
       for (let i = 0; i < 100; i++) {
-        const exchange = (await options.request({ method: "GET", path: `/p${i}` })) as CampaignExchange;
+        // Forty declared paths, asked for again and again (a catalog holds at most 64 probes).
+        const exchange = (await options.request({ method: "GET", path: `/p${i % 40}` })) as CampaignExchange;
         if (!exchange.ok && "refused" in exchange && exchange.fatal) return;
       }
     };
@@ -377,7 +384,7 @@ describe("review2 15a: the runner", () => {
         title: "Admin data",
         severity: "high",
         seq: exchange.ok ? exchange.seq : 0,
-        at: 0,
+        window: "",
       });
     });
     await started.start();

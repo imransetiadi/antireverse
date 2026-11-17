@@ -503,7 +503,9 @@ describe("CampaignView", () => {
     );
     expect(within(low).getByTestId("finding-location").textContent).toBe("To another host. It was not followed.");
     expect(within(low).getByTestId("finding-truncated")).toBeTruthy();
-    expect(within(low).getByTestId("finding-excerpt-none").textContent).toBe("The response had no body.");
+    expect(within(low).getByTestId("finding-excerpt-none").textContent).toBe(
+      "This check keeps no text of the response.",
+    );
     expect(screen.getByTestId("campaign-findings-count").textContent).toBe("2 Findings");
   });
 
@@ -530,7 +532,7 @@ describe("CampaignView", () => {
     expect(excerpt.children).toHaveLength(0);
     expect(excerpt.className).toMatch(MONO);
     // The block scrolls inside itself, is reachable by keyboard and is named for a screen reader.
-    const region = within(finding).getByRole("region", { name: "Response excerpt of check RW-03, redacted" });
+    const region = within(finding).getByRole("region", { name: "Matched text of check RW-03, redacted" });
     expect(region.contains(excerpt)).toBe(true);
     expect(region.className).toMatch(/\boverflow-auto\b/);
     expect(region.className).toMatch(/\bmax-h-24\b/);
@@ -540,7 +542,11 @@ describe("CampaignView", () => {
     expect(within(finding).getByTestId("finding-headers").textContent).toContain(
       "<a href='https://evil.example'>click</a>",
     );
-    expect(within(finding).getByTestId("finding-hash").textContent).toBe("c".repeat(64));
+    // Third review (D-107): no hash of the response body is kept or shown, and the text is named for what it is —
+    // at most 200 characters around what the check matched.
+    expect(within(finding).queryByTestId("finding-hash")).toBeNull();
+    expect(finding.textContent).not.toContain("SHA-256");
+    expect(finding.textContent).toContain("Matched text, at most 200 characters");
   });
 
   it("lists the request log with refusals and their reasons, and requests without a response", () => {
@@ -559,6 +565,42 @@ describe("CampaignView", () => {
     expect(within(rows[2] as HTMLElement).getByTestId("request-result").textContent).toBe("No response: Timed out");
     expect(table.querySelector("a")).toBeNull();
     expect(screen.getByTestId("campaign-requests-lead").textContent).toContain("At most 200 rows are kept");
+  });
+
+  // Fourth review (D-110): a probe that was not one of the engine's declared probes is refused, and nothing it asked
+  // for is kept — the row says so, and how much it was.
+  it("shows of a refused probe outside the catalog only that its text was not kept, and how long it was", () => {
+    render(
+      <CampaignView
+        report={reportOf(stopped, [])}
+        requests={[
+          { ...refusedRequest, seq: 1, method: "OTHER", target: null, reason: "method_not_allowed", asked_chars: 256 },
+          { ...refusedRequest, seq: 2, method: null, target: null, reason: "malformed_probe", asked_chars: 0 },
+          { ...refusedRequest, seq: 3, method: "GET", target: null, reason: "not_in_catalog", asked_chars: 1 },
+        ]}
+        confirmStop={false}
+        notice={undefined}
+      />,
+    );
+    const rows = screen.getAllByTestId("request-row");
+    expect(rows.map((row) => within(row).getByTestId("request-target").textContent)).toEqual([
+      "Another method. Not kept: 256 characters asked for",
+      "Not stated. Not kept: 0 characters asked for",
+      "GET. Not kept: 1 character asked for",
+    ]);
+    expect(within(rows[2] as HTMLElement).getByTestId("request-result").textContent).toContain(
+      "Not one of the engine's declared probes",
+    );
+    // A refused probe of the catalog still shows its target: that text is the catalog's.
+    render(
+      <CampaignView
+        report={reportOf(stopped, [])}
+        requests={[refusedRequest]}
+        confirmStop={false}
+        notice={undefined}
+      />,
+    );
+    expect(screen.getAllByTestId("request-target").at(-1)?.textContent).toBe("GET /admin/users");
   });
 
   it("says of a request that never left that it was not sent, not that it got no response", () => {

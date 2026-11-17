@@ -3,7 +3,7 @@
 // check and Finding. A stop terminates the worker: `signal` aborts → the worker is terminated and the promise rejects
 // with an AbortError; at `deadlineMs` it rejects with a TimeoutError. Whatever the worker posts is untrusted: a probe
 // is handed to `request` as it came (the gate judges it), and checks and Findings are for the caller to validate.
-import { Worker } from "node:worker_threads";
+import { Worker, type WorkerOptions } from "node:worker_threads";
 import { CAMPAIGN_LIMITS, type CampaignExchange, type CampaignIntensity } from "@antireverse/protocol";
 import type { EngineCheck, EngineFinding } from "./stand-in.ts";
 
@@ -47,6 +47,26 @@ function workerExecArgv(): string[] {
   return [...inherited, "--experimental-strip-types", "--disable-warning=ExperimentalWarning"];
 }
 
+/**
+ * How the engine's worker is started: no standard streams, memory limits, and an empty environment — by default a
+ * worker gets a copy of the host's `process.env`, which holds the API's configuration and secrets, and the engine
+ * needs none of it. (A worker thread is still not a sandbox: this removes one thing it could read, no more.)
+ */
+export function campaignWorkerOptions(intensity: CampaignIntensity): WorkerOptions {
+  return {
+    workerData: { intensity },
+    execArgv: workerExecArgv(),
+    env: {},
+    stdout: false,
+    stderr: false,
+    resourceLimits: {
+      maxOldGenerationSizeMb: CAMPAIGN_WORKER_LIMITS.oldGenerationMb,
+      maxYoungGenerationSizeMb: CAMPAIGN_WORKER_LIMITS.youngGenerationMb,
+      stackSizeMb: CAMPAIGN_WORKER_LIMITS.stackMb,
+    },
+  };
+}
+
 /** Runs the stand-in engine in a dedicated worker until it is done. Resolves when the engine finished its catalog. */
 export function runCampaignEngine(options: RunCampaignEngineOptions): Promise<void> {
   const { signal } = options;
@@ -54,17 +74,7 @@ export function runCampaignEngine(options: RunCampaignEngineOptions): Promise<vo
   const deadlineMs = options.deadlineMs ?? CAMPAIGN_LIMITS.wallTimeS * 1000 + CAMPAIGN_WORKER_LIMITS.graceMs;
   return new Promise<void>((resolve, reject) => {
     let settled = false;
-    const worker = new Worker(new URL("./worker.ts", import.meta.url), {
-      workerData: { intensity: options.intensity },
-      execArgv: workerExecArgv(),
-      stdout: false,
-      stderr: false,
-      resourceLimits: {
-        maxOldGenerationSizeMb: CAMPAIGN_WORKER_LIMITS.oldGenerationMb,
-        maxYoungGenerationSizeMb: CAMPAIGN_WORKER_LIMITS.youngGenerationMb,
-        stackSizeMb: CAMPAIGN_WORKER_LIMITS.stackMb,
-      },
-    });
+    const worker = new Worker(new URL("./worker.ts", import.meta.url), campaignWorkerOptions(options.intensity));
     // Findings are handed over in order. However the run ends — done, stopped, over its deadline, failed — the end
     // waits for the Findings already handed over: the caller never ends a Campaign while one is still being stored.
     let reported: Promise<void> = Promise.resolve();

@@ -1,6 +1,6 @@
 import { STAND_IN_CATALOG } from "@antireverse/prove";
 import { describe, expect, it } from "vitest";
-import { BODY_WITHHELD, excerptAround, redactBody, redactText } from "../src/campaign/redact.ts";
+import { BODY_WITHHELD, evidenceWindow, redactBody, redactText } from "../src/campaign/redact.ts";
 
 // Slice 15a, independent safety review (M3, L1, L4): secrets the first redactor missed, bodies that are not text, and
 // the linear-time property of the redactor and of the stand-in's own patterns on hostile 64 KB bodies.
@@ -60,9 +60,13 @@ describe("review M3: redaction gaps", () => {
 });
 
 describe("review L1: an excerpt holds no control character", () => {
+  // Third review (D-107): the excerpt is now the evidence window, which is redacted again on its own.
   it("replaces them, keeping line breaks and tabs", () => {
-    const excerpt = excerptAround("a\u0001b\u0000c\u001fd\u007fe\nf\tg\u0085h", 0);
+    const excerpt = evidenceWindow("a\u0001b c\u001fd\u007fe\nf\tg\u0085h");
     expect(excerpt).toBe("a b c d e\nf\tg h");
+  });
+  it("a window with a NUL is not text: withheld whole", () => {
+    expect(evidenceWindow("a\u0001b\u0000c")).toBe(BODY_WITHHELD);
   });
 });
 

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { createServer as createTlsServer, type TLSSocket, type Server as TlsServer } from "node:tls";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { pinnedRequest, RESPONSE_HEADER_BYTES_MAX, sameAddress, TLS_OVERHEAD_BYTES_MAX } from "../src/prove/verify.ts";
+import { pinnedRequest, requestReadMax, sameAddress, TLS_OVERHEAD_BYTES_MAX } from "../src/prove/verify.ts";
 
 // Slice 15a, second independent safety review: the pinned transport against hostile raw TLS servers on loopback —
 // what it counts as read (L5), what it answers when no response comes (L6), and how it compares addresses.
@@ -56,10 +56,11 @@ describe("review2 L5: what the connection read is counted, whatever the outcome"
       s.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
     };
     const response = await send({ bodyBytesMax: 1000 });
-    expect(response).toMatchObject({ ok: false, reason: "invalid_response" });
-    // More than a response may be (16 KB of headers, the body cap, the TLS share) was read, and not much more:
-    // far from the 3.2 MB the target wrote.
-    const allowed = RESPONSE_HEADER_BYTES_MAX + 1000 + TLS_OVERHEAD_BYTES_MAX;
+    // Third review, F1: a connection over its read cap has its own answer, before the response's headers or after.
+    expect(response).toMatchObject({ ok: false, reason: "read_limit" });
+    // More than one request may read (16 KB of headers, the body cap, the TLS share and the framing allowance) was
+    // read, and not much more: far from the 3.2 MB the target wrote.
+    const allowed = requestReadMax(1000);
     expect(response.bytesRead).toBeGreaterThan(allowed);
     expect(response.bytesRead).toBeLessThan(allowed + 300_000);
   });

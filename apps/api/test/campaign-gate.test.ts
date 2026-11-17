@@ -2,6 +2,7 @@ import {
   AUTHORIZE_REASONS,
   type AuthorizeResult,
   CAMPAIGN_LIMITS,
+  type CampaignCatalogProbe,
   type CampaignEndReason,
   type CampaignExchange,
   FATAL_CAMPAIGN_REFUSALS,
@@ -17,6 +18,20 @@ const HOST = "shop.acme-shop.io";
 const ROE = "roe_0123456789abcdef01234567";
 const CAMPAIGN = "cmp_0123456789abcdef01234567";
 const ALLOWED: AuthorizeResult = { allowed: true, roe_id: ROE };
+
+/**
+ * The probes the scripted "engine" of these tests may send (fourth review, D-110): the gate sends nothing that is not
+ * declared. A test of a probe outside it says so.
+ */
+const CATALOG: CampaignCatalogProbe[] = [
+  ...["/", "/a", "/b", "/c", "/x", "/next", "/never", "/admin", "/api/orders/x", "/api/admin/reports", "/search"].map(
+    (path) => ({ method: "GET" as const, path }),
+  ),
+  { method: "HEAD", path: "/" },
+  { method: "HEAD", path: "/x" },
+  { method: "GET", path: "/search", query: { q: { exact: "a b" } } },
+  { method: "GET", path: "/go", query: { to: { exact: "https://evil.example.net/x" } } },
+];
 
 const ok = (status = 200, body = "ok", headers: Record<string, string | string[]> = {}): PinnedResponse => ({
   ok: true,
@@ -50,6 +65,7 @@ function harness(
   const controller = new AbortController();
   const deps: GateDeps = {
     campaign: { id: CAMPAIGN, host: HOST, roeId: ROE, intensity: "safe-active" },
+    catalog: CATALOG,
     async control() {
       order.push("control");
       return { ...state.control };
@@ -122,8 +138,12 @@ describe("an allowed probe", () => {
       location: null,
       withheld: false,
     });
-    // The form authorised is the form sent: authorize saw exactly the path of the request target.
-    expect(h.authorized).toEqual([{ host: HOST, path: "/search", intensity: "safe-active" }]);
+    // The form authorised is the form sent: authorize saw exactly the path of the request target — when the probe
+    // was judged, and once more right before it left (third review, F4).
+    expect(h.authorized).toEqual([
+      { host: HOST, path: "/search", intensity: "safe-active" },
+      { host: HOST, path: "/search", intensity: "safe-active" },
+    ]);
     expect(h.records).toEqual([
       {
         seq: 1,
@@ -135,6 +155,7 @@ describe("an allowed probe", () => {
         failure: null,
         bytes: BODY.length,
         ms: 20,
+        asked: null,
       },
     ]);
     expect(h.gate.counters()).toEqual({ sent: 1, refused: 0, bytes: BODY.length });
@@ -144,15 +165,21 @@ describe("an allowed probe", () => {
     const h = harness();
     await h.gate.request({ method: "HEAD", path: "/" });
     await h.gate.request({ method: "GET", path: "/" });
+    // Third review, F4: after the spacing wait and the log row, the authorization and the switches are read once
+    // more — the switches last (fourth review) — and nothing is awaited between that read and the send.
     expect(h.order).toEqual([
       "control",
       "authorize",
       "record",
+      "authorize",
+      "control",
       "transport",
       "control",
       "authorize",
       "sleep",
       "record",
+      "authorize",
+      "control",
       "transport",
     ]);
   });
@@ -199,7 +226,6 @@ describe("refusals", () => {
   });
 
   it("refuses a malformed probe: host, scheme, port, body, headers and cookies are not expressible", async () => {
-    const h = harness();
     const probes: unknown[] = [
       null,
       undefined,
@@ -221,29 +247,39 @@ describe("refusals", () => {
       { method: "GET", path: "/", headers: { cookie: "a=b" } },
       { method: "GET", path: "/", cookies: "a=b" },
     ];
+    // Fourth review (D-110): a probe that is not one of the engine's catalog ends the Campaign, so each is asked of
+    // a gate of its own.
     for (const probe of probes) {
+      const h = harness();
       expect({ probe, refused: refusal(await h.gate.request(probe)) }).toEqual({ probe, refused: "malformed_probe" });
+      expect(h.sent).toEqual([]);
+      expect(h.authorized).toEqual([]);
+      expect(h.ends).toEqual(["malformed_probe"]);
+      expect(h.records.every((r) => r.outcome === "refused" && r.reason === "malformed_probe")).toBe(true);
+      expect(h.records.every((r) => r.target === null)).toBe(true);
     }
-    expect(h.sent).toEqual([]);
-    expect(h.authorized).toEqual([]);
-    expect(h.ends).toEqual([]);
-    expect(h.records.every((r) => r.outcome === "refused" && r.reason === "malformed_probe")).toBe(true);
   });
 
   it("refuses every method but GET and HEAD", async () => {
-    const h = harness();
     for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE", "CONNECT", "get", "Get", "GET ", ""]) {
+      const h = harness();
       // The path is wrong too: the method check comes first.
       const exchange = await h.gate.request({ method, path: "//x" });
       expect({ method, refused: refusal(exchange) }).toEqual({ method, refused: "method_not_allowed" });
+      expect(h.sent).toEqual([]);
+      expect(h.authorized).toEqual([]);
+      // Fourth review (D-110): it ends the Campaign, and the row holds a fixed label, not the engine's word.
+      expect(h.ends).toEqual(["method_not_allowed"]);
+      expect(h.records).toMatchObject([{ method: "OTHER", target: null }]);
     }
-    expect(h.sent).toEqual([]);
-    expect(h.authorized).toEqual([]);
   });
 
   it("refuses a path or a query that is not canonical, before authorize is asked", async () => {
-    const h = harness();
-    h.state.authorize = { allowed: false, reason: "out_of_scope" };
+    const fresh = () => {
+      const h = harness();
+      h.state.authorize = { allowed: false, reason: "out_of_scope" };
+      return h;
+    };
     for (const path of [
       "https://evil.example.net/",
       "//evil.example.net/",
@@ -253,19 +289,20 @@ describe("refusals", () => {
       "/\\x",
       "",
     ]) {
+      const h = fresh();
       expect({ path, refused: refusal(await h.gate.request({ method: "GET", path })) }).toEqual({
         path,
         refused: "path_not_canonical",
       });
+      expect(h.authorized).toEqual([]);
+      expect(h.sent).toEqual([]);
     }
-    expect(refusal(await h.gate.request({ method: "GET", path: "/a", query: { "x y": "1" } }))).toBe(
-      "query_not_canonical",
-    );
-    expect(refusal(await h.gate.request({ method: "GET", path: "/a", query: { x: "a\nb" } }))).toBe(
-      "query_not_canonical",
-    );
-    expect(h.authorized).toEqual([]);
-    expect(h.sent).toEqual([]);
+    for (const query of [{ "x y": "1" }, { x: "a\nb" }]) {
+      const h = fresh();
+      expect(refusal(await h.gate.request({ method: "GET", path: "/a", query }))).toBe("query_not_canonical");
+      expect(h.authorized).toEqual([]);
+      expect(h.sent).toEqual([]);
+    }
   });
 
   it("refuses with authorize's reason; only an excluded path lets the Campaign go on", async () => {
@@ -293,18 +330,21 @@ describe("refusals", () => {
   });
 
   it("ends the Campaign at 20 refusals; after the end nothing is checked, sent or logged", async () => {
+    // Fourth review (D-110): a probe outside the catalog ends the Campaign at once. The 20 are for refusals that
+    // let it go on: a catalog probe whose path the Rules exclude.
     const h = harness();
+    h.state.authorize = { allowed: false, reason: "path_excluded" };
     for (let n = 1; n <= 19; n++) {
-      expect(await h.gate.request({ method: "POST", path: "/" })).toEqual({
+      expect(await h.gate.request({ method: "GET", path: "/admin" })).toEqual({
         ok: false,
-        refused: "method_not_allowed",
+        refused: "path_excluded",
         fatal: false,
       });
     }
     expect(h.ends).toEqual([]);
-    expect(await h.gate.request({ method: "POST", path: "/" })).toEqual({
+    expect(await h.gate.request({ method: "GET", path: "/admin" })).toEqual({
       ok: false,
-      refused: "method_not_allowed",
+      refused: "path_excluded",
       fatal: true,
     });
     expect(h.ends).toEqual(["refusal_limit"]);
@@ -322,13 +362,14 @@ describe("refusals", () => {
     expect(h.gate.counters()).toEqual({ sent: 0, refused: 20, bytes: 0 });
   });
 
-  it("logs a refused probe's request shortened and without control characters", async () => {
+  // Fourth review (D-110): this row used to hold the first 256 characters of what was asked. It holds none of it now.
+  it("logs of a refused probe how much it asked for, and nothing of what", async () => {
     const h = harness();
     await h.gate.request({ method: "GET", path: `/${"a".repeat(5000)}\r\nX: y` });
-    await h.gate.request({ method: "DELETE\r\n", path: "/x" });
-    expect(h.records[0]?.target?.length).toBeLessThanOrEqual(256);
-    expect(h.records[0]?.target).not.toMatch(/[\r\n]/);
-    expect(h.records[1]?.method).toBe("OTHER");
+    expect(h.records).toMatchObject([{ method: "GET", target: null, asked: 5007, reason: "path_not_canonical" }]);
+    const other = harness();
+    await other.gate.request({ method: "DELETE\r\n", path: "/x" });
+    expect(other.records).toMatchObject([{ method: "OTHER", target: null, asked: 2 }]);
   });
 });
 
@@ -431,7 +472,9 @@ describe("budgets", () => {
     let exchange = await h.gate.request({ method: "GET", path: "/" });
     while (exchange.ok) exchange = await h.gate.request({ method: "GET", path: "/" });
     expect(exchange).toEqual({ ok: false, refused: "byte_budget", fatal: true });
-    // 29 full reads; for the 30th, 192 KB are left, of which 160 KB are kept back.
+    // Third review, F1: the reserve also holds the framing allowance of a request (64 KB). Fourth review, R7: and
+    // one TCP read of overshoot (64 KB) instead of two — 160 KB in all. 29 full reads; for the 30th, 192 KB are
+    // left, of which 160 KB are kept back.
     expect(h.sent.map((s) => s.bodyBytesMax)).toEqual([
       ...Array(29).fill(CAMPAIGN_LIMITS.responseReadBytesMax),
       32_768,
@@ -549,7 +592,7 @@ describe("the request log (review M2)", () => {
         error: "invalid_response",
       });
       expect(h.records).toMatchObject([{ outcome: "sent", status: null, failure: "invalid_response", bytes: 0 }]);
-      expect(h.gate.evidence(1, 0)).toBeNull();
+      expect(h.gate.evidence(1, "")).toBeNull();
     }
     const refusedByTransport = harness({ respond: () => ({ ok: false, reason: "invalid_response" }) });
     expect(await refusedByTransport.gate.request({ method: "GET", path: "/" })).toMatchObject({
@@ -563,12 +606,15 @@ describe("the request log (review M2)", () => {
     expect(await h.gate.request({ method: "GET", path: "/", query: { a: long, b: long, c: long } })).toEqual({
       ok: false,
       refused: "query_not_canonical",
-      fatal: false,
+      fatal: true,
     });
     expect(h.sent).toEqual([]);
     expect(h.authorized).toEqual([]);
-    expect((await h.gate.request({ method: "GET", path: "/", query: { a: long } })).ok).toBe(true);
-    expect(h.sent[0]?.target).toHaveLength(516);
+    // A target within the bound, declared by the catalog, is sent (on a gate of its own: the refusal above ended
+    // the first, fourth review).
+    const within = harness({ extra: { catalog: [{ method: "GET", path: "/", query: { a: { exact: long } } }] } });
+    expect((await within.gate.request({ method: "GET", path: "/", query: { a: long } })).ok).toBe(true);
+    expect(within.sent[0]?.target).toHaveLength(516);
   });
 });
 
@@ -583,11 +629,13 @@ describe("the ownership check goes through the gate (review M1, L3)", () => {
       bodyBytesMax: 1024,
       headers: { "user-agent": "Airverse-Campaign/1", "x-airverse-campaign": CAMPAIGN, accept: "text/plain" },
     });
-    // Authorised like any other request, without the control read (the Campaign is not running yet).
+    // Third review, F4: judged like any other request — the switches (as the start checks read them: the Campaign
+    // is not running yet) and the authorization, and both once more right before it leaves.
     expect(h.authorized).toEqual([
       { host: HOST, path: "/.well-known/airverse-verification.txt", intensity: "safe-active" },
+      { host: HOST, path: "/.well-known/airverse-verification.txt", intensity: "safe-active" },
     ]);
-    expect(h.order).toEqual(["authorize", "record", "transport"]);
+    expect(h.order).toEqual(["control", "authorize", "record", "authorize", "control", "transport"]);
     expect(h.records).toMatchObject([
       { seq: 1, method: "GET", target: "/.well-known/airverse-verification.txt", outcome: "sent", status: 200 },
     ]);
@@ -679,8 +727,10 @@ describe("spacing", () => {
     h.state.clock += 1500;
     await h.gate.request({ method: "GET", path: "/" });
     expect(h.sleeps).toEqual([700]);
-    // A refused probe does not move the spacing.
-    await h.gate.request({ method: "POST", path: "/" });
+    // A refused probe does not move the spacing (one the Campaign survives: a path the Rules exclude).
+    h.state.authorize = { allowed: false, reason: "path_excluded" };
+    await h.gate.request({ method: "GET", path: "/admin" });
+    h.state.authorize = ALLOWED;
     await h.gate.request({ method: "GET", path: "/" });
     expect(h.sleeps).toEqual([700, 700]);
   });
@@ -770,11 +820,14 @@ describe("a stop in flight", () => {
 });
 
 describe("evidence", () => {
-  it("comes from what the gate holds: request, status, allowlisted headers, an excerpt and the hash of the body read", async () => {
+  // Third review (D-107): the evidence is a window of at most 200 characters that the check cut around its match —
+  // no longer 2 KB of the body around a position, and no hash of the body.
+  it("comes from what the gate holds: request, status, allowlisted headers and the evidence window", async () => {
     const body = `${"a".repeat(3000)} Error: boom\n    at handler (/srv/app.js:1:1) mail jane@acme-shop.io`;
     const h = harness({ respond: () => ok(500, body, { "content-type": "text/plain", "x-other": "no" }) });
-    await h.gate.request({ method: "GET", path: "/api/orders/x" });
-    const evidence = h.gate.evidence(1, body.indexOf("Error: boom"));
+    const exchange = await h.gate.request({ method: "GET", path: "/api/orders/x" });
+    const seen = exchange.ok ? exchange.body : "";
+    const evidence = h.gate.evidence(1, seen.slice(seen.indexOf("Error: boom"), seen.indexOf("Error: boom") + 200));
     expect(evidence).toMatchObject({
       method: "GET",
       target: "/api/orders/x",
@@ -783,12 +836,12 @@ describe("evidence", () => {
       truncated: false,
       location: null,
     });
-    expect(evidence?.body_sha256).toMatch(/^[0-9a-f]{64}$/);
-    expect(Buffer.byteLength(evidence?.excerpt ?? "", "utf8")).toBeLessThanOrEqual(CAMPAIGN_LIMITS.excerptBytesMax);
+    expect(evidence).not.toHaveProperty("body_sha256");
+    expect(evidence?.excerpt.length).toBeLessThanOrEqual(CAMPAIGN_LIMITS.evidenceWindowMax);
     expect(evidence?.excerpt).toContain("Error: boom");
     expect(evidence?.excerpt).not.toContain("jane@");
-    expect(h.gate.evidence(2, 0)).toBeNull();
-    expect(h.gate.evidence(Number.NaN, 0)).toBeNull();
+    expect(h.gate.evidence(2, "")).toBeNull();
+    expect(h.gate.evidence(Number.NaN, "")).toBeNull();
   });
 });
 
@@ -889,9 +942,15 @@ describe("arbitrary engine output (property)", () => {
         sentPaths.length,
       );
       for (const record of h.records) expect(record.target === null || record.target.length <= 1024).toBe(true);
+      // Fourth review (D-110): only probes of the catalog are sent; a refused row holds no text unless it is the
+      // catalog's; and the first probe outside the catalog ended the Campaign.
+      for (const send of h.sent) expect(send.target).toBe("/");
+      for (const record of h.records) expect(record.target === null || record.target === "/").toBe(true);
+      expect(h.gate.counters().refused).toBeLessThanOrEqual(1);
       sentInAll += h.sent.length;
     }
-    // The generator does produce sendable probes: the property is not vacuous.
-    expect(sentInAll).toBeGreaterThan(500);
+    // The generator does produce sendable probes: the property is not vacuous. (Far fewer than before the catalog:
+    // the first probe outside it ends a Campaign.)
+    expect(sentInAll).toBeGreaterThan(5);
   });
 });

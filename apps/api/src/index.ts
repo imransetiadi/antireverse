@@ -33,7 +33,7 @@ export {
 } from "./campaign/gate.ts";
 export {
   BODY_WITHHELD,
-  excerptAround,
+  evidenceWindow,
   locationOf,
   redactBody,
   redactHeaders,

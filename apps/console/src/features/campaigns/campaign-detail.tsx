@@ -139,8 +139,27 @@ function Facts({ campaign }: { campaign: Campaign }) {
 }
 
 /**
- * What one Finding rests on, as the gate redacted it. Everything here is text of the tested system: it is rendered as
- * text only — never as HTML and never as a link — and the excerpt sits in a block that scrolls inside itself.
+ * What a row of the request log asked for. A sent request, and a refused probe of the engine's catalog, show their
+ * method and target. Of a refused probe that was not of the catalog nothing it asked for is kept (it is text an engine
+ * chose): the row shows the method as `GET`, `HEAD` or "another method", and how many characters were asked for.
+ */
+function requestText(request: CampaignRequest): string {
+  const method =
+    request.method === null
+      ? t("campaign.requests.unknown")
+      : request.method === "OTHER"
+        ? t("campaign.requests.other-method")
+        : request.method;
+  if (request.target !== null || request.outcome !== "refused") return `${method} ${request.target ?? ""}`.trim();
+  const chars = request.asked_chars ?? 0;
+  return t(chars === 1 ? "campaign.requests.not-kept.one" : "campaign.requests.not-kept", { method, chars });
+}
+
+/**
+ * What one Finding rests on, as the gate redacted it: the request, the status, the kept headers and at most 200
+ * characters of the response around what the check matched (nothing else of a response is kept). Everything here is
+ * text of the tested system: it is rendered as text only — never as HTML and never as a link — and the matched text
+ * sits in a block that scrolls inside itself.
  */
 function Evidence({ finding }: { finding: CampaignFinding }) {
   const { evidence } = finding;
@@ -164,11 +183,6 @@ function Evidence({ finding }: { finding: CampaignFinding }) {
             </span>
           </Fact>
         )}
-        <Fact term={t("campaign.evidence.hash")}>
-          <span data-testid="finding-hash" className={MONO}>
-            {evidence.body_sha256}
-          </span>
-        </Fact>
         <div className="md:col-span-2">
           <Fact term={t("campaign.evidence.headers")}>
             {headers.length === 0 ? (
@@ -337,7 +351,7 @@ function RequestLog({ requests }: { requests: readonly CampaignRequest[] }) {
                   </time>
                 </td>
                 <td data-testid="request-target" className={`${DATA} min-w-40 break-all`}>
-                  {`${request.method ?? t("campaign.requests.unknown")} ${request.target ?? ""}`.trim()}
+                  {requestText(request)}
                 </td>
                 <td className={`${CELL} whitespace-nowrap`}>
                   <span

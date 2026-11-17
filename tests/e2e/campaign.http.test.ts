@@ -126,10 +126,14 @@ describe("a Campaign with the scripted stand-in, end to end", () => {
       location: "other-host",
       headers: { location: "other-host" },
     });
+    // Third review (D-107): of a response body, a window of at most 200 characters around the match is kept, and
+    // no hash of the body. A check that reads no body keeps none of it.
     for (const finding of findings) {
-      expect(finding.evidence.body_sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(Buffer.byteLength(finding.evidence.excerpt, "utf8")).toBeLessThanOrEqual(2048);
+      expect(finding.evidence).not.toHaveProperty("body_sha256");
+      expect(finding.evidence.excerpt.length).toBeLessThanOrEqual(200);
     }
+    expect(evidence["RW-01"]?.excerpt).toBe("");
+    expect(evidence["RW-06"]?.excerpt).toBe("");
   });
 
   it("says what it is everywhere: the engine tag and the sentence on the list, the Findings and the report", async () => {

@@ -50,6 +50,7 @@ describe("Campaign routes", () => {
     wake: () => void woken.push(1),
     abort: async (id) => void aborted.push(id),
     isActive: (id) => activeHere.has(id),
+    cut() {},
     operatorStop: async () => 0,
     activeCount: async () => 0,
   };
@@ -122,7 +123,8 @@ describe("Campaign routes", () => {
   }
   const finish = (org: Org, id: string) =>
     api.db.tx({ organizationId: org.id }, (q) =>
-      endCampaign(q, id, { reason: "checks_complete", started: false, checks: null, at: now() }),
+      // Fourth review (D-108): a queued Campaign cannot be written as completed; it ends as stopped here.
+      endCampaign(q, id, { reason: "owner_stop", started: false, checks: null, at: now() }),
     );
   const entries = (org: Org) => api.db.tx({ organizationId: org.id }, (q) => auditEntriesAfter(q, 0, 1000));
 

@@ -292,6 +292,7 @@ describe("data directory", () => {
         { version: "0037_slo.sql" },
         { version: "0038_tamper.sql" },
         { version: "0039_campaigns.sql" },
+        { version: "0040_campaign_review3.sql" },
       ]);
     } finally {
       await second.close();

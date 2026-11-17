@@ -100,6 +100,19 @@ export function opsRoutes(deps: {
           const changed = await db.tx("none", (q) => setSuspension(q, organizationId, suspended, at, reason));
           let stopped = 0;
           if (changed) {
+            // First, with nothing awaited since the suspension was committed: the runner aborts this Organization's
+            // Campaigns (it does so before its own first await) — as the kill route does. Its entries and its count
+            // are awaited below.
+            const stopping = suspended
+              ? campaigns.operatorStop({
+                  reason: "organization_suspended",
+                  organizationId,
+                  requestId,
+                  operatorReason: reason,
+                })
+              : null;
+            // Awaited below; if the entry cannot be written first, the stop's own failure is not left unhandled.
+            stopping?.catch(() => {});
             // One entry in the Organization's own chain, whether or not it has a Campaign now.
             await db.tx({ organizationId }, (q) =>
               audit(q, operatorActor(organizationId, requestId, reason), {
@@ -111,14 +124,8 @@ export function opsRoutes(deps: {
                 at,
               }),
             );
-            if (suspended) {
-              stopped = await campaigns.operatorStop({
-                reason: "organization_suspended",
-                organizationId,
-                requestId,
-                operatorReason: reason,
-              });
-            } else campaigns.wake();
+            if (stopping !== null) stopped = await stopping;
+            else campaigns.wake();
           } else {
             // Nothing changed: either it was so already, or there is no such Organization.
             const { suspended: list } = await db.tx("none", (q) => operatorState(q));

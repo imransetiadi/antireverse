@@ -1,6 +1,6 @@
 import { STAND_IN_CATALOG } from "@antireverse/prove";
 import { describe, expect, it } from "vitest";
-import { BODY_WITHHELD, excerptAround, redactBody, redactText } from "../src/campaign/redact.ts";
+import { BODY_WITHHELD, evidenceWindow, redactBody, redactText } from "../src/campaign/redact.ts";
 
 // Slice 15a, second independent safety review: secrets that must not survive redaction (M1 nested assignments, M2
 // escaped quotes, L1 further shapes), digits that must survive it (L8), and its cost on hostile 64 KB bodies. Each
@@ -184,15 +184,20 @@ describe("review2 15a: bodies that are not text", () => {
       Buffer.from("fine text\0"),
     ])
       expect(redactBody(body)).toBe(BODY_WITHHELD);
-    expect(excerptAround(BODY_WITHHELD, 0)).toBe(BODY_WITHHELD);
+    expect(evidenceWindow(BODY_WITHHELD)).toBe(BODY_WITHHELD);
   });
   it("an excerpt never holds a lone surrogate or a control character, wherever it is cut", () => {
     const body = `${"a".repeat(255)}${"\u{1F600}".repeat(3000)}\u0001\u0085`;
+    // Third review (D-107): the excerpt is the evidence window, at most 200 characters, cut by a check anywhere.
     for (let at = 0; at < 600; at++) {
-      const excerpt = excerptAround(body, at);
-      expect(Buffer.byteLength(excerpt)).toBeLessThanOrEqual(2048);
+      const excerpt = evidenceWindow(body.slice(at, at + 200));
+      expect(excerpt.length).toBeLessThanOrEqual(200);
       expect(excerpt.isWellFormed()).toBe(true);
     }
+    const tail = evidenceWindow(body.slice(-150));
+    expect(tail.isWellFormed()).toBe(true);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the absence of control characters is the point.
+    expect(tail).not.toMatch(/[\u0001\u0085]/);
   });
   it("L8: few random 16-digit numbers that are not cards are replaced (the Luhn chance, one in ten)", () => {
     let seed = 42;

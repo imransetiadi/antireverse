@@ -187,12 +187,17 @@ export async function createdInLastDay(
 
 /**
  * Marks a queued Campaign running, with the address resolved and pinned for the whole run. False when it is no longer
- * queued (stopped meanwhile).
+ * queued (stopped meanwhile) — and when, as this very statement reads them, a stop was asked, the operator's kill
+ * switch is on, the Organization is suspended or its deletion is pending: a Campaign is never started past a stop
+ * that is already committed.
  */
 export async function claimCampaign(q: Queryable, id: string, at: Date, address: string): Promise<boolean> {
   const { rows } = await q.query(
     `UPDATE campaigns SET status = 'running', started_at = GREATEST($2::timestamptz, created_at), pinned_address = $3
-     WHERE id = $1 AND status = 'queued' RETURNING id`,
+     WHERE id = $1 AND status = 'queued' AND stop_requested_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM campaign_start_control($1) k
+                       WHERE k.killed OR k.suspended OR k.stop_requested OR k.deletion_pending)
+     RETURNING id`,
     [id, at.toISOString(), address],
   );
   return rows.length === 1;
@@ -264,7 +269,29 @@ export async function campaignControl(q: Queryable, id: string): Promise<GateCon
   };
 }
 
-/** One row of the request log. */
+/**
+ * What the start checks read before the ownership request and after a claim that failed (`campaign_start_control`):
+ * as `campaignControl`, for a Campaign that is still queued. `stopRequested`: a stop was asked, or the Campaign is no
+ * longer queued. Without an answer everything counts as stopped.
+ */
+export async function startControl(q: Queryable, id: string): Promise<GateControl> {
+  const { rows } = await q.query<{
+    killed: boolean;
+    suspended: boolean;
+    stop_requested: boolean;
+    deletion_pending: boolean;
+  }>("SELECT killed, suspended, stop_requested, deletion_pending FROM campaign_start_control($1)", [id]);
+  const row = rows[0];
+  if (row === undefined) return { killed: true, suspended: true, stopRequested: true, deletionPending: true };
+  return {
+    killed: row.killed,
+    suspended: row.suspended,
+    stopRequested: row.stop_requested,
+    deletionPending: row.deletion_pending,
+  };
+}
+
+/** One row of the request log. `bytes` is stored as counted, never cut to a cap. */
 export async function insertCampaignRequest(
   q: Queryable,
   organizationId: string,
@@ -274,8 +301,8 @@ export async function insertCampaignRequest(
 ): Promise<void> {
   await q.query(
     `INSERT INTO campaign_requests (organization_id, campaign_id, seq, at, method, target, outcome, reason, status,
-       failure, bytes, ms)
-     VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       failure, bytes, ms, asked_chars)
+     VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
     [
       organizationId,
       id,
@@ -287,15 +314,25 @@ export async function insertCampaignRequest(
       entry.reason,
       entry.status,
       entry.failure,
-      entry.bytes,
+      wholeBytes(entry.bytes),
       Math.min(Math.round(entry.ms), 2_000_000_000),
+      // How much a refused probe asked for; what it asked for is not stored (D-110).
+      entry.outcome === "refused"
+        ? Math.min(Math.max(0, Math.round(entry.asked ?? 0)), CAMPAIGN_LIMITS.askedCharsMax)
+        : null,
     ],
   );
 }
 
+/** A byte count as the database stores it: a whole number, as counted (the column is 64 bits wide). */
+function wholeBytes(bytes: number): number {
+  return Number.isFinite(bytes) ? Math.min(Math.max(0, Math.round(bytes)), Number.MAX_SAFE_INTEGER) : 0;
+}
+
 /**
  * Settles a row written as `sending` with its request's result. False when there is no such row still `sending` (the
- * database refuses to settle a row twice).
+ * database refuses to settle a row twice). The bytes are stored as counted. Once the Campaign has ended, the
+ * database refuses `not_sent` (23514): a row in flight is then settled as `sent` only.
  */
 export async function settleCampaignRequest(q: Queryable, id: string, entry: GateRecord): Promise<boolean> {
   const { rows } = await q.query(
@@ -306,7 +343,7 @@ export async function settleCampaignRequest(q: Queryable, id: string, entry: Gat
       entry.seq,
       entry.status,
       entry.failure,
-      Math.min(entry.bytes, 1_048_576),
+      wholeBytes(entry.bytes),
       Math.min(Math.round(entry.ms), 2_000_000_000),
       entry.outcome === "not_sent" ? "not_sent" : "sent",
     ],
@@ -332,17 +369,18 @@ interface RequestRow {
   reason: CampaignRequest["reason"];
   status: number | null;
   failure: CampaignRequest["failure"];
-  bytes: number;
+  bytes: string | number | bigint;
   ms: number;
+  asked_chars: number | null;
 }
 
 export async function listCampaignRequests(q: Queryable, id: string): Promise<CampaignRequest[]> {
   const { rows } = await q.query<RequestRow>(
-    `SELECT seq, at, method, target, outcome, reason, status, failure, bytes, ms FROM campaign_requests
+    `SELECT seq, at, method, target, outcome, reason, status, failure, bytes, ms, asked_chars FROM campaign_requests
      WHERE campaign_id = $1 ORDER BY seq LIMIT $2`,
     [id, CAMPAIGN_LIMITS.storedRequestsMax],
   );
-  return rows.map((row) => ({ ...row, at: row.at.toISOString() }));
+  return rows.map((row) => ({ ...row, at: row.at.toISOString(), bytes: Number(row.bytes) }));
 }
 
 export interface ReportedFinding {

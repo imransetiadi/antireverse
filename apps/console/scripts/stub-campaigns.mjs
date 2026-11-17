@@ -46,7 +46,6 @@ const INTENSITIES = ["passive", "safe-active", "full"];
 
 const newId = (prefix) => `${prefix}_${randomBytes(12).toString("hex")}`;
 const iso = (ms) => new Date(ms).toISOString();
-const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 const digest = (text) => createHash("sha256").update(text, "utf8").digest();
 
 // The API's own problem documents (apps/api/src/problem.ts), word for word.
@@ -131,7 +130,8 @@ const CATALOG = [
     severity: "low",
     status: 200,
     headers: { "content-type": "text/html; charset=utf-8" },
-    excerpt: "<!doctype html><title>Acme Shop</title><h1>Acme Shop</h1>",
+    // A check that reads no body keeps no text of the response (the evidence window, D-107).
+    excerpt: "",
     bytes: 1820,
   },
   {
@@ -276,7 +276,6 @@ export function createCampaignStore({
       status: check.status,
       headers: { ...check.headers },
       excerpt: check.excerpt,
-      body_sha256: sha256(`${check.id}:${check.excerpt}`),
       truncated: false,
       location: check.location ?? null,
     };
@@ -297,6 +296,7 @@ export function createCampaignStore({
       failure: null,
       bytes: check.bytes,
       ms: 20 + ((seq * 7) % 30),
+      asked_chars: null,
     });
     entry.campaign.requests_sent += 1;
     entry.campaign.response_bytes += check.bytes;
@@ -413,6 +413,7 @@ export function createCampaignStore({
         seq: entry.requests.length + 1,
         at: iso(at),
         method: "GET",
+        // A probe of the catalog, refused: its target is the catalog's text, and the row says how much was asked.
         target: targetOf(entry.script[Math.min(campaign.requests_sent, entry.script.length - 1)].check),
         outcome: "refused",
         reason,
@@ -420,6 +421,7 @@ export function createCampaignStore({
         failure: null,
         bytes: 0,
         ms: 0,
+        asked_chars: targetOf(entry.script[Math.min(campaign.requests_sent, entry.script.length - 1)].check).length,
       });
       campaign.requests_refused += 1;
     }

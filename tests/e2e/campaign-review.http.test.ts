@@ -63,11 +63,21 @@ describe("review 15a over HTTP", () => {
       await request(GET("/after"));
     });
     const ended = await runCampaign(h, acme);
-    expect(first).toEqual({ ok: false, refused: "query_not_canonical", fatal: false });
+    // Fourth review (D-110): a probe that is not one of the engine's catalog ends the Campaign; what the engine asks
+    // afterwards is not sent.
+    expect(first).toEqual({ ok: false, refused: "query_not_canonical", fatal: true });
     const { log, target } = await logAndTarget(acme, ended.id);
-    expect(target).toEqual([`GET ${VERIFICATION_FILE_PATH}`, "GET /after"]);
+    expect(target).toEqual([`GET ${VERIFICATION_FILE_PATH}`]);
     expect(log).toEqual(target);
-    expect(ended).toMatchObject({ status: "completed", requests_sent: 2, requests_refused: 1 });
+    expect(ended).toMatchObject({
+      status: "failed",
+      end_reason: "query_not_canonical",
+      requests_sent: 1,
+      requests_refused: 1,
+    });
+    // The refused row holds how much was asked, and none of it.
+    const refused = (await requestsOf(h, acme, ended.id)).filter((row) => row.outcome === "refused");
+    expect(refused).toMatchObject([{ method: "GET", target: null, asked_chars: 1540 }]);
   });
 
   it("M2: a status outside 100 to 599 is a failed request in the log, and the engine is not handed it", async () => {
@@ -198,7 +208,7 @@ describe("review 15a over HTTP", () => {
     expect(findings[0]?.evidence.excerpt).toContain('"reports"');
   });
 
-  it("M3: secrets and card numbers do not reach a stored Finding, and its hash is of the redacted body", async () => {
+  it("M3: secrets and card numbers do not reach a stored Finding, and no hash of the body is kept", async () => {
     const acme = await org();
     const secrets = [
       "hunter2hunter2",
@@ -216,14 +226,12 @@ describe("review 15a over HTTP", () => {
     expect(findings.map((finding) => finding.check_id)).toEqual(["RW-03"]);
     const stored = JSON.stringify([findings, await requestsOf(h, acme, ended.id), ended]);
     for (const secret of secrets) expect(stored, secret).not.toContain(secret);
-    const { createHash } = await import("node:crypto");
+    // Third review (D-107): the evidence is a window of at most 200 characters around the match; a hash of the
+    // body — of the redacted one too — could be used to test guesses of the rest, and is no longer kept.
     const evidence = findings[0]?.evidence;
-    expect(evidence?.body_sha256).not.toBe(createHash("sha256").update(body).digest("hex"));
-    expect(evidence?.body_sha256).toBe(
-      createHash("sha256")
-        .update(evidence?.excerpt ?? "")
-        .digest("hex"),
-    );
+    expect(evidence).not.toHaveProperty("body_sha256");
+    expect(evidence?.excerpt.length).toBeLessThanOrEqual(200);
+    expect(evidence?.excerpt).toContain('"reports"');
   });
 
   it("the window bounds the last request too: none is started that could still run when it ends", async () => {

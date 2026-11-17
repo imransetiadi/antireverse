@@ -65,7 +65,6 @@ const evidence = {
   status: 200,
   headers: { "content-type": "application/json" },
   excerpt: '{"reports":[{"owner":"[redacted-email]","key":"[redacted-key]"}]}',
-  body_sha256: "c".repeat(64),
   truncated: false,
   location: null,
 };
@@ -111,6 +110,7 @@ export const sentRequest: CampaignRequest = {
   failure: null,
   bytes: 512,
   ms: 23,
+  asked_chars: null,
 };
 
 export const refusedRequest: CampaignRequest = {
@@ -124,6 +124,7 @@ export const refusedRequest: CampaignRequest = {
   failure: null,
   bytes: 0,
   ms: 0,
+  asked_chars: 12,
 };
 
 export const failedRequest: CampaignRequest = {
@@ -137,6 +138,7 @@ export const failedRequest: CampaignRequest = {
   failure: "timeout",
   bytes: 0,
   ms: 5000,
+  asked_chars: null,
 };
 
 export function reportOf(campaign: Campaign, findings: CampaignFinding[] = []): CampaignReport {

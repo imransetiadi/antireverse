@@ -182,19 +182,32 @@ describe("scope escape", () => {
       "/api/admin%2freports",
       "/api/admin./reports",
     ];
+    // Fourth review (D-110): none of these is a probe of the engine's catalog. The first ends the Campaign, and
+    // nothing the engine asks afterwards is sent. (Each spelling alone is refused: `campaign-gate.test.ts`.)
+    const answers: unknown[] = [];
     h.engine.run = scripted(async ({ request }) => {
-      for (const path of spellings) await request(GET(path));
-      await request(GET("/"));
+      for (const path of spellings) answers.push(await request(GET(path)));
+      answers.push(await request(GET("/")));
     });
     const before = h.target.probes().length;
     const second = await runCampaign(h, acme);
-    expect(second.requests_refused).toBe(spellings.length);
-    const after = h.target.probes().slice(before);
-    expect(after.map((hit) => hit.url)).toEqual(["/"]);
+    await until(() => answers.length === spellings.length + 1, "the engine's last request");
+    expect(answers[0]).toEqual({ ok: false, refused: "not_in_catalog", fatal: true });
+    expect(answers.slice(1).every((answer) => (answer as { refused?: string }).refused === "campaign_ended")).toBe(
+      true,
+    );
+    expect(second).toMatchObject({ status: "failed", end_reason: "not_in_catalog", requests_refused: 1 });
+    expect(h.target.probes().slice(before)).toEqual([]);
     expect(h.target.hits.some((hit) => /admin/i.test(hit.url))).toBe(false);
+    // The refused row keeps no spelling.
+    expect((await requestsOf(h, acme, second.id)).filter((r) => r.outcome === "refused")).toMatchObject([
+      { method: "GET", target: null, asked_chars: spellings[0]?.length },
+    ]);
   });
 
-  it("other methods, absolute URLs, hosts, bodies, headers and cookies: nothing but the one valid GET is sent", async () => {
+  // Fourth review (D-110): each of these used to be refused and the Campaign went on to its one valid GET. Now the
+  // first ends the Campaign, so nothing at all follows it; each alone is refused in `campaign-gate.test.ts`.
+  it("other methods, absolute URLs, hosts, bodies, headers and cookies: nothing is sent, and the first ends the Campaign", async () => {
     const acme = await org();
     const hostile: unknown[] = [
       { method: "POST", path: "/api/trap/reset" },
@@ -216,23 +229,36 @@ describe("scope escape", () => {
       { ...GET("/"), query: { "a\r\nHost": "evil" } },
       "GET https://evil.acme-shop.io/",
     ];
+    const answers: unknown[] = [];
     h.engine.run = scripted(async ({ request }) => {
-      for (const probe of hostile) expect(await request(probe)).toMatchObject({ ok: false, fatal: false });
-      expect(await request(GET("/"))).toMatchObject({ ok: true, status: 200 });
+      for (const probe of hostile) answers.push(await request(probe));
+      answers.push(await request(GET("/")));
     });
     const campaign = await runCampaign(h, acme);
-    expect(campaign).toMatchObject({ status: "completed", requests_sent: 2, requests_refused: hostile.length });
-    expect(h.target.probes().map((hit) => [hit.method, hit.url, hit.host, hit.cookie, hit.bodyBytes])).toEqual([
-      ["GET", "/", HOST, false, 0],
-    ]);
+    await until(() => answers.length === hostile.length + 1, "the engine's last request");
+    expect(answers.every((answer) => (answer as { ok: boolean; fatal?: boolean }).ok === false)).toBe(true);
+    expect(answers[0]).toEqual({ ok: false, refused: "method_not_allowed", fatal: true });
+    expect(campaign).toMatchObject({
+      status: "failed",
+      end_reason: "method_not_allowed",
+      requests_sent: 1,
+      requests_refused: 1,
+    });
+    expect(h.target.probes()).toEqual([]);
     expect(h.target.range.trapHits()).toEqual([]);
+    // The log names no method of the engine's choosing and no path it asked for.
+    expect((await requestsOf(h, acme, campaign.id)).filter((r) => r.outcome === "refused")).toMatchObject([
+      { method: "OTHER", target: null, asked_chars: 15 },
+    ]);
   });
 
   it("twenty refusals end the Campaign: what the engine asks afterwards is not sent", async () => {
-    const acme = await org();
+    // Fourth review (D-110): a probe outside the catalog ends the Campaign at once, so the twenty are refusals a
+    // Campaign survives — a catalog probe whose path the Rules exclude.
+    const acme = await org({ exclusions: ["/api/admin"] });
     let last: unknown;
     h.engine.run = scripted(async ({ request }) => {
-      for (let i = 0; i < 25; i++) await request({ method: "POST", path: "/" });
+      for (let i = 0; i < 25; i++) await request(GET("/api/admin/reports"));
       last = await request(GET("/"));
     });
     const campaign = await runCampaign(h, acme);

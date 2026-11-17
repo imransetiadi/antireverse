@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import {
   type AuthorizeResult,
   CAMPAIGN_END_REASONS,
   CAMPAIGN_LIMITS,
   CAMPAIGN_METHODS,
+  type CampaignCatalogProbe,
   type CampaignEndReason,
   type CampaignEvidence,
   type CampaignExchange,
@@ -12,14 +12,22 @@ import {
   type CampaignMethod,
   type CampaignRefusalReason,
   type CampaignSendFailure,
+  campaignCatalog,
   canonicalCampaignPath,
   canonicalCampaignQuery,
   FATAL_CAMPAIGN_REFUSALS,
+  inCampaignCatalog,
   TARGET_LIMITS,
   VERIFICATION_FILE_PATH,
 } from "@antireverse/protocol";
-import { type PinnedResponse, RESPONSE_HEADER_BYTES_MAX, TLS_OVERHEAD_BYTES_MAX } from "../prove/verify.ts";
-import { BODY_WITHHELD, excerptAround, locationOf, redactBody, redactHeaders } from "./redact.ts";
+import {
+  FRAMING_OVERHEAD_BYTES_MAX,
+  type PinnedResponse,
+  READ_OVERSHOOT_BYTES_MAX,
+  RESPONSE_HEADER_BYTES_MAX,
+  TLS_OVERHEAD_BYTES_MAX,
+} from "../prove/verify.ts";
+import { BODY_WITHHELD, evidenceWindow, locationOf, redactBody, redactHeaders } from "./redact.ts";
 
 // The request gate of a Pentest Campaign (slice 15a, D-105): the only code that sends Campaign traffic. An engine can
 // ask for `{ method, path, query }` and nothing else; the gate decides, in a fixed order, whether that becomes a
@@ -28,23 +36,29 @@ import { BODY_WITHHELD, excerptAround, locationOf, redactBody, redactHeaders } f
 //   1. the kill switch, the Organization's suspension, a stop request, a pending deletion;
 //   2. the probe's shape;
 //   3. the method: GET or HEAD;
-//   4. the path and query: canonical, so that the form authorised is exactly the form sent;
+//   4. the path and query: canonical, so that the form authorised is exactly the form sent — and one of the probes
+//      the engine's catalog declares (D-110): exact method and path, each query value of its declared shape;
 //   5. `authorize`, read from the database: the Target still verified, in scope, the path not excluded, the intensity,
 //      the window;
 //   6. the Rules of Engagement are still the version bound at creation;
 //   7. the request, time and byte budgets, charged before the call;
-//   8. the spacing of one request per second, one at a time.
+//   8. the spacing of one request per second, one at a time;
+//   9. the authorization (5, 6) and then the switches (1) once more, after the wait and after the log row is written:
+//      the switches are the last thing read, and nothing is awaited between that read and the send.
 //
-// The ownership check at the start goes through the gate too (`ownership`): it is authorised, budgeted, spaced and
-// logged like any request, so that at most 60 requests in all reach a target.
+// The ownership check at the start goes through the gate too (`ownership`): it is judged by the switches, authorised,
+// budgeted, spaced and logged like any request, so that at most 60 requests in all reach a target.
 //
 // The log row of a request is written BEFORE the request goes out (`sending`) and settled afterwards: whatever fails
 // later, a request that reached the target is in the log. If the row cannot be written, nothing is sent.
 //
-// A refused probe is never sent: it is logged with a fixed reason, and 20 refusals end the Campaign. The gate holds no
+// A refused probe is never sent: it is logged with a fixed reason and with how much it asked for — never with what it
+// asked for (a probe outside the catalog is text an engine chose, perhaps out of a response) — and a probe that is not
+// one of the catalog ends the Campaign at once; 20 refusals of other kinds end it too. The gate holds no
 // host and no address: the transport it is given is bound to the Campaign's Target and its pinned address by the
 // runner. It sets three request headers and no others: no body, no cookie, no credential can leave through it. What
-// comes back is redacted here, before the engine, a Finding or the log sees it.
+// comes back is redacted here, before the engine, a Finding or the log sees it. Of a body, a Finding keeps a window of
+// at most 200 characters around what its check matched, and nothing else is kept anywhere (D-107).
 
 export const CAMPAIGN_USER_AGENT = "Airverse-Campaign/1";
 export const CAMPAIGN_ID_HEADER = "x-airverse-campaign";
@@ -55,7 +69,10 @@ export interface GateControl {
   killed: boolean;
   /** The operator suspended this Organization's Campaigns. */
   suspended: boolean;
-  /** The owner asked to stop this Campaign. */
+  /**
+   * The owner asked to stop this Campaign, or it is not in the state its phase expects: running for a probe, queued
+   * for the ownership request of the start checks.
+   */
   stopRequested: boolean;
   /** The Organization's deletion is pending. */
   deletionPending: boolean;
@@ -73,11 +90,15 @@ export interface GateSend {
   signal: AbortSignal;
 }
 
-/** One row of the request log. Never a body. */
+/** One row of the request log. Never a body, and never text an engine chose (D-110). */
 export interface GateRecord {
   seq: number;
+  /** `GET` or `HEAD`; for a refused probe that asked for anything else the fixed label `OTHER`, or null for none. */
   method: string | null;
+  /** The target of a catalog probe (or the ownership file); null for a refused probe that is not of the catalog. */
   target: string | null;
+  /** For a refused probe: the characters of its path and query, counted up to 1,000,000. Null otherwise. */
+  asked: number | null;
   outcome: "sending" | "sent" | "not_sent" | "refused";
   reason: CampaignRefusalReason | null;
   status: number | null;
@@ -88,7 +109,16 @@ export interface GateRecord {
 
 export interface GateDeps {
   campaign: { id: string; host: string; roeId: string; intensity: CampaignIntensity };
-  control(): Promise<GateControl>;
+  /**
+   * The probes the engine may send (D-110), from the engine's definition on the host side — never from a running
+   * engine. Validated here (`campaignCatalog`: a TypeError otherwise) and copied: the gate judges by its own copy.
+   */
+  catalog: readonly CampaignCatalogProbe[];
+  /**
+   * The switches, read from the database now. `start`: for the ownership request, while the Campaign is still queued
+   * (`campaign_start_control`); `run`: for a probe of a running Campaign (`campaign_control`).
+   */
+  control(phase: "start" | "run"): Promise<GateControl>;
   /** The API's `authorize` for the Campaign's Organization: read from the database on every call. */
   authorize(request: { host: string; path: string; intensity: CampaignIntensity }): Promise<AuthorizeResult>;
   transport(send: GateSend): Promise<PinnedResponse>;
@@ -130,16 +160,22 @@ export type OwnershipOutcome = { ok: true; body: string } | { ok: false; reason:
 
 export interface Gate {
   /**
-   * The start check's GET of the verification file from the pinned address, judged like a probe (authorize for its
-   * path, the Rules bound at creation, the budgets, the window, the spacing) and logged as the first request. Not
-   * for an engine: it hands back the file's body, unredacted, for the comparison with the token only. A whole 200 is
-   * the only answer that counts. It does not end the Campaign: the runner writes the refusal.
+   * The start check's GET of the verification file from the pinned address, judged like a probe (the switches,
+   * authorize for its path, the Rules bound at creation, the budgets, the window, the spacing — and the switches and
+   * the authorization once more right before it leaves) and logged as the first request. Not for an engine: it hands
+   * back the file's body, unredacted, for the comparison with the token only. A whole 200 is the only answer that
+   * counts. It does not end the Campaign: the runner writes the refusal.
    */
   ownership(): Promise<OwnershipOutcome>;
   /** Judges one probe and, if it passes, sends it. Never rejects. */
   request(probe: unknown): Promise<CampaignExchange>;
-  /** The evidence of the sent request `seq`, with an excerpt of its redacted body around `at`; null if unknown. */
-  evidence(seq: number, at: number): CampaignEvidence | null;
+  /**
+   * The evidence of the sent request `seq` (D-107): its status, its kept headers and `window` — what the engine says
+   * its check matched. The window is the engine's word and is treated as such: it must be a string of at most 200
+   * characters that occurs in the redacted body the gate holds for that request (empty for a check that reads no
+   * body), and it is redacted again on its own. Null for an unknown request or a window that does not pass.
+   */
+  evidence(seq: number, window: unknown): CampaignEvidence | null;
   counters(): { sent: number; refused: number; bytes: number };
   /** Why the gate ended the Campaign, or null while it has not. */
   ended(): CampaignEndReason | null;
@@ -150,24 +186,25 @@ interface Held {
   target: string;
   status: number;
   headers: Record<string, string>;
+  /** The redacted body, in this process's memory for the run only: an evidence window must occur in it. */
   body: string;
-  sha256: string;
+  withheld: boolean;
   truncated: boolean;
   location: CampaignLocation | null;
 }
 
 /**
  * Bytes kept back before a request may start, beside its body: its headers (16 KB), the connection's TLS share
- * (16 KB) and two late socket reads (128 KB) that can arrive before a connection over its cap is dropped. What the
- * connections read is counted exactly; the reserve is what keeps the count inside the 2 MB. (It is not a hard bound
- * on the wire: a socket that delivered more than two reads after its cap would pass it; the next request is then
- * refused.)
+ * (16 KB), its framing allowance (64 KB) — together with the body cap, what the transport lets one socket read — and
+ * the one TCP read (64 KB) by which a connection can pass that cap before it is cut (`READ_OVERSHOOT_BYTES_MAX`:
+ * the transport counts raw reads, so the bound is one read, whatever the bytes are). What the connections read is
+ * counted exactly; the reserve is that bound, so the count stays inside the 2 MB.
  */
-const READ_RESERVE = RESPONSE_HEADER_BYTES_MAX + TLS_OVERHEAD_BYTES_MAX + 131_072;
+const READ_RESERVE =
+  RESPONSE_HEADER_BYTES_MAX + TLS_OVERHEAD_BYTES_MAX + FRAMING_OVERHEAD_BYTES_MAX + READ_OVERSHOOT_BYTES_MAX;
 
 const PROBE_KEYS = new Set(["method", "path", "query"]);
 const FATAL = new Set<string>(FATAL_CAMPAIGN_REFUSALS);
-const LOG_TARGET_MAX = 256;
 
 function plainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -175,19 +212,33 @@ function plainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-/** What a refused probe asked for, for the log: bounded, printable ASCII only. Null when it had no such member. */
-function printable(value: unknown, max: number): string | null {
-  if (typeof value !== "string") return null;
-  return value.slice(0, max).replace(/[^\x21-\x7e]/g, "?");
+/**
+ * How much a refused probe asked for: the characters of its path and of its query's names and values, counted up to
+ * `askedCharsMax`. A number is all that is kept of it.
+ */
+function askedChars(probe: unknown): number {
+  if (!plainObject(probe)) return 0;
+  const max = CAMPAIGN_LIMITS.askedCharsMax;
+  let count = typeof probe.path === "string" ? probe.path.length : 0;
+  if (plainObject(probe.query)) {
+    for (const name in probe.query) {
+      if (count >= max) break;
+      const value = probe.query[name];
+      count += name.length + (typeof value === "string" ? value.length : 0);
+    }
+  }
+  return Math.min(count, max);
 }
 
+/** The method of a refused probe as the log holds it: one of the two a gate sends, or a fixed label. */
 function loggedMethod(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  return /^[A-Z]{1,16}$/.test(value) ? value : "OTHER";
+  return (CAMPAIGN_METHODS as readonly string[]).includes(value) ? value : "OTHER";
 }
 
 export function createGate(deps: GateDeps): Gate {
   const { campaign } = deps;
+  const catalog = campaignCatalog(deps.catalog);
   const minSpacingMs = deps.limits?.minSpacingMs ?? CAMPAIGN_LIMITS.minSpacingMs;
   const requestTimeoutMs = deps.limits?.requestTimeoutMs ?? CAMPAIGN_LIMITS.requestTimeoutMs;
   const wallMs = CAMPAIGN_LIMITS.wallTimeS * 1000;
@@ -208,12 +259,29 @@ export function createGate(deps: GateDeps): Gate {
     deps.onEnd(reason);
   }
 
+  type FatalSwitch = "operator_kill" | "organization_suspended" | "owner_stop" | "deletion_pending";
+
+  /** A refusal read right before the ownership request, as the reason the Campaign is refused for. */
+  function startReason(reason: CampaignRefusalReason | "verification_path_excluded"): CampaignEndReason {
+    return (CAMPAIGN_END_REASONS as readonly string[]).includes(reason)
+      ? (reason as CampaignEndReason)
+      : "engine_error";
+  }
+
   function abortReason(): CampaignEndReason {
     const reason = deps.signal.reason as unknown;
     return (CAMPAIGN_END_REASONS as readonly unknown[]).includes(reason) ? (reason as CampaignEndReason) : "owner_stop";
   }
 
-  async function refuse(reason: CampaignRefusalReason, probe: unknown): Promise<CampaignExchange> {
+  /**
+   * Refuses a probe and logs the refusal. `target`: the canonical target of a probe that is in the catalog (text the
+   * catalog declares, not the engine); without it nothing the probe asked for is kept but its size.
+   */
+  async function refuse(
+    reason: CampaignRefusalReason,
+    probe: unknown,
+    target: string | null = null,
+  ): Promise<CampaignExchange> {
     refused += 1;
     const asked = plainObject(probe) ? probe : {};
     if (seq < CAMPAIGN_LIMITS.storedRequestsMax) {
@@ -222,7 +290,8 @@ export function createGate(deps: GateDeps): Gate {
         await deps.record({
           seq,
           method: loggedMethod(asked.method),
-          target: printable(asked.path, LOG_TARGET_MAX),
+          target,
+          asked: askedChars(probe),
           outcome: "refused",
           reason,
           status: null,
@@ -258,20 +327,67 @@ export function createGate(deps: GateDeps): Gate {
     return null;
   }
 
+  /** The switches, as a refusal: the first that is on, or null. */
+  function switchedOff(control: GateControl): FatalSwitch | null {
+    if (control.killed) return "operator_kill";
+    if (control.suspended) return "organization_suspended";
+    if (control.stopRequested) return "owner_stop";
+    if (control.deletionPending) return "deletion_pending";
+    return null;
+  }
+
+  /**
+   * Read again right before a request leaves: the authorization for the path with the Rules bound at creation, and
+   * then the switches — last, so that a kill, a suspension or a stop committed while the authorization was read is
+   * seen. Whatever was true when the request was judged — up to a second of spacing ago — is not enough.
+   */
+  async function stale(phase: "start" | "run", path: string): Promise<CampaignRefusalReason | null> {
+    const authorized = await deps.authorize({ host: campaign.host, path, intensity: campaign.intensity });
+    const off = switchedOff(await deps.control(phase));
+    if (off !== null) return off;
+    if (!authorized.allowed) return authorized.reason;
+    if (authorized.roe_id !== campaign.roeId) return "rules_replaced";
+    return null;
+  }
+
+  /**
+   * Settles the row of a request that never left. `not_sent` while the Campaign has not ended; once it has, the
+   * database takes `sent` only (D-108), and the row is settled as sent and cut off: the log may then hold more than
+   * the target saw, never less. True when the row says `not_sent`.
+   */
+  async function settleUnsent(row: GateRecord): Promise<boolean> {
+    try {
+      await deps.settle({ ...row, outcome: "not_sent" });
+      return true;
+    } catch {
+      // Refused: the Campaign has ended meanwhile.
+    }
+    try {
+      await deps.settle({ ...row, outcome: "sent", failure: "aborted" });
+    } catch {
+      finish(deps.signal.aborted ? abortReason() : "engine_error");
+    }
+    return false;
+  }
+
   type Dispatched =
     | { kind: "unsent" }
+    | { kind: "stale"; reason: CampaignRefusalReason }
     | { kind: "unsettled" }
     | { kind: "done"; seq: number; response: PinnedResponse; failure: CampaignSendFailure | null; read: number };
 
   /**
-   * Sends one judged request: waits for the spacing, charges the budget, writes the `sending` row, sends, and settles
-   * the row. `unsent`: the wait was cut by a stop, or the row could not be written (the Campaign then ends) — nothing
-   * went out. `unsettled`: it went out, and its result could not be recorded (the row stays `sending`; the Campaign
-   * ends).
+   * Sends one judged request: waits for the spacing, charges the budget, writes the `sending` row, reads the switches
+   * and the authorization once more, sends, and settles the row. `unsent`: the wait was cut by a stop, or the row
+   * could not be written (the Campaign then ends) — nothing went out. `stale`: what was read right before the send
+   * no longer allows the request — nothing went out, and its row says so. `unsettled`: it went out, and its result
+   * could not be recorded (the row stays `sending`; the Campaign ends).
    */
   async function dispatch(
+    phase: "start" | "run",
     method: CampaignMethod,
     target: string,
+    path: string,
     accept: string,
     bodyCap: number,
   ): Promise<Dispatched> {
@@ -297,6 +413,7 @@ export function createGate(deps: GateDeps): Gate {
       seq: number,
       method,
       target,
+      asked: null,
       outcome: "sending",
       reason: null,
       status: null,
@@ -311,11 +428,24 @@ export function createGate(deps: GateDeps): Gate {
       finish("engine_error");
       return { kind: "unsent" };
     }
-    if (deps.signal.aborted) {
-      // Stopped while the row was being written: the request never left. The row says so, and it is not counted.
-      sent -= 1;
-      await deps.settle({ ...row, outcome: "not_sent" }).catch(() => finish("engine_error"));
-      return { kind: "unsent" };
+    // The last read before the send: a stop, a kill or a lapse committed while this request waited for its turn or
+    // for its row holds it back. Between this read and the send nothing is awaited.
+    let refused: CampaignRefusalReason | null = null;
+    let unread = false;
+    if (!deps.signal.aborted) {
+      try {
+        refused = await stale(phase, path);
+      } catch {
+        unread = true;
+      }
+    }
+    if (deps.signal.aborted || unread || refused !== null) {
+      // Stopped or withdrawn while the row was being written: the request never left. The row says so, and it is
+      // not counted.
+      if (await settleUnsent(row)) sent -= 1;
+      // The switches could not be read: nothing goes out unjudged, and the Campaign ends.
+      if (unread && !deps.signal.aborted) finish("engine_error");
+      return refused !== null && !deps.signal.aborted ? { kind: "stale", reason: refused } : { kind: "unsent" };
     }
 
     const started = deps.now();
@@ -369,10 +499,14 @@ export function createGate(deps: GateDeps): Gate {
         ms,
       });
     } catch {
-      // The row stays `sending`: the request is in the log, its result is not. The Campaign ends.
-      finish("engine_error");
+      // The row stays `sending`: the request is in the log, its result is not. The Campaign ends — as stopped when a
+      // stop is what cut the request, as an error of ours otherwise.
+      finish(deps.signal.aborted ? abortReason() : "engine_error");
       return { kind: "unsettled" };
     }
+    // A connection that read more than one request may: the target is sending what no response holds. The row says
+    // what was read; the Campaign ends on its byte budget.
+    if (failure === "read_limit") finish("byte_budget");
     return { kind: "done", seq: number, response, failure, read };
   }
 
@@ -387,6 +521,10 @@ export function createGate(deps: GateDeps): Gate {
     inFlight = true;
     try {
       const path = VERIFICATION_FILE_PATH;
+      // The switches, read from the database now, as for a probe: a kill, a suspension, a stop or a pending deletion
+      // that is committed holds the ownership request back too.
+      const off = switchedOff(await deps.control("start"));
+      if (off !== null) return unsent(off);
       // Authorised like any other request: a path the Rules exclude is not fetched, the ownership file included.
       const authorized = await deps.authorize({ host: campaign.host, path, intensity: campaign.intensity });
       if (!authorized.allowed) {
@@ -399,8 +537,24 @@ export function createGate(deps: GateDeps): Gate {
       if (deps.windowHolds !== undefined && !(await deps.windowHolds(path, wait + requestTimeoutMs))) {
         return unsent("outside_window");
       }
-      const dispatched = await dispatch("GET", path, "text/plain", bodyCap(TARGET_LIMITS.fetchBodyBytesMax));
-      if (deps.signal.aborted) return { ok: false, reason: abortReason(), sent: dispatched.kind !== "unsent" };
+      const dispatched = await dispatch(
+        "start",
+        "GET",
+        path,
+        path,
+        "text/plain",
+        bodyCap(TARGET_LIMITS.fetchBodyBytesMax),
+      );
+      const left = dispatched.kind === "done" || dispatched.kind === "unsettled";
+      // The connection read more than one request may: refused on the byte budget, whatever else is true.
+      if (dispatched.kind === "done" && dispatched.failure === "read_limit") {
+        return { ok: false, reason: "byte_budget", sent: true };
+      }
+      if (deps.signal.aborted) return { ok: false, reason: abortReason(), sent: left };
+      if (dispatched.kind === "stale") {
+        const reason = dispatched.reason === "path_excluded" ? "verification_path_excluded" : dispatched.reason;
+        return unsent(startReason(reason));
+      }
       if (dispatched.kind === "unsent") return unsent("engine_error");
       if (dispatched.kind === "unsettled") return { ok: false, reason: "engine_error", sent: true };
       const { response } = dispatched;
@@ -433,11 +587,8 @@ export function createGate(deps: GateDeps): Gate {
 
   async function judge(probe: unknown): Promise<CampaignExchange> {
     // 1. The switches, read from the database now.
-    const control = await deps.control();
-    if (control.killed) return refuse("operator_kill", probe);
-    if (control.suspended) return refuse("organization_suspended", probe);
-    if (control.stopRequested) return refuse("owner_stop", probe);
-    if (control.deletionPending) return refuse("deletion_pending", probe);
+    const off = switchedOff(await deps.control("run"));
+    if (off !== null) return refuse(off, probe);
 
     // 2. The shape: method, path and an optional query, and no other member.
     if (!plainObject(probe)) return refuse("malformed_probe", probe);
@@ -457,24 +608,35 @@ export function createGate(deps: GateDeps): Gate {
     if (query === null) return refuse("query_not_canonical", probe);
     const target = query === "" ? path : `${path}?${query}`;
     if (target.length > CAMPAIGN_LIMITS.requestTargetMax) return refuse("query_not_canonical", probe);
+    // The catalog (D-110): the engine declared what it may ask for, and this is not it. From here on `target` is
+    // text of the catalog, not of the engine.
+    if (!inCampaignCatalog(catalog, probe)) return refuse("not_in_catalog", probe);
 
     // 5. Authorization, from the database.
     const authorized = await deps.authorize({ host: campaign.host, path, intensity: campaign.intensity });
-    if (!authorized.allowed) return refuse(authorized.reason, probe);
+    if (!authorized.allowed) return refuse(authorized.reason, probe, target);
 
     // 6. The Rules of Engagement bound at creation.
-    if (authorized.roe_id !== campaign.roeId) return refuse("rules_replaced", probe);
+    if (authorized.roe_id !== campaign.roeId) return refuse("rules_replaced", probe, target);
 
     // 7. The budgets, and the window for as long as this request may run.
     const wait = spacingWait();
     const spent = overBudget(wait);
-    if (spent !== null) return refuse(spent, probe);
+    if (spent !== null) return refuse(spent, probe, target);
     if (deps.windowHolds !== undefined && !(await deps.windowHolds(path, wait + requestTimeoutMs))) {
-      return refuse("outside_window", probe);
+      return refuse("outside_window", probe, target);
     }
 
-    // 8. The spacing, then the send.
-    const dispatched = await dispatch(method, target, "*/*", bodyCap(CAMPAIGN_LIMITS.responseReadBytesMax));
+    // 8. The spacing; 9. the switches and the authorization once more; then the send.
+    const dispatched = await dispatch(
+      "run",
+      method,
+      target,
+      path,
+      "*/*",
+      bodyCap(CAMPAIGN_LIMITS.responseReadBytesMax),
+    );
+    if (dispatched.kind === "stale") return refuse(dispatched.reason, probe, target);
     if (dispatched.kind !== "done") {
       if (deps.signal.aborted) finish(abortReason());
       return { ok: false, refused: "campaign_ended", fatal: true };
@@ -494,20 +656,15 @@ export function createGate(deps: GateDeps): Gate {
       Array.isArray(response.headers.location) ? response.headers.location[0] : response.headers.location,
       campaign.host,
     );
-    // Redacted here, before the engine, a Finding or a hash can hold it; a body that is not text is withheld whole.
-    const body = redactBody(response.body);
-    const withheld = body === BODY_WITHHELD;
-    held.set(number, {
-      method,
-      target,
-      status,
-      headers,
-      body,
-      // Of the redacted body: the hash cannot be used to test guesses of what was removed.
-      sha256: createHash("sha256").update(body, "utf8").digest("hex"),
+    // Redacted here, before the engine or a Finding can hold it; a body that cannot be read as UTF-8 text (encoded,
+    // another charset, invalid bytes, a NUL) is withheld whole.
+    const body = redactBody(response.body, {
+      contentEncoding: response.headers["content-encoding"],
+      contentType: response.headers["content-type"],
       truncated: response.truncated,
-      location,
     });
+    const withheld = body === BODY_WITHHELD;
+    held.set(number, { method, target, status, headers, body, withheld, truncated: response.truncated, location });
 
     // Target health: a 429, or a 503 that says when to come back, ends the Campaign; so do five failures in a row.
     if (status === 429) finish("target_rate_limited");
@@ -522,16 +679,18 @@ export function createGate(deps: GateDeps): Gate {
   return {
     ownership,
     request,
-    evidence(number, at) {
+    evidence(number, window) {
       const exchange = held.get(number);
       if (exchange === undefined) return null;
+      // The window is the engine's word: bounded, and a piece of the body the gate itself holds for this request.
+      if (typeof window !== "string" || window.length > CAMPAIGN_LIMITS.evidenceWindowMax) return null;
+      if (window !== "" && (exchange.withheld || !exchange.body.includes(window))) return null;
       return {
         method: exchange.method,
         target: exchange.target,
         status: exchange.status,
         headers: exchange.headers,
-        excerpt: excerptAround(exchange.body, at),
-        body_sha256: exchange.sha256,
+        excerpt: evidenceWindow(window),
         truncated: exchange.truncated,
         location: exchange.location,
       };

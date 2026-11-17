@@ -127,7 +127,8 @@ describe("runStandIn", () => {
       ["RW-06", "/go", 12],
     ]);
     expect(findings[2]).toMatchObject({ title: "Error with a stack trace", severity: "medium" });
-    expect(findings[2]?.at).toBeGreaterThanOrEqual(0);
+    // Third review (D-107): a Finding carries its evidence window, not a position in the body.
+    expect(findings[2]?.window).toContain("at loadOrder (/srv/ar-range/orders.js:42:11)");
   });
 
   it("passive: only the passive check runs; the others are skipped without a request", async () => {

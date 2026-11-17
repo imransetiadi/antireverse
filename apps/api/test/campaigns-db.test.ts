@@ -36,7 +36,6 @@ const EVIDENCE = {
   status: 200,
   headers: {},
   excerpt: "x",
-  body_sha256: "a".repeat(64),
   truncated: false,
   location: null,
 };
@@ -70,8 +69,10 @@ describe("migration 0039: Campaigns in the database", () => {
         createdAt: at,
       }),
     );
+  // Fourth review (D-108): a Campaign completes only from running, after a request of it was sent. These tests end
+  // theirs the way a queued or running one can end at any time: stopped.
   const end = (organizationId: string, id: string, at = AT) =>
-    scope(organizationId, (q) => endCampaign(q, id, { reason: "checks_complete", started: true, checks: null, at }));
+    scope(organizationId, (q) => endCampaign(q, id, { reason: "owner_stop", started: true, checks: null, at }));
 
   beforeAll(async () => {
     api = await makeTestApi();
@@ -112,6 +113,7 @@ describe("migration 0039: Campaigns in the database", () => {
               seq: 1,
               method: "GET",
               target: "/",
+              asked: null,
               outcome: "sent",
               reason: null,
               status: 200,
@@ -144,7 +146,26 @@ describe("migration 0039: Campaigns in the database", () => {
   it("an end is final: an ended Campaign cannot be changed, restarted or stopped", async () => {
     const campaign = await create(orgA);
     await scope(orgA, (q) => claimCampaign(q, campaign.id, AT, "203.0.113.10"));
-    expect(await end(orgA, campaign.id)).toBe(true);
+    // It completes as a real one does (fourth review, D-108): running, with a request that was sent.
+    const sent = {
+      seq: 1,
+      method: "GET",
+      target: "/",
+      asked: null,
+      outcome: "sent" as const,
+      reason: null,
+      status: 200,
+      failure: null,
+      bytes: 1,
+      ms: 1,
+    };
+    await scope(orgA, (q) => insertCampaignRequest(q, orgA, campaign.id, sent, AT));
+    const complete = () =>
+      scope(orgA, (q) =>
+        endCampaign(q, campaign.id, { reason: "checks_complete", started: true, checks: null, at: AT }),
+      );
+    expect(await complete()).toBe(true);
+    expect(await complete()).toBe(false);
     expect(await end(orgA, campaign.id)).toBe(false);
     expect(await scope(orgA, (q) => claimCampaign(q, campaign.id, AT, "203.0.113.10"))).toBe(false);
     expect(await scope(orgA, (q) => requestStop(q, campaign.id, { keyId: KEY, reason: "x", at: AT }))).toBe(false);
@@ -193,6 +214,7 @@ describe("migration 0039: Campaigns in the database", () => {
       seq: 1,
       method: "GET",
       target: "/",
+      asked: null,
       outcome: "sending" as const,
       reason: null,
       status: null,
@@ -224,6 +246,7 @@ describe("migration 0039: Campaigns in the database", () => {
       seq,
       method: "GET",
       target: "/",
+      asked: null,
       outcome,
       reason: outcome === "refused" ? ("owner_stop" as const) : null,
       status: null,
@@ -477,6 +500,7 @@ describe("migration 0039: Campaigns in the database", () => {
           seq: 1,
           method: "GET",
           target: "/",
+          asked: null,
           outcome: "sent",
           reason: null,
           status: 200,

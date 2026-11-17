@@ -312,6 +312,15 @@ describe("stub Campaigns: a run", () => {
     expect(findings.findings.every((finding) => finding.state === "confirmed")).toBe(true);
     // Evidence is redacted: no email address and no key survives in an excerpt.
     for (const finding of findings.findings) expect(finding.evidence.excerpt).not.toMatch(/@|aro_|ark_/);
+    // Third review (D-107): as the API — a window of at most 200 characters, none for a check that reads no body, and
+    // no hash of the body.
+    const raw = call("GET", `/v1/campaigns/${id}/findings`).body as { findings: { evidence: object }[] };
+    expect(raw.findings.every((finding) => !("body_sha256" in finding.evidence))).toBe(true);
+    expect(findings.findings.every((finding) => finding.evidence.excerpt.length <= 200)).toBe(true);
+    expect(findings.findings.filter((finding) => finding.evidence.excerpt === "").map((f) => f.check_id)).toEqual([
+      "RW-01",
+      "RW-06",
+    ]);
     const { report } = parsed(CampaignReportResponseSchema, call("GET", `/v1/campaigns/${id}/report`).body);
     expect(report.notice).toBe(CAMPAIGN_STAND_IN_NOTICE);
     expect(report.summary).toBe(campaignChecksSentence({ ran: 6, reported: 6, inconclusive: 0, skipped: 0 }));

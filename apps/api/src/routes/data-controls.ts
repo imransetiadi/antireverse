@@ -21,6 +21,7 @@ import type { WindowLimiter } from "../attestation/limiter.ts";
 import { audit, auditActor, reasonMissing } from "../audit.ts";
 import { type AppEnv, requireKey } from "../auth/authenticate.ts";
 import { limitBody } from "../body.ts";
+import type { CampaignService } from "../campaign/runner.ts";
 import { EXPORT_TABLES, type ExportSource, exportStream } from "../data/export.ts";
 import type { Db } from "../db/db.ts";
 import { problem } from "../problem.ts";
@@ -55,6 +56,8 @@ export function dataControlRoutes(deps: {
   /** The per-Organization budget shared with audit verification and export. */
   reads: WindowLimiter;
   now?: (() => Date) | undefined;
+  /** The Campaign runner: told at once when a deletion is requested, so that nothing more is sent meanwhile. */
+  campaigns?: Pick<CampaignService, "cut"> | undefined;
 }): Hono<AppEnv> {
   const { db, signer, reads } = deps;
   const now = deps.now ?? (() => new Date());
@@ -160,6 +163,10 @@ export function dataControlRoutes(deps: {
             { path: "confirm_name", message: "Must be the Organization's name, exactly as it is shown." },
           ]);
         }
+        // Committed. A Campaign of this Organization that runs in this process is cut now, with nothing awaited
+        // in between: the gate refuses its next request anyway (it reads the pending deletion), this ends the one
+        // in flight too. A queued one stays queued until the purge.
+        deps.campaigns?.cut(organizationId, "deletion_pending");
         return c.json({ deletion: outcome } satisfies DeletionResponse, 201);
       } catch (error) {
         if ((error as { code?: unknown }).code === UNIQUE_VIOLATION) return problem(c, "conflict");
