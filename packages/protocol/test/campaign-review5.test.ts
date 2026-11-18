@@ -96,7 +96,7 @@ describe("review5: the probe catalog", () => {
     for (const query of orders) {
       const probe = { method: "GET", path: "/search", query };
       expect(inCampaignCatalog(catalog, probe)).toBe(true);
-      expect(campaignCatalogTarget(catalog, probe)).toEqual({
+      expect(campaignCatalogTarget(catalog, probe)).toMatchObject({
         entry: catalog[0],
         target: "/search?q=a%20b&lang=en&m=m-0123abcd",
       });
@@ -105,6 +105,6 @@ describe("review5: the probe catalog", () => {
     expect(campaignCatalogTarget(catalog, { method: "GET", path: "/other" })).toBeNull();
     expect(
       campaignCatalogTarget(campaignCatalog([{ method: "GET", path: "/" }]), { method: "GET", path: "/" }),
-    ).toEqual({ entry: { method: "GET", path: "/" }, target: "/" });
+    ).toMatchObject({ entry: { method: "GET", path: "/" }, target: "/" });
   });
 });

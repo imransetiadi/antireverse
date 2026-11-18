@@ -322,21 +322,50 @@ function redactAssignments(text: string): string {
   return out + text.slice(copied);
 }
 
-// Characters that are not text to read. Controls (C0, DEL, C1 — U+0085 among them) and format characters: the soft
-// hyphen, zero-width space and joiners, the word joiner, the byte order mark, the bidirectional marks, overrides and
-// isolates. They show as nothing, or reorder what stands around them.
-const NOT_TEXT = /[\p{Cc}\p{Cf}]/gu;
-const LINE_BREAK = /\r\n?|[\u2028\u2029]/g;
+// Characters are classified before any pattern runs (D-114), and the text is put into one form.
+//
+// - A line break of any kind — CR LF, CR, NEL (U+0085), U+2028, U+2029 — is one line feed.
+// - What has no width is deleted: format characters (the soft hyphen, zero-width space and joiners, the word joiner,
+//   the byte order mark, the bidirectional marks, overrides and isolates) and every default-ignorable code point (the
+//   combining grapheme joiner, variation selectors, the Hangul fillers, tag characters). Left in, one of them inside
+//   a card number or the word "password" hides it from every pattern.
+// - Every other control (VT, FF, FS to US, ESC, DEL, the C1 controls) is ONE space: it separated two things. Deleted,
+//   it would glue a secret to the word before it — `token<NEL>Bearer …` — and out of a pattern's reach.
+// - Then the text is NFKC-normalised: fullwidth digits are digits, a ligature is its letters. The engine, the
+//   patterns and what is stored all read this one form.
+//
+// Limit: a character that is text but shows as nothing or as part of a letter — the Braille blank U+2800, an
+// ordinary combining mark — is left where it is, and still splits a pattern.
+const LINE_BREAK = /\r\n?|[\u0085\u2028\u2029]/g;
+const NO_WIDTH = /[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu;
+const CONTROL = /\p{Cc}/gu;
+/** Rounds of cleaning at most: normalising can bring out a character that the next round takes out. */
+const CLEAN_ROUNDS_MAX = 5;
 
 /**
- * `text` without the characters that are not text: every line break (CR LF, CR, U+2028, U+2029) is one line feed; a
- * line feed and a tab stay; every other control or format character is removed — not replaced: it stood between two
- * characters that belong together. Idempotent.
+ * `text` cleaned and in one form (see above), or null if it does not settle in five rounds (none is known). A fixed
+ * point: cleaning what was cleaned changes nothing.
+ */
+function settled(text: string): string | null {
+  let out = text;
+  for (let round = 0; round < CLEAN_ROUNDS_MAX; round++) {
+    const next = out
+      .replace(LINE_BREAK, "\n")
+      .replace(NO_WIDTH, "")
+      .replace(CONTROL, (character) => (character === "\n" || character === "\t" ? character : " "))
+      .normalize("NFKC");
+    if (next === out) return out;
+    out = next;
+  }
+  return null;
+}
+
+/**
+ * `text` without what is not text, in NFKC: line breaks as line feeds, zero-width characters deleted, other controls
+ * as one space each. Idempotent. A text that does not settle is withheld whole.
  */
 export function cleanText(text: string): string {
-  return text
-    .replace(LINE_BREAK, "\n")
-    .replace(NOT_TEXT, (character) => (character === "\n" || character === "\t" ? character : ""));
+  return settled(text) ?? BODY_WITHHELD;
 }
 
 /** Passes of the patterns over one text at most; a text still changing after them is withheld whole. */
@@ -351,16 +380,18 @@ const PASSES_MAX = 6;
  *
  * Idempotent: `redactText(redactText(x)) === redactText(x)` for every text. One pass of the patterns is not — a
  * marker a later pattern writes can end a name or a value that an earlier pattern then reads differently — so the
- * patterns are applied until a pass changes nothing, which is the result. Should a text still change after
- * `PASSES_MAX` passes (none is known), it is withheld whole rather than handed on half-redacted.
+ * patterns are applied until a pass changes nothing, which is the result. A text that still changes after
+ * `PASSES_MAX` passes is withheld whole rather than handed on half-redacted. That cap is reachable: long runs in
+ * which each pass uncovers the next assignment (`bcn_` and 64 letters and `pwd=` and 1,024 letters, five times;
+ * `cookie: a=b;` repeated to 64 KB) do not settle in six passes, and are withheld — which makes every check that
+ * reads such a body inconclusive (pinned in `campaign-review6-redact.test.ts`).
  */
 export function redactText(text: string): string {
   let out = String(text);
   // A NUL is checked for before anything is taken out: text with one is not text.
   if (out.includes("\u0000")) return BODY_WITHHELD;
-  // Characters that are not text go first (fifth review): left in, a soft hyphen or a zero-width space inside a card
-  // number, a token or the word "password" hides it from every pattern below — and would then be dropped from what
-  // is stored, leaving the secret readable.
+  // Classified and normalised first (D-114): zero-width characters deleted, separating controls as spaces, NFKC.
+  // The patterns below, the engine and what is stored then read the same characters.
   out = cleanText(out);
   for (let pass = 0; pass < PASSES_MAX; pass++) {
     const next = redactOnce(out);

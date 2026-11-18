@@ -112,6 +112,7 @@ describe("entry points", () => {
       "CAMPAIGN_SEVERITIES",
       "CAMPAIGN_STAND_IN_NOTICE",
       "CAMPAIGN_STATUSES",
+      "CAMPAIGN_TOKEN_MASK",
       "CANARY_KINDS",
       "CANARY_LIMITS",
       "CANARY_PLAN",

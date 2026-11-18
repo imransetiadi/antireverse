@@ -217,7 +217,9 @@ describe("the Campaign runner: restart and start checks", () => {
     await startsAs(suspended, "stopped", "organization_suspended");
   });
 
-  it("an Organization whose deletion is pending starts nothing: its Campaign stays queued", async () => {
+  // Sixth review (D-112): it used to stay queued until the purge — and would then start by itself after a cancel.
+  // The queue ends it now, without asking the target or the resolver anything.
+  it("an Organization whose deletion is pending starts nothing: its queued Campaign is ended as stopped", async () => {
     const s = await seed();
     await api.db.owner((q) =>
       q.query(
@@ -229,8 +231,8 @@ describe("the Campaign runner: restart and start checks", () => {
     );
     const before = lookups;
     await restart();
-    expect(await read(s)).toMatchObject({ status: "queued", end_reason: null });
-    expect(await audited(s)).toEqual([]);
+    expect(await read(s)).toMatchObject({ status: "stopped", end_reason: "deletion_pending", requests_sent: 0 });
+    expect(await audited(s)).toEqual([["campaign.refuse", "system"]]);
     expect(lookups).toBe(before);
   });
 

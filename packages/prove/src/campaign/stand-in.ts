@@ -39,6 +39,12 @@ export interface StandInCheck {
    */
   readonly readsBody: boolean;
   /**
+   * Whether the check looks into THIS response's body (its status is the one the check judges a body of). When it
+   * does, finds nothing, and the body holds a redaction marker, the text it looks for may be what was redacted — a
+   * value redacted to the end of its line takes what follows with it — so the check cannot tell: inconclusive.
+   */
+  readonly looksInto?: (exchange: Answered) => boolean;
+  /**
    * The evidence window when the response shows the weakness, or null when it does not: at most 200 characters of
    * the (redacted) body around what the check matched — its marker, the reflected probe value, the stack-trace line.
    * Empty for a check that reads no body. Nothing else of a body is reported (D-107).
@@ -59,6 +65,9 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
+
+/** How every marker the gate writes in place of redacted text begins. */
+const REDACTION_MARKER = "[redacted-";
 
 /** Characters kept before a match, for context: the line an error message stands on, the tag around a marker. */
 const WINDOW_LEAD = 40;
@@ -97,6 +106,7 @@ export const STAND_IN_CATALOG: readonly StandInCheck[] = freeze([
     intensity: "safe-active",
     probe: { method: "GET", path: "/api/orders/x" },
     readsBody: true,
+    looksInto: (exchange) => exchange.status >= 500,
     detect: (exchange) => (exchange.status >= 500 ? around(exchange.body, STACK_FRAME) : null),
   },
   {
@@ -106,6 +116,7 @@ export const STAND_IN_CATALOG: readonly StandInCheck[] = freeze([
     intensity: "safe-active",
     probe: { method: "GET", path: "/api/admin/reports" },
     readsBody: true,
+    looksInto: (exchange) => exchange.status === 200,
     detect: (exchange) => (exchange.status === 200 ? around(exchange.body, '"reports"') : null),
   },
   {
@@ -115,6 +126,7 @@ export const STAND_IN_CATALOG: readonly StandInCheck[] = freeze([
     intensity: "safe-active",
     probe: { method: "GET", path: "/api/orders/1001" },
     readsBody: true,
+    looksInto: (exchange) => exchange.status === 200,
     detect: (exchange) => (exchange.status === 200 ? around(exchange.body, '"order_id"') : null),
   },
   {
@@ -124,6 +136,7 @@ export const STAND_IN_CATALOG: readonly StandInCheck[] = freeze([
     intensity: "safe-active",
     probe: { method: "GET", path: "/search", query: { q: STAND_IN_MARKER } },
     readsBody: true,
+    looksInto: (exchange) => exchange.status === 200,
     detect: (exchange) => (exchange.status === 200 ? around(exchange.body, STAND_IN_MARKER) : null),
   },
   {
@@ -218,7 +231,9 @@ export async function runStandIn(context: EngineContext): Promise<void> {
     }
     const seen = check.detect(first);
     if (seen === null) {
-      const unread = check.readsBody && (first.withheld || first.truncated);
+      // Could not read it: withheld, cut at the read cap — or redacted in part, where the check looked for its text.
+      const redacted = check.looksInto?.(first) === true && first.body.includes(REDACTION_MARKER);
+      const unread = check.readsBody && (first.withheld || first.truncated || redacted);
       context.check({ id: check.id, result: unread ? "inconclusive" : "clean" });
       continue;
     }

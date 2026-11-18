@@ -80,6 +80,13 @@ export const MATRICES: readonly Matrix[] = [
       "apps/api/test/campaign-review5-routes.test.ts",
       "apps/api/test/campaign-review5-redact.test.ts",
       "apps/api/test/campaign-review5-db.test.ts",
+      // The sixth review's: an end that cannot be written at first, a cut that cannot read the queue, a burst of
+      // probes in one tick, separating controls and zero-width characters (D-114), what a later kill may sign for.
+      "apps/api/test/campaign-review6-gate.test.ts",
+      "apps/api/test/campaign-review6-runner.test.ts",
+      "apps/api/test/campaign-review6-routes.test.ts",
+      "apps/api/test/campaign-review6-redact.test.ts",
+      "apps/api/test/campaign-review6-db.test.ts",
       "tests/e2e/campaign-scope.http.test.ts",
       "tests/e2e/campaign-never-destructive.http.test.ts",
       "tests/e2e/campaign-review.http.test.ts",

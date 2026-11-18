@@ -156,6 +156,14 @@ export async function listCampaigns(q: Queryable, limit: number): Promise<Campai
   return rows.map(toCampaign);
 }
 
+/** The ids of the Organization's queued and running Campaigns. */
+export async function openCampaignIds(q: Queryable): Promise<string[]> {
+  const { rows } = await q.query<{ id: string }>(
+    "SELECT id FROM campaigns WHERE status IN ('queued', 'running') ORDER BY created_at, id",
+  );
+  return rows.map((row) => row.id);
+}
+
 /** Whether the Organization has a queued or running Campaign. */
 export async function hasActiveCampaign(q: Queryable): Promise<boolean> {
   const { rows } = await q.query("SELECT 1 FROM campaigns WHERE status IN ('queued', 'running') LIMIT 1");
@@ -488,16 +496,18 @@ export async function campaignQueue(q: Queryable, limit: number, offset = 0): Pr
 }
 
 /**
- * Campaigns that ended with an operator stop's reason since `since` and have no operator entry in their
- * Organization's audit chain (`campaigns_without_operator_entry`): what a repeated stop completes.
+ * Campaigns the operator's stop that is on now ended and that have no operator entry in their Organization's audit
+ * chain (`campaigns_awaiting_operator_entry`): ended as `operator_kill` since the switch was turned on, or as
+ * `organization_suspended` since their Organization was suspended. What a repeated stop completes — and nothing a
+ * stop long lifted left behind.
  */
 export async function campaignsWithoutOperatorEntry(
   q: Queryable,
-  input: { reason: "operator_kill" | "organization_suspended"; organizationId?: string | undefined; since: Date },
+  input: { reason: "operator_kill" | "organization_suspended"; organizationId?: string | undefined },
 ): Promise<{ organizationId: string; campaignId: string }[]> {
   const { rows } = await q.query<{ organization_id: string; campaign_id: string }>(
-    "SELECT organization_id, campaign_id FROM campaigns_without_operator_entry($1, $2, $3)",
-    [input.reason, input.organizationId ?? null, input.since.toISOString()],
+    "SELECT organization_id, campaign_id FROM campaigns_awaiting_operator_entry($1, $2)",
+    [input.reason, input.organizationId ?? null],
   );
   return rows.map((row) => ({ organizationId: row.organization_id, campaignId: row.campaign_id }));
 }

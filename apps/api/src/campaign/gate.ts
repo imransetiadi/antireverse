@@ -279,8 +279,9 @@ export function createGate(deps: GateDeps): Gate {
   }
 
   /**
-   * Refuses a probe and logs the refusal. `target`: the canonical target of a probe that is in the catalog (text the
-   * catalog declares, not the engine); without it nothing the probe asked for is kept but its size.
+   * Refuses a probe and logs the refusal. `target`: the target of a probe that is in the catalog, in the catalog's
+   * words — with a token's value masked: a refused probe was never sent, and the value is the engine's choice.
+   * Without it nothing the probe asked for is kept but its size.
    */
   async function refuse(
     reason: CampaignRefusalReason,
@@ -289,6 +290,15 @@ export function createGate(deps: GateDeps): Gate {
   ): Promise<CampaignExchange> {
     refused += 1;
     const asked = plainObject(probe) ? probe : {};
+    // The end comes first, before anything is awaited (sixth review): a refusal that ends the Campaign — a probe
+    // outside the catalog, the twentieth refusal — ends it in the same turn it is judged in. Probes asked for in the
+    // same tick then find the Campaign ended and write nothing: one row is all a burst can leave.
+    let fatal = FATAL.has(reason);
+    if (fatal) finish(reason as CampaignEndReason);
+    else if (refused >= CAMPAIGN_LIMITS.refusalsMax) {
+      fatal = true;
+      finish("refusal_limit");
+    }
     if (seq < CAMPAIGN_LIMITS.storedRequestsMax) {
       seq += 1;
       try {
@@ -305,16 +315,10 @@ export function createGate(deps: GateDeps): Gate {
           ms: 0,
         });
       } catch {
-        // A log that cannot be written ends the Campaign.
+        // A log that cannot be written ends the Campaign (if this refusal has not ended it already).
         finish("engine_error");
       }
     } else finish("refusal_limit");
-    let fatal = FATAL.has(reason);
-    if (fatal) finish(reason as CampaignEndReason);
-    else if (refused >= CAMPAIGN_LIMITS.refusalsMax) {
-      fatal = true;
-      finish("refusal_limit");
-    }
     return { ok: false, refused: reason, fatal: fatal || end !== null };
   }
 
@@ -583,7 +587,7 @@ export function createGate(deps: GateDeps): Gate {
       // repeat. A catalog probe is refused for this turn only, with the catalog's target.
       const asked = classify(probe);
       if (!asked.ok) return refuse(asked.reason, probe);
-      return refuse("concurrent_request", probe, asked.target);
+      return refuse("concurrent_request", probe, asked.masked);
     }
     inFlight = true;
     try {
@@ -599,7 +603,16 @@ export function createGate(deps: GateDeps): Gate {
 
   type Classified =
     | { ok: false; reason: CampaignRefusalReason }
-    | { ok: true; method: CampaignMethod; path: string; target: string; checks: readonly string[] };
+    | {
+        ok: true;
+        method: CampaignMethod;
+        path: string;
+        /** The target as it is sent. */
+        target: string;
+        /** The target as a refused row keeps it: a token's value masked. */
+        masked: string;
+        checks: readonly string[];
+      };
 
   /**
    * What a probe is, without asking anyone: malformed, of another method, not canonical, not in the catalog — or one
@@ -634,32 +647,42 @@ export function createGate(deps: GateDeps): Gate {
     // in the catalog's order, not of the engine.
     const declared = campaignCatalogTarget(catalog, probe);
     if (declared === null) return { ok: false, reason: "not_in_catalog" };
-    return { ok: true, method, path, target: declared.target, checks: declared.entry.checks ?? [] };
+    return {
+      ok: true,
+      method,
+      path,
+      target: declared.target,
+      masked: declared.masked,
+      checks: declared.entry.checks ?? [],
+    };
   }
 
   async function judge(probe: unknown): Promise<CampaignExchange> {
     // 1. The switches, read from the database now.
     const off = switchedOff(await deps.control("run"));
+    // Ended while the switches were read (a probe of the same tick was outside the catalog): nothing more is judged
+    // or written.
+    if (end !== null) return { ok: false, refused: "campaign_ended", fatal: true };
     if (off !== null) return refuse(off, probe);
 
     // 2, 3, 4. The shape, the method, the canonical path and query, and the catalog.
     const asked = classify(probe);
     if (!asked.ok) return refuse(asked.reason, probe);
-    const { method, path, target, checks } = asked;
+    const { method, path, target, masked, checks } = asked;
 
     // 5. Authorization, from the database.
     const authorized = await deps.authorize({ host: campaign.host, path, intensity: campaign.intensity });
-    if (!authorized.allowed) return refuse(authorized.reason, probe, target);
+    if (!authorized.allowed) return refuse(authorized.reason, probe, masked);
 
     // 6. The Rules of Engagement bound at creation.
-    if (authorized.roe_id !== campaign.roeId) return refuse("rules_replaced", probe, target);
+    if (authorized.roe_id !== campaign.roeId) return refuse("rules_replaced", probe, masked);
 
     // 7. The budgets, and the window for as long as this request may run.
     const wait = spacingWait();
     const spent = overBudget(wait);
-    if (spent !== null) return refuse(spent, probe, target);
+    if (spent !== null) return refuse(spent, probe, masked);
     if (deps.windowHolds !== undefined && !(await deps.windowHolds(path, wait + requestTimeoutMs))) {
-      return refuse("outside_window", probe, target);
+      return refuse("outside_window", probe, masked);
     }
 
     // 8. The spacing; 9. the switches and the authorization once more; then the send.
@@ -671,7 +694,7 @@ export function createGate(deps: GateDeps): Gate {
       "*/*",
       bodyCap(CAMPAIGN_LIMITS.responseReadBytesMax),
     );
-    if (dispatched.kind === "stale") return refuse(dispatched.reason, probe, target);
+    if (dispatched.kind === "stale") return refuse(dispatched.reason, probe, masked);
     if (dispatched.kind !== "done") {
       if (deps.signal.aborted) finish(abortReason());
       return { ok: false, refused: "campaign_ended", fatal: true };

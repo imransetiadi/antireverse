@@ -172,15 +172,25 @@ describe("migration 0040: the fourth review's rules in the database", () => {
 
   it("R5: from queued, a Campaign starts only with a pinned address, and ends only as stopped, refused or failed without check counts", async () => {
     const campaign = await create();
-    const ended = "end_reason = 'x', finished_at = created_at";
+    // Sixth review (migration 0042): a status and an end reason must agree, so each status ends with a reason of
+    // its own here — what is refused below is refused by the state trigger, not by that rule.
+    const REASON = {
+      stopped: "owner_stop",
+      refused: "target_not_verified",
+      failed: "engine_error",
+      interrupted: "api_shutdown",
+      completed: "checks_complete",
+    } as const;
+    const ended = (status: keyof typeof REASON) =>
+      `status = '${status}', end_reason = '${REASON[status]}', finished_at = created_at`;
     const refusedUpdates = [
       "status = 'running', started_at = created_at",
-      `status = 'interrupted', ${ended}`,
-      `status = 'completed', ${ended}`,
-      `status = 'failed', ${ended}, checks_ran = 0, checks_reported = 0, checks_skipped = 6, checks_inconclusive = 0`,
-      `status = 'stopped', ${ended}, checks_ran = 6, checks_reported = 6, checks_skipped = 0, checks_inconclusive = 0`,
-      `status = 'stopped', ${ended}, findings_dropped = 3`,
-      `status = 'refused', ${ended}, started_at = created_at`,
+      ended("interrupted"),
+      ended("completed"),
+      `${ended("failed")}, checks_ran = 0, checks_reported = 0, checks_skipped = 6, checks_inconclusive = 0`,
+      `${ended("stopped")}, checks_ran = 6, checks_reported = 6, checks_skipped = 0, checks_inconclusive = 0`,
+      `${ended("stopped")}, findings_dropped = 3`,
+      `${ended("refused")}, started_at = created_at`,
       "checks_ran = 1, checks_reported = 1, checks_skipped = 0, checks_inconclusive = 0",
       "pinned_address = '203.0.113.10'",
     ];
@@ -193,7 +203,7 @@ describe("migration 0040: the fourth review's rules in the database", () => {
     await scope((q) => endCampaign(q, campaign.id, { reason: "owner_stop", started: true, checks: null, at: AT }));
     for (const status of ["stopped", "refused", "failed"] as const) {
       const queued = await create();
-      expect(await update(queued.id, `status = '${status}', ${ended}`)).toBeUndefined();
+      expect(await update(queued.id, ended(status))).toBeUndefined();
     }
   });
 

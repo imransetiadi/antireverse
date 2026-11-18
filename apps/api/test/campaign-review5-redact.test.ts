@@ -10,7 +10,9 @@ const SHY = "\u00ad";
 const ZWSP = "\u200b";
 const WJ = "\u2060";
 const NEL = "\u0085";
-const HIDERS = [SHY, ZWSP, WJ, NEL, "\u200d", "\ufeff", "\u202e", "\u001b", "\u007f", "\u009f"];
+// Sixth review (D-114): a control (NEL, ESC, DEL, a C1) separates and becomes a line feed or a space; it is no longer
+// in this list of characters that are deleted from inside a word.
+const HIDERS = [SHY, ZWSP, WJ, "\u200d", "\ufeff", "\u202e", "\u034f", "\ufe0f"];
 
 /** Secret fixtures of the earlier reviews: [text, what must not survive]. */
 const SECRETS: [string, string[]][] = [
@@ -32,7 +34,7 @@ describe("review5 2: characters that are not text are taken out before the patte
     const hidden = [
       `{"card":"4111${SHY}1111${ZWSP}1111${WJ}1111"}`,
       `Authorization: Bea${SHY}rer AbCdEfGh.IjKlMnOp-12345678`,
-      `db_pass${NEL}word = hunter2-is-the-root-password`,
+      `db_pass${WJ}word = hunter2-is-the-root-password`,
       `db_pass${ZWSP}word = hunter2-is-the-root-password`,
     ];
     for (const text of hidden) {
@@ -47,7 +49,7 @@ describe("review5 2: characters that are not text are taken out before the patte
     const kept = redactHeaders(
       {
         server: `nginx to${SHY}ken=hunter2hunter2`,
-        "x-powered-by": `PHP sk_${NEL}live_abcdefgh12345678`,
+        "x-powered-by": `PHP sk_${WJ}live_abcdefgh12345678`,
         "cache-control": `private, pass${WJ}word=hunter2`,
       },
       "shop.acme-shop.io",
@@ -72,14 +74,15 @@ describe("review5 2: characters that are not text are taken out before the patte
         }
       }
     }
-    expect(cases).toBeGreaterThan(3000);
+    expect(cases).toBeGreaterThan(2500);
     expect(leaks.slice(0, 10)).toEqual([]);
   });
 
   it("the engine sees the cleaned body: what it cuts a window from is what the gate holds", () => {
     const body = redactBody(Buffer.from(`Error: bo${SHY}om\r\n    at handler (/srv/app.js:1:1)${NEL}next\u001b[31m`));
-    // CR LF is one line break; the soft hyphen, the C1 control and the escape character are gone.
-    expect(body).toBe("Error: boom\n    at handler (/srv/app.js:1:1)next[31m");
+    // CR LF is one line break; the soft hyphen is gone.
+    // Sixth review (D-114): a control that separates is one space, NEL a line break; only what has no width goes.
+    expect(body).toBe("Error: boom\n    at handler (/srv/app.js:1:1)\nnext [31m");
     // biome-ignore lint/suspicious/noControlCharactersInRegex: the absence of control characters is the point.
     expect(body).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     expect(evidenceWindow(body)).toBe(body);

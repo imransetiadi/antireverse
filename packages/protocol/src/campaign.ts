@@ -304,6 +304,10 @@ const TOKEN_PREFIX = /^[A-Za-z0-9._~-]{0,64}$/;
 const TOKEN_HEX_MIN = 8;
 const TOKEN_HEX_MAX = CAMPAIGN_LIMITS.catalogTokenHexMax;
 const CHECK_ID = /^[A-Z]{2}-[0-9]{2}$/;
+/** Names no catalog declares: looked up on a plain object they are not query parameters. */
+const RESERVED_QUERY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+/** What stands for a token's value where a probe was not sent: the value is the engine's choice and is not kept. */
+export const CAMPAIGN_TOKEN_MASK = "[token]";
 
 /**
  * The shape of one query value an engine may send: exactly one text, or a token — a fixed prefix followed by exactly
@@ -354,6 +358,13 @@ export function campaignCatalog(probes: unknown): readonly CampaignCatalogProbe[
   const seen = new Set<string>();
   const catalog: CampaignCatalogProbe[] = [];
   for (const value of probes) {
+    // Judged on what was passed in, before it is parsed: a parser may drop such a name without a word.
+    const declared = (value as { query?: unknown } | null)?.query;
+    if (typeof declared === "object" && declared !== null) {
+      if (Object.keys(declared).some((name) => RESERVED_QUERY_NAMES.has(name))) {
+        return fail("holds a query name that is a property of every object");
+      }
+    }
     const parsed = CampaignCatalogProbeSchema.safeParse(value);
     if (!parsed.success) return fail("holds a probe that is not { method, path, query? } with a shape per value");
     const probe = parsed.data;
@@ -362,6 +373,7 @@ export function campaignCatalog(probes: unknown): readonly CampaignCatalogProbe[
       return fail("holds a probe with more than one token value");
     }
     if (new Set(probe.checks ?? []).size !== (probe.checks ?? []).length) return fail("names a check twice");
+
     const longest: Record<string, string> = {};
     for (const [name, shape] of Object.entries(probe.query ?? {})) longest[name] = longestOf(shape);
     const query = probe.query === undefined ? "" : canonicalCampaignQuery(longest);
@@ -389,13 +401,14 @@ function matchesShape(shape: CampaignQueryShape, value: unknown): boolean {
 /**
  * The catalog entry `probe` is exactly — the same method and path, the same query names (none more, none fewer), each
  * value of its declared shape, and no other member — with the request target built in the CATALOG's name order (the
- * order an engine lists its query names in is the engine's choice, and is not kept or sent). Null for anything else,
- * whatever it is.
+ * order an engine lists its query names in is the engine's choice, and is not kept or sent). `masked`: the same
+ * target with a token's value replaced by its prefix and `[token]` — what the log keeps of a probe that was refused
+ * and never sent (the token is up to 128 bits of the engine's choosing). Null for anything else, whatever it is.
  */
 export function campaignCatalogTarget(
   catalog: readonly CampaignCatalogProbe[],
   probe: unknown,
-): { entry: CampaignCatalogProbe; target: string } | null {
+): { entry: CampaignCatalogProbe; target: string; masked: string } | null {
   if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return null;
   const asked = probe as Record<string, unknown>;
   if (Object.keys(asked).some((key) => key !== "method" && key !== "path" && key !== "query")) return null;
@@ -405,25 +418,28 @@ export function campaignCatalogTarget(
   for (const entry of catalog) {
     if (entry.method !== asked.method || entry.path !== asked.path) continue;
     if (entry.query === undefined || values === undefined) {
-      if (entry.query === undefined && values === undefined) return { entry, target: entry.path };
+      if (entry.query === undefined && values === undefined) return { entry, target: entry.path, masked: entry.path };
       continue;
     }
     const names = Object.keys(entry.query);
     if (Object.keys(values).length !== names.length) continue;
-    const ordered: Record<string, string> = {};
+    const parts: string[] = [];
+    const maskedParts: string[] = [];
     let matches = true;
     for (const name of names) {
+      const shape = entry.query[name] as CampaignQueryShape;
       const value = Object.hasOwn(values, name) ? values[name] : undefined;
-      if (!matchesShape(entry.query[name] as CampaignQueryShape, value)) {
+      const part = matchesShape(shape, value) ? canonicalCampaignQuery({ [name]: value as string }) : null;
+      if (part === null) {
         matches = false;
         break;
       }
-      ordered[name] = value as string;
+      parts.push(part);
+      maskedParts.push("token" in shape ? `${name}=${shape.token.prefix}${CAMPAIGN_TOKEN_MASK}` : part);
     }
     if (!matches) continue;
-    const encoded = canonicalCampaignQuery(ordered);
-    if (encoded === null) return null;
-    return { entry, target: encoded === "" ? entry.path : `${entry.path}?${encoded}` };
+    if (parts.length === 0) return { entry, target: entry.path, masked: entry.path };
+    return { entry, target: `${entry.path}?${parts.join("&")}`, masked: `${entry.path}?${maskedParts.join("&")}` };
   }
   return null;
 }

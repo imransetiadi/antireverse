@@ -17,6 +17,7 @@ import {
   insertCampaign,
   insertCampaignRequest,
   listCampaignRequests,
+  setKillSwitch,
 } from "../src/stores/campaigns.ts";
 import { createOrganization, makeTestApi, type TestApi } from "./helpers.ts";
 
@@ -157,19 +158,19 @@ describe("migration 0041: the fifth review's rules in the database", () => {
         at: AT,
       }),
     );
-    const since = new Date(AT.getTime() - 3_600_000);
+    // Sixth review (migration 0042): what a stop completes is bounded by the stop that is on, not by a time given —
+    // so the kill is on here, since before these Campaigns ended.
+    await api.db.tx("none", (q) => setKillSwitch(q, true, new Date(AT.getTime() - 3_600_000), "drill"));
     const missing = (reason: "operator_kill" | "organization_suspended", organizationId?: string) =>
-      api.db.tx("none", (q) => campaignsWithoutOperatorEntry(q, { reason, organizationId, since }));
-    expect(await missing("operator_kill")).toEqual([{ organizationId: other, campaignId: theirs.id }]);
-    expect(await missing("operator_kill", org)).toEqual([]);
-    expect(await missing("operator_kill", other)).toEqual([{ organizationId: other, campaignId: theirs.id }]);
-    expect(await missing("organization_suspended")).toEqual([]);
-    // Not one that ended before `since`.
-    expect(
-      await api.db.tx("none", (q) =>
-        campaignsWithoutOperatorEntry(q, { reason: "operator_kill", since: new Date(AT.getTime() + 1000) }),
-      ),
-    ).toEqual([]);
+      api.db.tx("none", (q) => campaignsWithoutOperatorEntry(q, { reason, organizationId }));
+    try {
+      expect(await missing("operator_kill")).toEqual([{ organizationId: other, campaignId: theirs.id }]);
+      expect(await missing("operator_kill", org)).toEqual([]);
+      expect(await missing("operator_kill", other)).toEqual([{ organizationId: other, campaignId: theirs.id }]);
+      expect(await missing("organization_suspended")).toEqual([]);
+    } finally {
+      await api.db.tx("none", (q) => setKillSwitch(q, false, AT, "drill over"));
+    }
   });
 });
 

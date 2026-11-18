@@ -503,8 +503,9 @@ describe("review3 F5 (D-107): evidence is a window of at most 200 characters", (
     const exchange = answered(await h.gate.request({ method: "GET", path: "/" }));
     // Fifth review: the body the engine is handed is already clean — CR LF is one line break and the escape
     // character is gone — so a window is cut from clean text, and one with the raw controls is not in the body.
-    expect(exchange.body).toBe("Error: boom\n[31m    at handler (/srv/app.js:1:1)");
-    expect(h.gate.evidence(1, "boom\n[31m    at handler", "RW-01")?.excerpt).toBe("boom\n[31m    at handler");
+    // (Sixth review, D-114: the escape character is a space now, not gone.)
+    expect(exchange.body).toBe("Error: boom\n [31m    at handler (/srv/app.js:1:1)");
+    expect(h.gate.evidence(1, "boom\n [31m    at handler", "RW-01")?.excerpt).toBe("boom\n [31m    at handler");
     expect(h.gate.evidence(1, "boom\r\n\u001b[31m    at handler", "RW-01")).toBeNull();
   });
 

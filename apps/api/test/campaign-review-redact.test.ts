@@ -64,7 +64,8 @@ describe("review L1: an excerpt holds no control character", () => {
   it("replaces them, keeping line breaks and tabs", () => {
     const excerpt = evidenceWindow("a\u0001b c\u001fd\u007fe\nf\tg\u0085h");
     // Fifth review: a character that is not text is taken out (it used to become a space), before the patterns run.
-    expect(excerpt).toBe("ab cde\nf\tgh");
+    // Sixth review (D-114): a control that separates is one space, NEL a line break; only what has no width goes.
+    expect(excerpt).toBe("a b c d e\nf\tg\nh");
   });
   it("a window with a NUL is not text: withheld whole", () => {
     expect(evidenceWindow("a\u0001b\u0000c")).toBe(BODY_WITHHELD);

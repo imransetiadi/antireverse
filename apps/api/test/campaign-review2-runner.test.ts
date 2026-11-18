@@ -486,6 +486,7 @@ describe("review2 15a: the runner", () => {
     await started.stop();
     expect((await read(young))?.status).toBe("completed");
     expect(engineRuns).toBe(1);
-    for (const s of stuck) expect((await read(s))?.status).toBe("queued");
+    // Sixth review (D-112): a Campaign queued under a pending deletion is ended by the queue, not left queued.
+    for (const s of stuck) expect(await read(s)).toMatchObject({ status: "stopped", end_reason: "deletion_pending" });
   });
 });
