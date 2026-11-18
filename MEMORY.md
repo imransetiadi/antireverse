@@ -418,6 +418,8 @@ Which practice to apply when. The practices come from the references in PRD §19
 - Owner confirmation of D-018 to D-026, made during slice 01.
 - Owner: set AR_SMTP_* and the sender domain's SPF/DKIM to switch on email alerts (D-068, built in 06b); an AI provider key and spend caps before real Reverse Assessments (D-067).
 - Before enabling a real model agent for Reverse Assessments: complete the adversarial review of the Prove sandbox and W4 rules (the 12b pass was stopped by model safeguards; see plan 12b A4). Side effect from 12a e2e work: 10 fixture advisories were written into the local dev database `apps/api/.data/pg` (recreate it to remove them).
+- For 15b (owner-gated: AI key, spend caps, sandbox review), carried from 15a's six reviews, closed by the owner on 2026-11-18: decide what a free engine may write into the request log (bounded today, not closed); decide whether pattern redaction can be a control at all (Braille blank and combining marks still split a pattern); worker isolation (a worker thread is not a sandbox); the query string is outside the Rules authorisation; the fixes after the sixth review (817d140) are not independently reviewed; the owner may narrow the wider `inconclusive` rule (D-114) and revisit D-113.
+- The Shield bench failed PB-01 once on a loaded machine (2026-11-18, p99 1,533 µs against 1,500; reruns passed at about 560 µs): not investigated.
 - Follow-ups from slice 11: Shield records whether a request's content type was in `bodyVerified` (exact signature judging); two-count limit replay to judge more passes.
 - The repository is on GitHub (private, imransetiadi/antireverse, branch main) since 2026-11-11; the working copy lives in the folder the app made for the session.
 - Legal review of licences and usage terms for the embedded engines before general availability.
@@ -607,3 +609,4 @@ Next step for whoever continues:
 | 2026-11-14 | Slice 21a built; decisions D-099–D-101; tamper detection: integrity marker, attest report, server-side comparison, Tampered Build Incident (Guard collector is 21b) |
 | 2026-11-14 | Slice 18f built; decision D-098; Shield body matcher within PB-01 (lazy escape form, character probes), behaviour identical by differential tests; gate: every runnable check passes |
 | 2026-11-14 | Slice 18e built; decisions D-096–D-097; release-gate runner with a signed tri-state report; first real verdict blocked (PB-01 breach, 13 lines not checkable) |
+| 2026-11-18 | The owner closed the review rounds for slice 15a after the sixth review; open items moved to §11 for 15b |
