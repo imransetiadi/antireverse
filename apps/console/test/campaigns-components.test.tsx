@@ -576,7 +576,8 @@ describe("CampaignView", () => {
         requests={[
           { ...refusedRequest, seq: 1, method: "OTHER", target: null, reason: "method_not_allowed", asked_chars: 256 },
           { ...refusedRequest, seq: 2, method: null, target: null, reason: "malformed_probe", asked_chars: 0 },
-          { ...refusedRequest, seq: 3, method: "GET", target: null, reason: "not_in_catalog", asked_chars: 1 },
+          { ...refusedRequest, seq: 3, method: "GET", target: null, reason: "not_in_catalog", asked_chars: 1024 },
+          { ...refusedRequest, seq: 4, method: "GET", target: null, reason: "not_in_catalog", asked_chars: 1_000_000 },
         ]}
         confirmStop={false}
         notice={undefined}
@@ -584,9 +585,11 @@ describe("CampaignView", () => {
     );
     const rows = screen.getAllByTestId("request-row");
     expect(rows.map((row) => within(row).getByTestId("request-target").textContent)).toEqual([
-      "Another method. Not kept: 256 characters asked for",
-      "Not stated. Not kept: 0 characters asked for",
-      "GET. Not kept: 1 character asked for",
+      // Fifth review (D-113): how much was asked for is one of four sizes, not a count.
+      "Another method. Not kept: at most 256 characters asked for",
+      "Not stated. Not kept: nothing asked for",
+      "GET. Not kept: at most 1,024 characters asked for",
+      "GET. Not kept: more than 1,024 characters asked for",
     ]);
     expect(within(rows[2] as HTMLElement).getByTestId("request-result").textContent).toContain(
       "Not one of the engine's declared probes",

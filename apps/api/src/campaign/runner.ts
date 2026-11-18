@@ -15,7 +15,7 @@ import {
 import { type RunCampaignEngineOptions, runCampaignEngine, standInEngine } from "@antireverse/prove";
 import { z } from "zod";
 import { audit, operatorActor, systemActor } from "../audit.ts";
-import type { Db } from "../db/db.ts";
+import type { Db, Queryable } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
 import { type Authorize, evaluateAuthorization } from "../prove/authorize.ts";
 import {
@@ -28,9 +28,11 @@ import {
 import {
   campaignControl,
   campaignQueue,
+  campaignsWithoutOperatorEntry,
   claimCampaign,
   endCampaign,
   findCampaign,
+  hasOperatorEntry,
   insertCampaignRequest,
   interruptRunningCampaigns,
   lastRequestSeq,
@@ -109,9 +111,10 @@ export interface CampaignService {
    * Aborts, at once and without awaiting anything, every Campaign of the Organization that this process is starting
    * or running: its request in flight is cut and nothing more is sent. For the moment something is committed that
    * the gate would only see at its next read — a deletion that was requested. A running Campaign then ends with
-   * `reason`; one still in its start checks stays queued (and starts nothing while the reason holds).
+   * `reason`. Then — the promise — every Campaign of the Organization that is still queued or in its start checks is
+   * ended with `reason` too (D-112): none is left queued behind a deletion request.
    */
-  cut(organizationId: string, reason: CampaignEndReason): void;
+  cut(organizationId: string, reason: CampaignEndReason): Promise<void>;
   /**
    * The operator's stop: ends every queued or running Campaign (of one Organization, or of all), writing one operator
    * entry per affected Organization's audit chain. Answers how many Campaigns it ended.
@@ -322,46 +325,101 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
       });
   }
 
-  /** Writes the end of a Campaign and its audit entry, once: false when it had already ended. */
+  /** An operator's stop, for the entry it leaves in the audit chain of each Organization whose Campaign it ended. */
+  interface OperatorStop {
+    reason: "operator_kill" | "organization_suspended";
+    requestId: string;
+    operatorReason: string;
+  }
+
+  /**
+   * The operator's own entry for a Campaign the stop ended, in the transaction given: written when the Campaign's end
+   * reason is the stop's and its Organization's chain holds no such entry yet. One entry a Campaign, whoever asks
+   * and however often. True when it was written.
+   */
+  async function operatorEntry(
+    q: Queryable,
+    organizationId: string,
+    campaignId: string,
+    stop: OperatorStop,
+    at: Date,
+  ): Promise<boolean> {
+    const campaign = await findCampaign(q, campaignId);
+    if (campaign === null || campaign.end_reason !== stop.reason) return false;
+    if (await hasOperatorEntry(q, campaignId)) return false;
+    await audit(q, operatorActor(organizationId, stop.requestId, stop.operatorReason), {
+      action: "campaign.operator_kill",
+      target: { kind: "campaign", id: campaignId },
+      summary:
+        stop.reason === "operator_kill"
+          ? "The operator stopped all Campaigns: this Organization's Campaign was ended."
+          : "The operator suspended this Organization's Campaigns: its Campaign was ended.",
+      at,
+    });
+    return true;
+  }
+
+  /**
+   * Writes the end of a Campaign and its audit entry, once: `ended` is false when it had already ended. With
+   * `operator`, the operator's entry is written in the same transaction when this end (or an earlier one) is the
+   * stop's and the entry is not there yet: `entered`.
+   */
   async function finish(
     organizationId: string,
     campaign: Pick<Campaign, "id">,
     end: { reason: CampaignEndReason; started: boolean; checks: CampaignChecks | null; findingsDropped?: number },
-  ): Promise<boolean> {
+    operator?: OperatorStop,
+  ): Promise<{ ended: boolean; entered: boolean }> {
     const at = now();
     const written = await db.tx({ organizationId }, async (q) => {
       const before = await findCampaign(q, campaign.id);
-      if (before === null) return null;
+      if (before === null) return { status: null, entered: false };
       // What the Campaign was when it ended, not what the caller believed: it ran if the database says so.
       const started = before.status === "running";
-      // A stop the owner asked for, recorded before this end is written, is final: a Campaign whose stop arrived
-      // while its last check was being finished does not end as completed.
-      const reason = before.stop !== null && end.reason === "checks_complete" ? "owner_stop" : end.reason;
-      if (!(await endCampaign(q, campaign.id, { ...end, reason, started, at }))) return null;
-      const status = statusOfEndReason(reason, started);
-      const sent = before.requests_sent;
-      const dropped = end.findingsDropped ?? 0;
-      const lost = dropped === 0 ? "" : ` ${dropped} ${dropped === 1 ? "Finding" : "Findings"} could not be stored.`;
-      // Exactly what was sent, counted from the request log (every request is in it before it goes out).
-      const summary = started
-        ? `The Campaign ended: ${status} (${reason}); ${sent} ${sent === 1 ? "request" : "requests"} sent (the ownership check included), ${before.requests_refused} refused. ${
-            end.checks === null ? "" : campaignChecksSentence(end.checks)
-          }${lost}`
-        : `The Campaign did not start: ${status} (${reason}). ${
-            sent === 0 ? "Nothing was sent." : "The ownership check was requested; no probe was sent."
-          }`;
-      await audit(q, systemActor(organizationId), {
-        action: started ? "campaign.end" : "campaign.refuse",
-        target: { kind: "campaign", id: campaign.id },
-        summary,
-        at,
-      });
-      return status;
+      // A stop that is recorded when this end is written is final: a Campaign whose stop arrived while its last
+      // check was being finished does not end as completed. The owner's stop request; and, read here in the end's
+      // own transaction, the operator's kill switch, the Organization's suspension and its pending deletion — the
+      // abort that follows such a commit may still be on its way.
+      let reason = end.reason;
+      if (reason === "checks_complete") {
+        if (before.stop !== null) reason = "owner_stop";
+        else {
+          const control = await startControl(q, campaign.id);
+          if (control.killed) reason = "operator_kill";
+          else if (control.suspended) reason = "organization_suspended";
+          else if (control.deletionPending) reason = "deletion_pending";
+        }
+      }
+      let status: string | null = null;
+      if (await endCampaign(q, campaign.id, { ...end, reason, started, at })) {
+        status = statusOfEndReason(reason, started);
+        const sent = before.requests_sent;
+        const dropped = end.findingsDropped ?? 0;
+        const lost = dropped === 0 ? "" : ` ${dropped} ${dropped === 1 ? "Finding" : "Findings"} could not be stored.`;
+        // Exactly what was sent, counted from the request log (every request is in it before it goes out).
+        const summary = started
+          ? `The Campaign ended: ${status} (${reason}); ${sent} ${sent === 1 ? "request" : "requests"} sent (the ownership check included), ${before.requests_refused} refused. ${
+              end.checks === null ? "" : campaignChecksSentence(end.checks)
+            }${lost}`
+          : `The Campaign did not start: ${status} (${reason}). ${
+              sent === 0 ? "Nothing was sent." : "The ownership check was requested; no probe was sent."
+            }`;
+        await audit(q, systemActor(organizationId), {
+          action: started ? "campaign.end" : "campaign.refuse",
+          target: { kind: "campaign", id: campaign.id },
+          summary,
+          at,
+        });
+      }
+      // The operator's entry in the same transaction as the end, so that neither stands without the other.
+      const entered =
+        operator === undefined ? false : await operatorEntry(q, organizationId, campaign.id, operator, at);
+      return { status, entered };
     });
     logger.info(
-      `campaign ${written === null ? "already ended" : "ended"} id=${campaign.id} status=${written ?? "-"} reason=${end.reason}`,
+      `campaign ${written.status === null ? "already ended" : "ended"} id=${campaign.id} status=${written.status ?? "-"} reason=${end.reason}`,
     );
-    return written !== null;
+    return { ended: written.status !== null, entered: written.entered };
   }
 
   async function execute(organizationId: string, campaignId: string, entry: Active): Promise<void> {
@@ -538,6 +596,8 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
     const known = new Set(standInEngine.checks);
     const catalog = standInEngine.findings;
     const checks = new Map<string, "reported" | "clean" | "inconclusive" | "skipped">();
+    /** Checks with a Finding that was stored: whatever the engine got to say of them, they reported. */
+    const reported = new Set<string>();
     let dropped = 0;
     let outcome: "done" | "TimeoutError" | "other" = "done";
     try {
@@ -560,7 +620,8 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
           if (!parsed.success || described === undefined || !known.has(parsed.data.check_id)) return void dropped++;
           const finding = parsed.data;
           if (canonicalCampaignPath(finding.path) !== finding.path) return void dropped++;
-          const evidence = gate.evidence(finding.seq, finding.window);
+          // …of a request that was a probe the catalog declares for this very check.
+          const evidence = gate.evidence(finding.seq, finding.window, finding.check_id);
           if (evidence === null || evidence.target.split("?")[0] !== finding.path) return void dropped++;
           // A Finding that cannot be stored is counted too.
           try {
@@ -576,6 +637,7 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
               }),
             );
             if (stored === null) dropped++;
+            else reported.add(finding.check_id);
           } catch (error) {
             dropped++;
             logger.warn(`campaign finding not stored id=${campaign.id} ${(error as Error).name}`);
@@ -602,6 +664,9 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
               ? "time_budget"
               : (endReasonOf(signal.reason) ?? "engine_error")));
     if (dropped > 0 && reason === "checks_complete") reason = "engine_error";
+    // A check with a stored Finding reported, even when a stop came between the storing and the engine's word on
+    // the check (or the engine said otherwise): never fewer "reported" than checks with a Finding in the report.
+    for (const id of reported) checks.set(id, "reported");
     const results = [...checks.values()];
     // Ran: got an answer it could judge. Inconclusive: got one it could not read. Everything else was skipped.
     const ran = results.filter((result) => result === "reported" || result === "clean").length;
@@ -617,6 +682,79 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
       },
       findingsDropped: dropped,
     });
+  }
+
+  /** Operator stops, one after the other. */
+  let operatorStops: Promise<void> = Promise.resolve();
+  /** How far back a repeated stop looks for Campaigns it ended and left without the operator's entry. */
+  const OPERATOR_ENTRY_LOOKBACK_MS = 86_400_000;
+
+  /**
+   * The awaited part of an operator's stop. Every Campaign cut by it, and every other queued or running one, is
+   * ended; each one the stop ended gets the operator's entry — in the transaction of its end where this call writes
+   * the end — and is counted by the call that wrote the entry. A failure with one Campaign does not stop the others.
+   * Last, Campaigns that ended with the stop's reason in the last day and still lack the entry (an earlier call
+   * failed there; the Campaign ended itself when it saw the switch) get it now: pressing again completes the record.
+   */
+  async function operatorStopWork(
+    input: OperatorStop & { organizationId?: string },
+    cut: ReadonlyMap<string, string>,
+  ): Promise<number> {
+    // Nothing is launched while this stop is at work: a Campaign still queued is ended here, by the operator.
+    held++;
+    try {
+      const affected = new Map(cut);
+      try {
+        for (const entry of await readQueue()) {
+          if (input.organizationId === undefined || entry.organizationId === input.organizationId) {
+            affected.set(entry.campaignId, entry.organizationId);
+          }
+        }
+      } catch (error) {
+        logger.warn(`campaign queue not read for the operator's stop ${(error as Error).name}`);
+      }
+      let entered = 0;
+      for (const [campaignId, organizationId] of affected) {
+        try {
+          // Its request in flight is cut, its engine terminated, and its end written: by the Campaign itself if it
+          // was running here, else here — with the operator's entry in the same transaction.
+          await abort(campaignId, input.reason);
+          const end = { reason: input.reason, started: false, checks: null };
+          try {
+            if ((await finish(organizationId, { id: campaignId }, end, input)).entered) entered++;
+          } catch (error) {
+            // The end and the entry could not be written together. The end matters more: a Campaign is not left
+            // queued under a kill. Its entry is tried again below, and by the next stop.
+            logger.warn(`operator entry not written with the end id=${campaignId} ${(error as Error).name}`);
+            await finish(organizationId, { id: campaignId }, end);
+          }
+        } catch (error) {
+          logger.warn(`campaign not ended by the operator's stop id=${campaignId} ${(error as Error).name}`);
+        }
+      }
+      try {
+        const since = new Date(now().getTime() - OPERATOR_ENTRY_LOOKBACK_MS);
+        const missing = await db.tx("none", (q) =>
+          campaignsWithoutOperatorEntry(q, { reason: input.reason, organizationId: input.organizationId, since }),
+        );
+        for (const { organizationId, campaignId } of missing) {
+          try {
+            const at = now();
+            if (await db.tx({ organizationId }, (q) => operatorEntry(q, organizationId, campaignId, input, at))) {
+              entered++;
+            }
+          } catch (error) {
+            logger.warn(`operator entry not written id=${campaignId} ${(error as Error).name}`);
+          }
+        }
+      } catch (error) {
+        logger.warn(`campaigns without an operator entry not read ${(error as Error).name}`);
+      }
+      return entered;
+    } finally {
+      held--;
+      if (!stopped) void pump();
+    }
   }
 
   async function abort(campaignId: string, reason: CampaignEndReason): Promise<void> {
@@ -651,9 +789,30 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
     abort,
     isActive: (campaignId) => active.has(campaignId),
     cut(organizationId, reason) {
+      // First, before anything is awaited: the Organization's Campaigns that are active here are aborted.
       for (const entry of active.values()) {
         if (entry.organizationId === organizationId) entry.controller.abort(reason);
       }
+      // Then every Campaign of it that is queued or running is ended with that reason (D-112): one cut in its start
+      // checks or still waiting for a slot does not stay queued — it would never be taken again. A running one has
+      // written its own end by the time its abort is awaited.
+      return (async () => {
+        held++;
+        try {
+          for (const entry of await readQueue()) {
+            if (entry.organizationId !== organizationId) continue;
+            try {
+              await abort(entry.campaignId, reason);
+              await finish(organizationId, { id: entry.campaignId }, { reason, started: false, checks: null });
+            } catch (error) {
+              logger.warn(`campaign not ended id=${entry.campaignId} ${(error as Error).name}`);
+            }
+          }
+        } finally {
+          held--;
+          if (!stopped) void pump();
+        }
+      })();
     },
     async operatorStop(input) {
       // First, before anything is awaited: every Campaign this process is starting or running (of the Organization,
@@ -666,48 +825,13 @@ export function createCampaignRunner(options: CampaignRunnerOptions): CampaignRu
           cut.set(campaignId, entry.organizationId);
         }
       }
-      // And nothing is launched while this stop is at work: a Campaign still queued is ended below, by the operator.
-      held++;
-      try {
-        const at = now();
-        // The Campaigns cut above (one of them may have written its end before the queue is read), and every other
-        // queued or running one.
-        const affected = new Map(cut);
-        for (const entry of await readQueue()) {
-          if (input.organizationId === undefined || entry.organizationId === input.organizationId) {
-            affected.set(entry.campaignId, entry.organizationId);
-          }
-        }
-        let ended = 0;
-        for (const [campaignId, organizationId] of affected) {
-          // Its request in flight is cut, its engine terminated, and its end written: by the Campaign itself if it
-          // was running here, else here.
-          await abort(campaignId, input.reason);
-          await finish(organizationId, { id: campaignId }, { reason: input.reason, started: false, checks: null });
-          // The operator's own entry, in the Organization's chain, for every Campaign this stop ended — one that
-          // ended in the same moment for a reason of its own gets none and is not counted. (A running Campaign's
-          // end is the system's entry, and stands before this one.)
-          const stopped = await db.tx({ organizationId }, async (q) => {
-            const campaign = await findCampaign(q, campaignId);
-            if (campaign === null || campaign.end_reason !== input.reason) return false;
-            await audit(q, operatorActor(organizationId, input.requestId, input.operatorReason), {
-              action: "campaign.operator_kill",
-              target: { kind: "campaign", id: campaignId },
-              summary:
-                input.reason === "operator_kill"
-                  ? "The operator stopped all Campaigns: this Organization's Campaign was ended."
-                  : "The operator suspended this Organization's Campaigns: its Campaign was ended.",
-              at,
-            });
-            return true;
-          });
-          if (stopped) ended++;
-        }
-        return ended;
-      } finally {
-        held--;
-        if (!stopped) void pump();
-      }
+      // The rest runs one operator stop at a time: two at once would each end, enter and count the same Campaigns.
+      const work = operatorStops.then(() => operatorStopWork(input, cut));
+      operatorStops = work.then(
+        () => {},
+        () => {},
+      );
+      return work;
     },
     async activeCount() {
       return (await readQueue()).length;

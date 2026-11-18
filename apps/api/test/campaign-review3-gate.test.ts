@@ -76,7 +76,8 @@ function harness(
   const controller = new AbortController();
   const deps: GateDeps = {
     campaign: { id: CAMPAIGN, host: HOST, roeId: ROE, intensity: "safe-active" },
-    catalog: CATALOG,
+    // Fifth review: a Finding rests only on a probe declared for its check; here every probe serves RW-01.
+    catalog: CATALOG.map((probe) => ({ ...probe, checks: ["RW-01"] })),
     async control(phase) {
       order.push("control");
       phases.push(phase);
@@ -443,7 +444,7 @@ describe("review3 F5 (D-107): evidence is a window of at most 200 characters", (
     const h = harness({ respond: () => ok(200, BODY, { "content-type": "text/html", "x-other": "no" }) });
     const exchange = answered(await h.gate.request({ method: "GET", path: "/search" }));
     const window = exchange.body.slice(exchange.body.indexOf('<p>"><airverse'), exchange.body.indexOf("</p>") + 4);
-    const evidence = h.gate.evidence(1, window);
+    const evidence = h.gate.evidence(1, window, "RW-01");
     expect(evidence).toEqual({
       method: "GET",
       target: "/search",
@@ -460,47 +461,51 @@ describe("review3 F5 (D-107): evidence is a window of at most 200 characters", (
     const h = harness({ respond: () => ok(200, BODY) });
     const exchange = answered(await h.gate.request({ method: "GET", path: "/search" }));
     expect(exchange.body.indexOf('"><airverse-probe-marker>')).toBeGreaterThan(CAMPAIGN_LIMITS.responseReadBytesMax);
-    expect(h.gate.evidence(1, '"><airverse-probe-marker>')?.excerpt).toBe('"><airverse-probe-marker>');
+    expect(h.gate.evidence(1, '"><airverse-probe-marker>', "RW-01")?.excerpt).toBe('"><airverse-probe-marker>');
   });
 
   it("never trusts the engine: a window that is too long, is not text, or is not in the body it names is refused", async () => {
     const h = harness({ respond: () => ok(200, `before ${"x".repeat(400)} after`) });
     await h.gate.request({ method: "GET", path: "/" });
-    expect(h.gate.evidence(1, "x".repeat(CAMPAIGN_LIMITS.evidenceWindowMax))?.excerpt).toHaveLength(200);
-    expect(h.gate.evidence(1, "x".repeat(CAMPAIGN_LIMITS.evidenceWindowMax + 1))).toBeNull();
-    expect(h.gate.evidence(1, "not in the body")).toBeNull();
-    expect(h.gate.evidence(1, 7 as never)).toBeNull();
-    expect(h.gate.evidence(1, undefined as never)).toBeNull();
-    expect(h.gate.evidence(1, { length: 1 } as never)).toBeNull();
-    expect(h.gate.evidence(2, "")).toBeNull();
-    expect(h.gate.evidence(Number.NaN, "")).toBeNull();
+    expect(h.gate.evidence(1, "x".repeat(CAMPAIGN_LIMITS.evidenceWindowMax), "RW-01")?.excerpt).toHaveLength(200);
+    expect(h.gate.evidence(1, "x".repeat(CAMPAIGN_LIMITS.evidenceWindowMax + 1), "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, "not in the body", "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, 7 as never, "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, undefined as never, "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, { length: 1 } as never, "RW-01")).toBeNull();
+    expect(h.gate.evidence(2, "", "RW-01")).toBeNull();
+    expect(h.gate.evidence(Number.NaN, "", "RW-01")).toBeNull();
     // A check that reads no body has an empty window.
-    expect(h.gate.evidence(1, "")?.excerpt).toBe("");
+    expect(h.gate.evidence(1, "", "RW-01")?.excerpt).toBe("");
   });
 
   it("redacts the window again and still holds it to 200 characters", async () => {
     // The engine is handed the redacted body; were anything of it not, the window is redacted on its own again.
     const h = harness({ respond: () => ok(200, `<p>${"q ".repeat(80)}</p>`) });
     await h.gate.request({ method: "GET", path: "/" });
-    const evidence = h.gate.evidence(1, "q ".repeat(80));
+    const evidence = h.gate.evidence(1, "q ".repeat(80), "RW-01");
     expect(evidence?.excerpt.length).toBeLessThanOrEqual(CAMPAIGN_LIMITS.evidenceWindowMax);
     const leaky = harness({ respond: () => ok(200, "x") });
     await leaky.gate.request({ method: "GET", path: "/" });
-    expect(leaky.gate.evidence(1, "x")?.excerpt).toBe("x");
+    expect(leaky.gate.evidence(1, "x", "RW-01")?.excerpt).toBe("x");
   });
 
   it("has no window for a body that was withheld", async () => {
     const h = harness({ respond: () => ok(200, "secret", { "content-encoding": "br" }) });
     await h.gate.request({ method: "GET", path: "/" });
-    expect(h.gate.evidence(1, "binary")).toBeNull();
-    expect(h.gate.evidence(1, BODY_WITHHELD)).toBeNull();
-    expect(h.gate.evidence(1, "")?.excerpt).toBe("");
+    expect(h.gate.evidence(1, "binary", "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, BODY_WITHHELD, "RW-01")).toBeNull();
+    expect(h.gate.evidence(1, "", "RW-01")?.excerpt).toBe("");
   });
 
   it("keeps no control character in the window", async () => {
     const h = harness({ respond: () => ok(500, "Error: boom\r\n\u001b[31m    at handler (/srv/app.js:1:1)") });
-    await h.gate.request({ method: "GET", path: "/" });
-    expect(h.gate.evidence(1, "boom\r\n\u001b[31m    at handler")?.excerpt).toBe("boom \n [31m    at handler");
+    const exchange = answered(await h.gate.request({ method: "GET", path: "/" }));
+    // Fifth review: the body the engine is handed is already clean — CR LF is one line break and the escape
+    // character is gone — so a window is cut from clean text, and one with the raw controls is not in the body.
+    expect(exchange.body).toBe("Error: boom\n[31m    at handler (/srv/app.js:1:1)");
+    expect(h.gate.evidence(1, "boom\n[31m    at handler", "RW-01")?.excerpt).toBe("boom\n[31m    at handler");
+    expect(h.gate.evidence(1, "boom\r\n\u001b[31m    at handler", "RW-01")).toBeNull();
   });
 
   it("keeps of a Content-Security-Policy only that it was there: a nonce or a report token is not kept", async () => {
@@ -514,6 +519,6 @@ describe("review3 F5 (D-107): evidence is a window of at most 200 characters", (
     });
     const exchange = answered(await h.gate.request({ method: "GET", path: "/" }));
     expect(exchange.headers).toEqual({ "content-security-policy": "[present]", "x-frame-options": "DENY" });
-    expect(JSON.stringify(h.gate.evidence(1, ""))).not.toMatch(/r4nd0m|hunter2/);
+    expect(JSON.stringify(h.gate.evidence(1, "", "RW-01"))).not.toMatch(/r4nd0m|hunter2/);
   });
 });

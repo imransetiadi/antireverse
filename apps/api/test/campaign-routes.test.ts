@@ -50,7 +50,7 @@ describe("Campaign routes", () => {
     wake: () => void woken.push(1),
     abort: async (id) => void aborted.push(id),
     isActive: (id) => activeHere.has(id),
-    cut() {},
+    cut: async () => {},
     operatorStop: async () => 0,
     activeCount: async () => 0,
   };

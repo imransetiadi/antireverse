@@ -4,6 +4,7 @@ import {
   type CampaignCatalogProbe,
   type CampaignEndReason,
   type CampaignExchange,
+  campaignAskedBucket,
 } from "@antireverse/protocol";
 import { describe, expect, it } from "vitest";
 import { createGate, type GateControl, type GateDeps, type GateRecord, type GateSend } from "../src/campaign/gate.ts";
@@ -48,7 +49,8 @@ function harness(extra: Partial<GateDeps> = {}) {
   const controller = new AbortController();
   const deps: GateDeps = {
     campaign: { id: CAMPAIGN, host: HOST, roeId: ROE, intensity: "safe-active" },
-    catalog: CATALOG,
+    // Fifth review: a Finding rests only on a probe declared for its check; here every probe serves RW-01.
+    catalog: CATALOG.map((probe) => ({ ...probe, checks: ["RW-01"] })),
     async control() {
       order.push("control");
       return { ...state.control };
@@ -152,7 +154,13 @@ describe("review4 R1 (D-110): only probes of the engine's catalog are sent", () 
       expect(h.sent).toEqual([]);
       expect(h.ends).toEqual([reason]);
       expect(h.records).toHaveLength(1);
-      expect(h.records[0]).toMatchObject({ target: null, outcome: "refused", reason, asked });
+      // Fifth review (D-113): the count is kept as its bucket.
+      expect(h.records[0]).toMatchObject({
+        target: null,
+        outcome: "refused",
+        reason,
+        asked: campaignAskedBucket(asked),
+      });
       expect(["GET", "HEAD", "OTHER", null]).toContain(h.records[0]?.method);
       expect(JSON.stringify(h.records)).not.toMatch(/secret\d|sss|xxx/);
     }
@@ -187,7 +195,7 @@ describe("review4 R1 (D-110): only probes of the engine's catalog are sent", () 
       ["sent", "/search?q=%22%3E%3Cairverse-probe-marker%3E", null],
       ["sent", "/reflect?m=airverse-00112233aabbccdd", null],
     ]);
-    expect(h.gate.evidence(1, "")?.target).toBe("/search?q=%22%3E%3Cairverse-probe-marker%3E");
+    expect(h.gate.evidence(1, "", "RW-01")?.target).toBe("/search?q=%22%3E%3Cairverse-probe-marker%3E");
   });
 
   it("a catalog probe refused for another reason keeps its catalog target in the log", async () => {
@@ -199,7 +207,7 @@ describe("review4 R1 (D-110): only probes of the engine's catalog are sent", () 
       fatal: false,
     });
     expect(h.records).toMatchObject([
-      { method: "GET", target: "/search?q=%22%3E%3Cairverse-probe-marker%3E", reason: "path_excluded", asked: 33 },
+      { method: "GET", target: "/search?q=%22%3E%3Cairverse-probe-marker%3E", reason: "path_excluded", asked: 256 },
     ]);
     expect(h.ends).toEqual([]);
   });

@@ -75,9 +75,9 @@ describe("review 15a over HTTP", () => {
       requests_sent: 1,
       requests_refused: 1,
     });
-    // The refused row holds how much was asked, and none of it.
+    // The refused row holds how much was asked — as a bucket (fifth review, D-113): more than 1,024 — and none of it.
     const refused = (await requestsOf(h, acme, ended.id)).filter((row) => row.outcome === "refused");
-    expect(refused).toMatchObject([{ method: "GET", target: null, asked_chars: 1540 }]);
+    expect(refused).toMatchObject([{ method: "GET", target: null, asked_chars: 1_000_000 }]);
   });
 
   it("M2: a status outside 100 to 599 is a failed request in the log, and the engine is not handed it", async () => {

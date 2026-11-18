@@ -39,8 +39,7 @@ describe("review4 R4: the charset of a Content-Type", () => {
       "text/html; charset=utf-8, text/plain; charset=utf-7",
       "text/html; xcharset=utf-8",
       "text/html; charset-x=utf-8",
-      "text/html;; charset=utf-8",
-      "text/html; charset=utf-8;",
+      // (Fifth review: an empty parameter and a trailing semicolon are allowed by the grammar; they are read now.)
       "text/html\u0000; charset=utf-8",
       "text/html; charset=utf-8 (really utf-7)",
       "application/x-charset",
@@ -84,11 +83,13 @@ describe("review4: what is stored holds no character that reorders or hides text
   it("the evidence window: bidi overrides, isolates, line and paragraph separators and other format characters become spaces", () => {
     const hostile =
       "a\u202eb\u202dc\u2028d\u2029e\u2066f\u2067g\u2068h\u2069i\u200ej\u200fk\u061cl\u200bm\u2060n\ufeffo\u00adp\u180eq\ufff9r";
-    expect(evidenceWindow(hostile)).toBe("a b c d e f g h i j k l m n o p q r");
+    // Fifth review: a character that is not text is taken out (it used to become a space), before the patterns run.
+    // The line and paragraph separators are line breaks.
+    expect(evidenceWindow(hostile)).toBe("abc\nd\nefghijklmnopqr");
     // A line break and a tab stay; so do ordinary letters of any script.
     expect(evidenceWindow("α\tβ\nγ é 中 😀")).toBe("α\tβ\nγ é 中 😀");
-    expect(evidenceWindow("\u202e".repeat(300))).toBe(" ".repeat(200));
-    expect(evidenceWindow(hostile)).not.toMatch(/[\p{Cf}\p{Cc}\u2028\u2029]/u);
+    expect(evidenceWindow("\u202e".repeat(300))).toBe("");
+    expect(evidenceWindow(hostile)).not.toMatch(/[\p{Cf}\u2028\u2029]/u);
   });
 
   it("a kept header is cut on a code-point boundary, and holds no control or format character", () => {
@@ -98,7 +99,7 @@ describe("review4: what is stored holds no character that reorders or hides text
     );
     expect(kept.server).toBe("x".repeat(255));
     expect(kept.server?.isWellFormed()).toBe(true);
-    expect(kept["x-powered-by"]).toBe("PHP /8 ");
+    expect(kept["x-powered-by"]).toBe("PHP/8 ");
     expect(kept["cache-control"]).toBe(" alone");
     for (const value of Object.values(kept)) expect(value.isWellFormed()).toBe(true);
     const cookies = redactHeaders({ "set-cookie": Array.from({ length: 16 }, () => `${"n".repeat(60)}=v`) }, "h.io");

@@ -245,6 +245,8 @@ const STAND_IN_PROBES = campaignCatalog(
   STAND_IN_CATALOG.map((check) => ({
     method: check.probe.method,
     path: check.probe.path,
+    // The check this probe serves: a Finding of the check rests only on this probe's requests.
+    checks: [check.id],
     ...(check.probe.query === undefined
       ? {}
       : { query: Object.fromEntries(Object.entries(check.probe.query).map(([name, exact]) => [name, { exact }])) }),

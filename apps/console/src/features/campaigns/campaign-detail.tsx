@@ -141,7 +141,7 @@ function Facts({ campaign }: { campaign: Campaign }) {
 /**
  * What a row of the request log asked for. A sent request, and a refused probe of the engine's catalog, show their
  * method and target. Of a refused probe that was not of the catalog nothing it asked for is kept (it is text an engine
- * chose): the row shows the method as `GET`, `HEAD` or "another method", and how many characters were asked for.
+ * chose): the row shows the method as `GET`, `HEAD` or "another method", and roughly how much was asked for.
  */
 function requestText(request: CampaignRequest): string {
   const method =
@@ -151,8 +151,16 @@ function requestText(request: CampaignRequest): string {
         ? t("campaign.requests.other-method")
         : request.method;
   if (request.target !== null || request.outcome !== "refused") return `${method} ${request.target ?? ""}`.trim();
-  const chars = request.asked_chars ?? 0;
-  return t(chars === 1 ? "campaign.requests.not-kept.one" : "campaign.requests.not-kept", { method, chars });
+  // How much was asked for is kept as one of four sizes (D-113), never as a count.
+  const size =
+    request.asked_chars === null || request.asked_chars === 0
+      ? "campaign.requests.asked.nothing"
+      : request.asked_chars === 256
+        ? "campaign.requests.asked.256"
+        : request.asked_chars === 1024
+          ? "campaign.requests.asked.1024"
+          : "campaign.requests.asked.more";
+  return t("campaign.requests.not-kept", { method, size: t(size) });
 }
 
 /**

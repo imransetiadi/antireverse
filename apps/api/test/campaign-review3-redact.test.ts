@@ -224,7 +224,7 @@ describe("review3 F5: the evidence window as stored", () => {
   });
 
   it("keeps no control character but a line break and a tab, and no half of a surrogate pair", () => {
-    expect(evidenceWindow("a\u0001b\u001fc\u007fd\ne\tf\u0085g")).toBe("a b c d\ne\tf g");
+    expect(evidenceWindow("a\u0001b\u001fc\u007fd\ne\tf\u0085g")).toBe("abcd\ne\tfg");
     const cut = evidenceWindow(`${"x".repeat(199)}😀`);
     expect(cut).toBe("x".repeat(199));
     expect(evidenceWindow("\udc00ok\ud83d")).toBe("ok");

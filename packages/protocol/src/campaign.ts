@@ -62,7 +62,14 @@ export const CAMPAIGN_LIMITS = deepFreeze({
   queryValueMax: 512,
   /** Probes an engine's catalog may declare. */
   catalogProbesMax: 64,
-  /** Characters a refused probe's row says it asked for, at most (the count is cut there, not the text: none is kept). */
+  /**
+   * Hex characters of the one token a catalog probe may declare: 128 bits. It is what an engine can choose freely in
+   * a request it sends, so it is what a request can carry of a response to the target and into the request log.
+   */
+  catalogTokenHexMax: 32,
+  /** Check ids one catalog probe may name. */
+  catalogProbeChecksMax: 8,
+  /** The largest bucket of what a refused probe asked for: "more than 1,024 characters". */
   askedCharsMax: 1_000_000,
   /** Findings kept per Campaign. */
   findingsMax: 50,
@@ -295,7 +302,8 @@ export function campaignRequestTarget(probe: CampaignProbe): string | null {
 
 const TOKEN_PREFIX = /^[A-Za-z0-9._~-]{0,64}$/;
 const TOKEN_HEX_MIN = 8;
-const TOKEN_HEX_MAX = 64;
+const TOKEN_HEX_MAX = CAMPAIGN_LIMITS.catalogTokenHexMax;
+const CHECK_ID = /^[A-Z]{2}-[0-9]{2}$/;
 
 /**
  * The shape of one query value an engine may send: exactly one text, or a token — a fixed prefix followed by exactly
@@ -312,11 +320,15 @@ export const CampaignQueryShapeSchema = z.union([
 ]);
 export type CampaignQueryShape = z.infer<typeof CampaignQueryShapeSchema>;
 
-/** One probe an engine declares: the exact method and path, and the shape of each query value it may carry. */
+/**
+ * One probe an engine declares: the exact method and path, the shape of each query value it may carry, and the
+ * checks it serves — a Finding of a check rests only on a request that was a probe declared for that check.
+ */
 export const CampaignCatalogProbeSchema = z.strictObject({
   method: z.enum(CAMPAIGN_METHODS),
   path: z.string().max(CAMPAIGN_LIMITS.pathMax),
   query: z.record(z.string(), CampaignQueryShapeSchema).optional(),
+  checks: z.array(z.string().regex(CHECK_ID)).max(CAMPAIGN_LIMITS.catalogProbeChecksMax).optional(),
 });
 export type CampaignCatalogProbe = z.infer<typeof CampaignCatalogProbeSchema>;
 
@@ -327,8 +339,9 @@ function longestOf(shape: CampaignQueryShape): string {
 
 /**
  * An engine's probe catalog, validated and deeply frozen (a copy: what was passed in is not kept). At most 64
- * probes; each path canonical; each query at most 8 names with a shape per value; each request target within 1,024
- * characters; no probe twice. Throws a TypeError otherwise. It is read from the engine's definition by the host — an
+ * probes; each path canonical; each query at most 8 names with a shape per value, at most one of them a token (of
+ * at most 32 hex characters: 128 bits an engine may choose per request); each request target within 1,024
+ * characters; no probe twice; no check named twice by a probe. Throws a TypeError otherwise. It is read from the engine's definition by the host — an
  * engine that runs cannot add to it.
  */
 export function campaignCatalog(probes: unknown): readonly CampaignCatalogProbe[] {
@@ -345,6 +358,10 @@ export function campaignCatalog(probes: unknown): readonly CampaignCatalogProbe[
     if (!parsed.success) return fail("holds a probe that is not { method, path, query? } with a shape per value");
     const probe = parsed.data;
     if (canonicalCampaignPath(probe.path) !== probe.path) return fail("holds a path that is not canonical");
+    if (Object.values(probe.query ?? {}).filter((shape) => "token" in shape).length > 1) {
+      return fail("holds a probe with more than one token value");
+    }
+    if (new Set(probe.checks ?? []).size !== (probe.checks ?? []).length) return fail("names a check twice");
     const longest: Record<string, string> = {};
     for (const [name, shape] of Object.entries(probe.query ?? {})) longest[name] = longestOf(shape);
     const query = probe.query === undefined ? "" : canonicalCampaignQuery(longest);
@@ -370,25 +387,66 @@ function matchesShape(shape: CampaignQueryShape, value: unknown): boolean {
 }
 
 /**
- * Whether `probe` is exactly one of the catalog's: the same method and path, the same query names (none more, none
- * fewer), each value of its declared shape, and no other member. Anything else — whatever it is — is not.
+ * The catalog entry `probe` is exactly — the same method and path, the same query names (none more, none fewer), each
+ * value of its declared shape, and no other member — with the request target built in the CATALOG's name order (the
+ * order an engine lists its query names in is the engine's choice, and is not kept or sent). Null for anything else,
+ * whatever it is.
  */
-export function inCampaignCatalog(catalog: readonly CampaignCatalogProbe[], probe: unknown): boolean {
-  if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return false;
+export function campaignCatalogTarget(
+  catalog: readonly CampaignCatalogProbe[],
+  probe: unknown,
+): { entry: CampaignCatalogProbe; target: string } | null {
+  if (typeof probe !== "object" || probe === null || Array.isArray(probe)) return null;
   const asked = probe as Record<string, unknown>;
-  if (Object.keys(asked).some((key) => key !== "method" && key !== "path" && key !== "query")) return false;
+  if (Object.keys(asked).some((key) => key !== "method" && key !== "path" && key !== "query")) return null;
   const query = asked.query;
-  if (query !== undefined && (typeof query !== "object" || query === null || Array.isArray(query))) return false;
+  if (query !== undefined && (typeof query !== "object" || query === null || Array.isArray(query))) return null;
   const values = query as Record<string, unknown> | undefined;
-  return catalog.some((entry) => {
-    if (entry.method !== asked.method || entry.path !== asked.path) return false;
-    if (entry.query === undefined || values === undefined) return entry.query === undefined && values === undefined;
+  for (const entry of catalog) {
+    if (entry.method !== asked.method || entry.path !== asked.path) continue;
+    if (entry.query === undefined || values === undefined) {
+      if (entry.query === undefined && values === undefined) return { entry, target: entry.path };
+      continue;
+    }
     const names = Object.keys(entry.query);
-    if (Object.keys(values).length !== names.length) return false;
-    return names.every(
-      (name) => Object.hasOwn(values, name) && matchesShape(entry.query?.[name] as CampaignQueryShape, values[name]),
-    );
-  });
+    if (Object.keys(values).length !== names.length) continue;
+    const ordered: Record<string, string> = {};
+    let matches = true;
+    for (const name of names) {
+      const value = Object.hasOwn(values, name) ? values[name] : undefined;
+      if (!matchesShape(entry.query[name] as CampaignQueryShape, value)) {
+        matches = false;
+        break;
+      }
+      ordered[name] = value as string;
+    }
+    if (!matches) continue;
+    const encoded = canonicalCampaignQuery(ordered);
+    if (encoded === null) return null;
+    return { entry, target: encoded === "" ? entry.path : `${entry.path}?${encoded}` };
+  }
+  return null;
+}
+
+/** Whether `probe` is exactly one of the catalog's (`campaignCatalogTarget`). */
+export function inCampaignCatalog(catalog: readonly CampaignCatalogProbe[], probe: unknown): boolean {
+  return campaignCatalogTarget(catalog, probe) !== null;
+}
+
+/**
+ * How much a refused probe asked for, as the log keeps it (D-113): one of four buckets — nothing, at most 256
+ * characters, at most 1,024, more. Not the count: a count an engine chooses is a number an engine can write into
+ * the log, row after row.
+ */
+export const CAMPAIGN_ASKED_BUCKETS = [0, 256, 1024, CAMPAIGN_LIMITS.askedCharsMax] as const;
+export type CampaignAskedBucket = (typeof CAMPAIGN_ASKED_BUCKETS)[number];
+
+/** The bucket of a count of characters. */
+export function campaignAskedBucket(chars: number): CampaignAskedBucket {
+  if (!(chars > 0)) return 0;
+  if (chars <= 256) return 256;
+  if (chars <= 1024) return 1024;
+  return CAMPAIGN_LIMITS.askedCharsMax;
 }
 
 /** Where a redirect points, which is all that is kept of a Location header: it is never followed. */
@@ -564,10 +622,11 @@ export const CampaignRequestSchema = z.object({
    */
   target: z.string().max(1024).nullable(),
   /**
-   * For a refused probe: how many characters its path and query held (counted up to 1,000,000). Null for a request
-   * that was sent.
+   * For a refused probe: how much its path and query held, as a bucket (`CAMPAIGN_ASKED_BUCKETS`): 0 for nothing, 256
+   * for at most 256 characters, 1,024 for at most 1,024, 1,000,000 for more. Never the count itself (D-113). Null for
+   * a request that was sent.
    */
-  asked_chars: z.int().min(0).max(CAMPAIGN_LIMITS.askedCharsMax).nullable(),
+  asked_chars: z.union([z.literal(0), z.literal(256), z.literal(1024), z.literal(1_000_000)]).nullable(),
   /**
    * `sending`: the row is written before the request goes out, so a request that reached the target is always in the
    * log; it becomes `sent` with the result. A row still `sending` after the Campaign ended was sent, and its result

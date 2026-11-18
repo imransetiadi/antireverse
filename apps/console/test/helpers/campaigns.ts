@@ -124,7 +124,7 @@ export const refusedRequest: CampaignRequest = {
   failure: null,
   bytes: 0,
   ms: 0,
-  asked_chars: 12,
+  asked_chars: 256,
 };
 
 export const failedRequest: CampaignRequest = {

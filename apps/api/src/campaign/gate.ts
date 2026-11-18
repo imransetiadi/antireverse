@@ -12,11 +12,12 @@ import {
   type CampaignMethod,
   type CampaignRefusalReason,
   type CampaignSendFailure,
+  campaignAskedBucket,
   campaignCatalog,
+  campaignCatalogTarget,
   canonicalCampaignPath,
   canonicalCampaignQuery,
   FATAL_CAMPAIGN_REFUSALS,
-  inCampaignCatalog,
   TARGET_LIMITS,
   VERIFICATION_FILE_PATH,
 } from "@antireverse/protocol";
@@ -97,7 +98,7 @@ export interface GateRecord {
   method: string | null;
   /** The target of a catalog probe (or the ownership file); null for a refused probe that is not of the catalog. */
   target: string | null;
-  /** For a refused probe: the characters of its path and query, counted up to 1,000,000. Null otherwise. */
+  /** For a refused probe: how much its path and query held, as a bucket (0, 256, 1024, 1000000; D-113). Else null. */
   asked: number | null;
   outcome: "sending" | "sent" | "not_sent" | "refused";
   reason: CampaignRefusalReason | null;
@@ -173,9 +174,11 @@ export interface Gate {
    * The evidence of the sent request `seq` (D-107): its status, its kept headers and `window` — what the engine says
    * its check matched. The window is the engine's word and is treated as such: it must be a string of at most 200
    * characters that occurs in the redacted body the gate holds for that request (empty for a check that reads no
-   * body), and it is redacted again on its own. Null for an unknown request or a window that does not pass.
+   * body), and it is redacted again on its own. `check`: the check the Finding is of — the request must have been a
+   * catalog probe declared for it. Null for an unknown request, another check's request or a window that does not
+   * pass.
    */
-  evidence(seq: number, window: unknown): CampaignEvidence | null;
+  evidence(seq: number, window: unknown, check: unknown): CampaignEvidence | null;
   counters(): { sent: number; refused: number; bytes: number };
   /** Why the gate ended the Campaign, or null while it has not. */
   ended(): CampaignEndReason | null;
@@ -184,6 +187,8 @@ export interface Gate {
 interface Held {
   method: CampaignMethod;
   target: string;
+  /** The checks the catalog declares this request's probe for: a Finding of another check does not rest on it. */
+  checks: readonly string[];
   status: number;
   headers: Record<string, string>;
   /** The redacted body, in this process's memory for the run only: an evidence window must occur in it. */
@@ -291,7 +296,7 @@ export function createGate(deps: GateDeps): Gate {
           seq,
           method: loggedMethod(asked.method),
           target,
-          asked: askedChars(probe),
+          asked: campaignAskedBucket(askedChars(probe)),
           outcome: "refused",
           reason,
           status: null,
@@ -572,7 +577,14 @@ export function createGate(deps: GateDeps): Gate {
   async function request(probe: unknown): Promise<CampaignExchange> {
     if (end === null && deps.signal.aborted) finish(abortReason());
     if (end !== null) return { ok: false, refused: "campaign_ended", fatal: true };
-    if (inFlight) return refuse("concurrent_request", probe);
+    if (inFlight) {
+      // Asked for while another request is in flight. It is judged against the catalog first (D-113): a probe that
+      // is not one of the engine's ends the Campaign whenever it is asked for — it is not a refusal the engine may
+      // repeat. A catalog probe is refused for this turn only, with the catalog's target.
+      const asked = classify(probe);
+      if (!asked.ok) return refuse(asked.reason, probe);
+      return refuse("concurrent_request", probe, asked.target);
+    }
     inFlight = true;
     try {
       return await judge(probe);
@@ -585,32 +597,55 @@ export function createGate(deps: GateDeps): Gate {
     }
   }
 
+  type Classified =
+    | { ok: false; reason: CampaignRefusalReason }
+    | { ok: true; method: CampaignMethod; path: string; target: string; checks: readonly string[] };
+
+  /**
+   * What a probe is, without asking anyone: malformed, of another method, not canonical, not in the catalog — or one
+   * of the catalog's probes, with the request target in the catalog's own name order (the order an engine lists its
+   * query names in is its choice, and is neither sent nor kept) and the checks that probe serves.
+   */
+  function classify(probe: unknown): Classified {
+    // 2. The shape: method, path and an optional query, and no other member.
+    if (!plainObject(probe)) return { ok: false, reason: "malformed_probe" };
+    if (Object.keys(probe).some((key) => !PROBE_KEYS.has(key))) return { ok: false, reason: "malformed_probe" };
+    if (typeof probe.method !== "string" || typeof probe.path !== "string") {
+      return { ok: false, reason: "malformed_probe" };
+    }
+    if ("query" in probe && !plainObject(probe.query)) return { ok: false, reason: "malformed_probe" };
+
+    // 3. The method.
+    if (!(CAMPAIGN_METHODS as readonly string[]).includes(probe.method)) {
+      return { ok: false, reason: "method_not_allowed" };
+    }
+    const method = probe.method as CampaignMethod;
+
+    // 4. The path and the query, canonical: what is authorised is exactly what is sent. The whole request target is
+    // at most 1,024 characters.
+    const path = canonicalCampaignPath(probe.path);
+    if (path === null) return { ok: false, reason: "path_not_canonical" };
+    const query = canonicalCampaignQuery(probe.query);
+    if (query === null) return { ok: false, reason: "query_not_canonical" };
+    if (path.length + (query === "" ? 0 : 1 + query.length) > CAMPAIGN_LIMITS.requestTargetMax) {
+      return { ok: false, reason: "query_not_canonical" };
+    }
+    // The catalog (D-110): the engine declared what it may ask for. From here on `target` is text of the catalog,
+    // in the catalog's order, not of the engine.
+    const declared = campaignCatalogTarget(catalog, probe);
+    if (declared === null) return { ok: false, reason: "not_in_catalog" };
+    return { ok: true, method, path, target: declared.target, checks: declared.entry.checks ?? [] };
+  }
+
   async function judge(probe: unknown): Promise<CampaignExchange> {
     // 1. The switches, read from the database now.
     const off = switchedOff(await deps.control("run"));
     if (off !== null) return refuse(off, probe);
 
-    // 2. The shape: method, path and an optional query, and no other member.
-    if (!plainObject(probe)) return refuse("malformed_probe", probe);
-    if (Object.keys(probe).some((key) => !PROBE_KEYS.has(key))) return refuse("malformed_probe", probe);
-    if (typeof probe.method !== "string" || typeof probe.path !== "string") return refuse("malformed_probe", probe);
-    if ("query" in probe && !plainObject(probe.query)) return refuse("malformed_probe", probe);
-
-    // 3. The method.
-    if (!(CAMPAIGN_METHODS as readonly string[]).includes(probe.method)) return refuse("method_not_allowed", probe);
-    const method = probe.method as CampaignMethod;
-
-    // 4. The path and the query, canonical: what is authorised below is exactly what is sent. The whole request
-    // target is at most 1,024 characters.
-    const path = canonicalCampaignPath(probe.path);
-    if (path === null) return refuse("path_not_canonical", probe);
-    const query = canonicalCampaignQuery(probe.query);
-    if (query === null) return refuse("query_not_canonical", probe);
-    const target = query === "" ? path : `${path}?${query}`;
-    if (target.length > CAMPAIGN_LIMITS.requestTargetMax) return refuse("query_not_canonical", probe);
-    // The catalog (D-110): the engine declared what it may ask for, and this is not it. From here on `target` is
-    // text of the catalog, not of the engine.
-    if (!inCampaignCatalog(catalog, probe)) return refuse("not_in_catalog", probe);
+    // 2, 3, 4. The shape, the method, the canonical path and query, and the catalog.
+    const asked = classify(probe);
+    if (!asked.ok) return refuse(asked.reason, probe);
+    const { method, path, target, checks } = asked;
 
     // 5. Authorization, from the database.
     const authorized = await deps.authorize({ host: campaign.host, path, intensity: campaign.intensity });
@@ -664,7 +699,17 @@ export function createGate(deps: GateDeps): Gate {
       truncated: response.truncated,
     });
     const withheld = body === BODY_WITHHELD;
-    held.set(number, { method, target, status, headers, body, withheld, truncated: response.truncated, location });
+    held.set(number, {
+      method,
+      target,
+      checks,
+      status,
+      headers,
+      body,
+      withheld,
+      truncated: response.truncated,
+      location,
+    });
 
     // Target health: a 429, or a 503 that says when to come back, ends the Campaign; so do five failures in a row.
     if (status === 429) finish("target_rate_limited");
@@ -679,9 +724,11 @@ export function createGate(deps: GateDeps): Gate {
   return {
     ownership,
     request,
-    evidence(number, window) {
+    evidence(number, window, check) {
       const exchange = held.get(number);
       if (exchange === undefined) return null;
+      // The request must have been a probe the catalog declares for this check.
+      if (typeof check !== "string" || !exchange.checks.includes(check)) return null;
       // The window is the engine's word: bounded, and a piece of the body the gate itself holds for this request.
       if (typeof window !== "string" || window.length > CAMPAIGN_LIMITS.evidenceWindowMax) return null;
       if (window !== "" && (exchange.withheld || !exchange.body.includes(window))) return null;

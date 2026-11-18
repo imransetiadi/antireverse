@@ -63,7 +63,8 @@ describe("review L1: an excerpt holds no control character", () => {
   // Third review (D-107): the excerpt is now the evidence window, which is redacted again on its own.
   it("replaces them, keeping line breaks and tabs", () => {
     const excerpt = evidenceWindow("a\u0001b c\u001fd\u007fe\nf\tg\u0085h");
-    expect(excerpt).toBe("a b c d e\nf\tg h");
+    // Fifth review: a character that is not text is taken out (it used to become a space), before the patterns run.
+    expect(excerpt).toBe("ab cde\nf\tgh");
   });
   it("a window with a NUL is not text: withheld whole", () => {
     expect(evidenceWindow("a\u0001b\u0000c")).toBe(BODY_WITHHELD);

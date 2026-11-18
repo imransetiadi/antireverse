@@ -235,7 +235,7 @@ A Campaign is a scoped test that Airverse runs against a host **you own**, under
 
 Every request carries `User-Agent: Airverse-Campaign/1` and `X-Airverse-Campaign: <id>`, so you can recognise it in your logs.
 
-**Watch and stop.** The Campaign page refreshes while it runs and shows the request log, refusals included. **Stop** is there for as long as the Campaign is queued or running. A stop is final, and no request follows it: the stop, the operator's switch and a suspension are read from the database before every request — the ownership check at the start included — and once more at the moment it is sent, and a Campaign is not started past one that is already recorded. A Campaign that was stopped never ends as completed, even when the stop arrived as its last check finished; what it did until then is still reported. Requesting the Organization's deletion stops its running Campaign the same way.
+**Watch and stop.** The Campaign page refreshes while it runs and shows the request log, refusals included. **Stop** is there for as long as the Campaign is queued or running. A stop is final, and no request follows it: the stop, the operator's switch and a suspension are read from the database before every request — the ownership check at the start included — and once more at the moment it is sent, and a Campaign is not started past one that is already recorded. A Campaign that was stopped never ends as completed, even when the stop arrived as its last check finished; what it did until then is still reported. Requesting the Organization's deletion stops its running Campaign the same way, and ends one that is still queued; after cancelling the deletion, launch a new Campaign.
 
 **Read the result.**
 
@@ -255,7 +255,7 @@ Every request carries `User-Agent: Airverse-Campaign/1` and `X-Airverse-Campaign
 | Allow Campaigns again | `POST /v1/ops/prove/enable` |
 | Suspend or resume one Organization | `POST /v1/ops/prove/organizations/<id>/suspend`, `…/resume` |
 
-Each takes a JSON body `{ "reason": "…" }`.
+Each takes a JSON body `{ "reason": "…" }`. A kill or a suspension may be sent again: it ends anything still open and writes the operator's audit entry for any Campaign it ended that has none yet (for example after an earlier attempt failed half-way). `stopped` in the answer counts the Campaigns this call wrote that entry for.
 
 **Honest limits:**
 
@@ -264,7 +264,7 @@ Each takes a JSON body `{ "reason": "…" }`.
 - **A GET can change state on a careless application.** Exclude such paths in the Rules.
 - **"Staging" and "signed by an Owner" are declarations made with an admin key.** Nothing verifies them.
 - **Evidence is redacted by patterns, over a window of at most 200 characters.** Keys, tokens, passwords, emails, card numbers and cookies are removed where they are recognised. The patterns miss many shapes of secret; what protects you is that so little is kept. A secret that stands within those 200 characters of a match, in a shape the patterns do not know, is stored. Treat evidence as sensitive.
-- **A refused request shows no text.** If the engine asks for something that is not one of its declared probes, the request log shows the reason, the method as GET, HEAD or "Another method", and how many characters were asked for. What was asked for is not stored: it is text the engine chose, possibly out of a response.
+- **A refused request shows no text.** If the engine asks for something that is not one of its declared probes, the request log shows the reason, the method as GET, HEAD or "Another method", and roughly how much was asked for (nothing, at most 256 characters, at most 1,024, or more — never the exact count). What was asked for is not stored: it is text the engine chose, possibly out of a response.
 - **The engine runs in a worker thread, not a sandbox.** It is started without the API's environment variables, and it can only ask the gate for requests; a real engine needs a real isolation boundary.
 - **The query string is not part of what the Rules authorise;** only the path is.
 

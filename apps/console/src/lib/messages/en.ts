@@ -1765,8 +1765,11 @@ export const en = {
   "campaign.requests.reason": "Reason: {reason}",
   "campaign.requests.unknown": "Not stated",
   "campaign.requests.other-method": "Another method",
-  "campaign.requests.not-kept": "{method}. Not kept: {chars} characters asked for",
-  "campaign.requests.not-kept.one": "{method}. Not kept: {chars} character asked for",
+  "campaign.requests.not-kept": "{method}. Not kept: {size}",
+  "campaign.requests.asked.nothing": "nothing asked for",
+  "campaign.requests.asked.256": "at most 256 characters asked for",
+  "campaign.requests.asked.1024": "at most 1,024 characters asked for",
+  "campaign.requests.asked.more": "more than 1,024 characters asked for",
   "campaign.report.title": "Report",
   "campaign.report.lead":
     "The report holds this Campaign, its checks, its Findings with redacted evidence, and its limits, as JSON.",

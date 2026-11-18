@@ -2,6 +2,7 @@ import {
   CAMPAIGN_LIMITS,
   CAMPAIGN_STAND_IN_NOTICE,
   type Campaign,
+  type CampaignAskedBucket,
   type CampaignChecks,
   type CampaignEndReason,
   type CampaignEngine,
@@ -12,6 +13,7 @@ import {
   type CampaignRequest,
   type CampaignSeverity,
   type CampaignStatus,
+  campaignAskedBucket,
   type ProveOperatorState,
   statusOfEndReason,
 } from "@antireverse/protocol";
@@ -316,10 +318,8 @@ export async function insertCampaignRequest(
       entry.failure,
       wholeBytes(entry.bytes),
       Math.min(Math.round(entry.ms), 2_000_000_000),
-      // How much a refused probe asked for; what it asked for is not stored (D-110).
-      entry.outcome === "refused"
-        ? Math.min(Math.max(0, Math.round(entry.asked ?? 0)), CAMPAIGN_LIMITS.askedCharsMax)
-        : null,
+      // How much a refused probe asked for, as a bucket (D-113); what it asked for is not stored (D-110).
+      entry.outcome === "refused" ? campaignAskedBucket(entry.asked ?? 0) : null,
     ],
   );
 }
@@ -371,7 +371,7 @@ interface RequestRow {
   failure: CampaignRequest["failure"];
   bytes: string | number | bigint;
   ms: number;
-  asked_chars: number | null;
+  asked_chars: CampaignAskedBucket | null;
 }
 
 export async function listCampaignRequests(q: Queryable, id: string): Promise<CampaignRequest[]> {
@@ -485,6 +485,30 @@ export async function campaignQueue(q: Queryable, limit: number, offset = 0): Pr
     status: row.status,
     deletionPending: row.deletion_pending,
   }));
+}
+
+/**
+ * Campaigns that ended with an operator stop's reason since `since` and have no operator entry in their
+ * Organization's audit chain (`campaigns_without_operator_entry`): what a repeated stop completes.
+ */
+export async function campaignsWithoutOperatorEntry(
+  q: Queryable,
+  input: { reason: "operator_kill" | "organization_suspended"; organizationId?: string | undefined; since: Date },
+): Promise<{ organizationId: string; campaignId: string }[]> {
+  const { rows } = await q.query<{ organization_id: string; campaign_id: string }>(
+    "SELECT organization_id, campaign_id FROM campaigns_without_operator_entry($1, $2, $3)",
+    [input.reason, input.organizationId ?? null, input.since.toISOString()],
+  );
+  return rows.map((row) => ({ organizationId: row.organization_id, campaignId: row.campaign_id }));
+}
+
+/** Whether the Organization's audit chain holds an operator's stop entry for the Campaign. */
+export async function hasOperatorEntry(q: Queryable, campaignId: string): Promise<boolean> {
+  const { rows } = await q.query(
+    "SELECT 1 FROM audit_entries WHERE target_id = $1 AND action = 'campaign.operator_kill' LIMIT 1",
+    [campaignId],
+  );
+  return rows.length > 0;
 }
 
 /** On start: every running Campaign becomes interrupted (`api_restart`). Answers which. */

@@ -136,9 +136,10 @@ describe("migration 0040: the fourth review's rules in the database", () => {
         r.asked_chars,
       ]),
     ).toEqual([
-      ["refused", "OTHER", null, 2048],
+      // Fifth review (D-113): as buckets, not counts.
+      ["refused", "OTHER", null, 1_000_000],
       ["refused", null, null, 0],
-      ["refused", "GET", "/search", 7],
+      ["refused", "GET", "/search", 256],
       ["sending", "GET", "/", null],
     ]);
     await stop(campaign.id);
@@ -334,9 +335,10 @@ describe("migration 0040 on a database that held Campaigns before it (R6, R1)", 
       expect(requests.rows).toEqual([
         { seq: 1, method: "GET", target: "/", asked_chars: null },
         // What it asked for is gone; how much it was is what the old row still shows.
-        { seq: 2, method: "OTHER", target: null, asked_chars: 26 },
+        // (Migration 0041 then turns the lengths into buckets: at most 256 characters.)
+        { seq: 2, method: "OTHER", target: null, asked_chars: 256 },
         { seq: 3, method: null, target: null, asked_chars: 0 },
-        { seq: 4, method: "GET", target: null, asked_chars: 6 },
+        { seq: 4, method: "GET", target: null, asked_chars: 256 },
       ]);
     } finally {
       await pg.close();

@@ -201,7 +201,7 @@ describe("scope escape", () => {
     expect(h.target.hits.some((hit) => /admin/i.test(hit.url))).toBe(false);
     // The refused row keeps no spelling.
     expect((await requestsOf(h, acme, second.id)).filter((r) => r.outcome === "refused")).toMatchObject([
-      { method: "GET", target: null, asked_chars: spellings[0]?.length },
+      { method: "GET", target: null, asked_chars: 256 },
     ]);
   });
 
@@ -248,7 +248,7 @@ describe("scope escape", () => {
     expect(h.target.range.trapHits()).toEqual([]);
     // The log names no method of the engine's choosing and no path it asked for.
     expect((await requestsOf(h, acme, campaign.id)).filter((r) => r.outcome === "refused")).toMatchObject([
-      { method: "OTHER", target: null, asked_chars: 15 },
+      { method: "OTHER", target: null, asked_chars: 256 },
     ]);
   });
 

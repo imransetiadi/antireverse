@@ -421,7 +421,8 @@ export function createCampaignStore({
         failure: null,
         bytes: 0,
         ms: 0,
-        asked_chars: targetOf(entry.script[Math.min(campaign.requests_sent, entry.script.length - 1)].check).length,
+        // A bucket, as the API keeps it: at most 256 characters.
+        asked_chars: 256,
       });
       campaign.requests_refused += 1;
     }

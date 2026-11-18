@@ -73,6 +73,13 @@ export const MATRICES: readonly Matrix[] = [
       "apps/api/test/campaign-review4-redact.test.ts",
       "apps/api/test/campaign-review4-transport.test.ts",
       "apps/api/test/campaign-review4-db.test.ts",
+      // The fifth review's: an operator's stop that fails half-way or runs twice, a switch committed while the
+      // engine returns, probes asked for concurrently, hidden characters in what is stored, a deletion request.
+      "apps/api/test/campaign-review5-gate.test.ts",
+      "apps/api/test/campaign-review5-runner.test.ts",
+      "apps/api/test/campaign-review5-routes.test.ts",
+      "apps/api/test/campaign-review5-redact.test.ts",
+      "apps/api/test/campaign-review5-db.test.ts",
       "tests/e2e/campaign-scope.http.test.ts",
       "tests/e2e/campaign-never-destructive.http.test.ts",
       "tests/e2e/campaign-review.http.test.ts",

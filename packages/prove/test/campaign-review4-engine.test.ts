@@ -8,13 +8,14 @@ import { STAND_IN_CATALOG, STAND_IN_MARKER, STAND_IN_REDIRECT, standInEngine } f
 
 describe("review4 R1: the stand-in's probe catalog", () => {
   it("declares exactly the probes of its checks: method, path, and the one value each query name may have", () => {
+    // Fifth review: each probe also names the check it serves.
     expect(standInEngine.probes).toEqual([
-      { method: "GET", path: "/" },
-      { method: "GET", path: "/api/orders/x" },
-      { method: "GET", path: "/api/admin/reports" },
-      { method: "GET", path: "/api/orders/1001" },
-      { method: "GET", path: "/search", query: { q: { exact: STAND_IN_MARKER } } },
-      { method: "GET", path: "/go", query: { to: { exact: STAND_IN_REDIRECT } } },
+      { method: "GET", path: "/", checks: ["RW-01"] },
+      { method: "GET", path: "/api/orders/x", checks: ["RW-02"] },
+      { method: "GET", path: "/api/admin/reports", checks: ["RW-03"] },
+      { method: "GET", path: "/api/orders/1001", checks: ["RW-04"] },
+      { method: "GET", path: "/search", checks: ["RW-05"], query: { q: { exact: STAND_IN_MARKER } } },
+      { method: "GET", path: "/go", checks: ["RW-06"], query: { to: { exact: STAND_IN_REDIRECT } } },
     ]);
     expect(Object.isFrozen(standInEngine.probes)).toBe(true);
     expect(Object.isFrozen(standInEngine.probes[4]?.query?.q)).toBe(true);

@@ -322,12 +322,32 @@ function redactAssignments(text: string): string {
   return out + text.slice(copied);
 }
 
+// Characters that are not text to read. Controls (C0, DEL, C1 — U+0085 among them) and format characters: the soft
+// hyphen, zero-width space and joiners, the word joiner, the byte order mark, the bidirectional marks, overrides and
+// isolates. They show as nothing, or reorder what stands around them.
+const NOT_TEXT = /[\p{Cc}\p{Cf}]/gu;
+const LINE_BREAK = /\r\n?|[\u2028\u2029]/g;
+
+/**
+ * `text` without the characters that are not text: every line break (CR LF, CR, U+2028, U+2029) is one line feed; a
+ * line feed and a tab stay; every other control or format character is removed — not replaced: it stood between two
+ * characters that belong together. Idempotent.
+ */
+export function cleanText(text: string): string {
+  return text
+    .replace(LINE_BREAK, "\n")
+    .replace(NOT_TEXT, (character) => (character === "\n" || character === "\t" ? character : ""));
+}
+
 /** Passes of the patterns over one text at most; a text still changing after them is withheld whole. */
 const PASSES_MAX = 6;
 
 /**
  * `text` with everything that looks like a secret or personal data replaced. Text with a NUL in it is not text (a
  * binary body, or UTF-16 read as UTF-8, in which every pattern here would miss): it is withheld whole. Never throws.
+ *
+ * Characters that are not text are taken out first (`cleanText`), so the result holds no control character but a
+ * line break or a tab, and no format character.
  *
  * Idempotent: `redactText(redactText(x)) === redactText(x)` for every text. One pass of the patterns is not — a
  * marker a later pattern writes can end a name or a value that an earlier pattern then reads differently — so the
@@ -336,6 +356,12 @@ const PASSES_MAX = 6;
  */
 export function redactText(text: string): string {
   let out = String(text);
+  // A NUL is checked for before anything is taken out: text with one is not text.
+  if (out.includes("\u0000")) return BODY_WITHHELD;
+  // Characters that are not text go first (fifth review): left in, a soft hyphen or a zero-width space inside a card
+  // number, a token or the word "password" hides it from every pattern below — and would then be dropped from what
+  // is stored, leaving the secret readable.
+  out = cleanText(out);
   for (let pass = 0; pass < PASSES_MAX; pass++) {
     const next = redactOnce(out);
     if (next === out) return out;
@@ -404,6 +430,9 @@ function charsetParameters(type: string): string[] | null {
     if (at >= type.length) return charsets;
     if (type[at++] !== ";") return null;
     skipSpace();
+    // An empty parameter — a trailing semicolon, two in a row — is allowed by the grammar and says nothing.
+    if (at >= type.length) return charsets;
+    if (type[at] === ";") continue;
     const name = token();
     if (name === null || type[at++] !== "=") return null;
     let value: string | null;
@@ -549,7 +578,7 @@ export function redactHeaders(
   };
   for (const name of KEPT_HEADERS) {
     const value = first(name);
-    if (typeof value === "string") kept[name] = storable(redactText(value), HEADER_VALUE_MAX, false);
+    if (typeof value === "string") kept[name] = storable(value, HEADER_VALUE_MAX, true);
   }
   for (const name of PRESENCE_HEADERS) {
     if (headers[name] !== undefined) kept[name] = HEADER_PRESENT;
@@ -557,7 +586,11 @@ export function redactHeaders(
   const cookies = headers["set-cookie"];
   if (cookies !== undefined) {
     const list = (Array.isArray(cookies) ? cookies : [cookies]).slice(0, 16);
-    kept["set-cookie"] = storable(list.map(redactCookie).join(", "), HEADER_VALUE_MAX * 4, false);
+    // Names and flags only (`redactCookie`): cleaned and cut, not put through the patterns again.
+    kept["set-cookie"] = cleanText(list.map(redactCookie).join(", "))
+      .replace(/[\n\t]/g, " ")
+      .slice(0, HEADER_VALUE_MAX * 4)
+      .replace(LONE_SURROGATE, "");
   }
   const challenge = first("www-authenticate");
   if (typeof challenge === "string") kept["www-authenticate"] = /^[A-Za-z]{1,16}/.exec(challenge)?.[0] ?? "other";
@@ -566,30 +599,32 @@ export function redactHeaders(
   return kept;
 }
 
-// Characters that are not text to read: controls, and format characters — the bidirectional overrides and isolates
-// (U+202A–202E, U+2066–2069), the marks (U+200E, U+200F, U+061C), zero-width characters, the byte order mark — and
-// the line and paragraph separators. Stored and shown as they are, they reorder or hide what stands around them.
-const NOT_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /**
- * `text` as it may be stored: each control or format character a space (a line break and a tab stay when
- * `keepLines`), at most `max` characters, cut on a code-point boundary — no half of a surrogate pair is left.
+ * `text` as it may be stored: cleaned of what is not text and redacted (`redactText`), then cut to `max` characters
+ * on a code-point boundary — and that again until nothing changes, because a cut can leave half a marker or bring a
+ * name and its value together anew. The result is a fixed point: storing what was stored changes nothing. `flat`: a
+ * line break or a tab becomes a space (a header value is one line). Should a text not settle in six rounds (none is
+ * known), nothing of it is stored.
  */
-function storable(text: string, max: number, keepLines: boolean): string {
-  return text
-    .replace(NOT_TEXT, (character) => (keepLines && (character === "\n" || character === "\t") ? character : " "))
-    .slice(0, max)
-    .replace(LONE_SURROGATE, "");
+function storable(text: string, max: number, flat: boolean): string {
+  let out = flat ? cleanText(text).replace(/[\n\t]/g, " ") : text;
+  for (let round = 0; round < PASSES_MAX; round++) {
+    const next = redactText(out).slice(0, max).replace(LONE_SURROGATE, "");
+    if (next === out) return out;
+    out = next;
+  }
+  return "";
 }
 
 /**
  * The evidence window of a Finding as it is stored (D-107): `window` — a piece of the redacted body that a check cut
- * around what it matched — redacted once more on its own, with no control or format character but a line break or
- * a tab (each other one becomes a space: bidi overrides, zero-width characters, U+2028 and U+2029 included), no half
- * of a surrogate pair, and at most `evidenceWindowMax` (200) characters. So that
+ * around what it matched — cleaned and redacted once more on its own (no control or format character but a line
+ * break or a tab: the others are taken out before the patterns run), no half of a surrogate pair, at most
+ * `evidenceWindowMax` (200) characters, and a fixed point: `evidenceWindow(evidenceWindow(x)) === evidenceWindow(x)`. So that
  * it can always be stored and shown, whatever it was cut from.
  */
 export function evidenceWindow(window: string): string {
-  return storable(redactText(window), CAMPAIGN_LIMITS.evidenceWindowMax, true);
+  return storable(window, CAMPAIGN_LIMITS.evidenceWindowMax, false);
 }

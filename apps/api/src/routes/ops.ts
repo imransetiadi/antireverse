@@ -132,6 +132,16 @@ export function opsRoutes(deps: {
             if (suspended !== list.some((entry) => entry.organization_id === organizationId)) {
               return problem(c, "not-found");
             }
+            // Suspended already, and asked for again: the stop is run again. If an earlier one failed half-way, a
+            // Campaign may still be open or lack the operator's entry; a stop with nothing left to do answers 0.
+            if (suspended) {
+              stopped = await campaigns.operatorStop({
+                reason: "organization_suspended",
+                organizationId,
+                requestId,
+                operatorReason: reason,
+              });
+            }
           }
           return c.json(await state(stopped));
         },

@@ -17,7 +17,7 @@ describe("review4 15a: the routes abort in-process Campaigns right after the com
     wake() {},
     abort: async () => {},
     isActive: () => false,
-    cut: (organizationId, reason) => void order.push(`cut ${organizationId} ${reason}`),
+    cut: async (organizationId, reason) => void order.push(`cut ${organizationId} ${reason}`),
     operatorStop: async (input) => {
       order.push(`operatorStop ${input.reason}`);
       return 0;

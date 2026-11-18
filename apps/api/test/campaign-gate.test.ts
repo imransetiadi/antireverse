@@ -65,7 +65,8 @@ function harness(
   const controller = new AbortController();
   const deps: GateDeps = {
     campaign: { id: CAMPAIGN, host: HOST, roeId: ROE, intensity: "safe-active" },
-    catalog: CATALOG,
+    // Fifth review: a Finding rests only on a probe declared for its check; here every probe serves RW-01.
+    catalog: CATALOG.map((probe) => ({ ...probe, checks: ["RW-01"] })),
     async control() {
       order.push("control");
       return { ...state.control };
@@ -363,13 +364,14 @@ describe("refusals", () => {
   });
 
   // Fourth review (D-110): this row used to hold the first 256 characters of what was asked. It holds none of it now.
+  // Fifth review (D-113): and how much is one of four buckets, not the count.
   it("logs of a refused probe how much it asked for, and nothing of what", async () => {
     const h = harness();
     await h.gate.request({ method: "GET", path: `/${"a".repeat(5000)}\r\nX: y` });
-    expect(h.records).toMatchObject([{ method: "GET", target: null, asked: 5007, reason: "path_not_canonical" }]);
+    expect(h.records).toMatchObject([{ method: "GET", target: null, asked: 1_000_000, reason: "path_not_canonical" }]);
     const other = harness();
     await other.gate.request({ method: "DELETE\r\n", path: "/x" });
-    expect(other.records).toMatchObject([{ method: "OTHER", target: null, asked: 2 }]);
+    expect(other.records).toMatchObject([{ method: "OTHER", target: null, asked: 256 }]);
   });
 });
 
@@ -592,7 +594,7 @@ describe("the request log (review M2)", () => {
         error: "invalid_response",
       });
       expect(h.records).toMatchObject([{ outcome: "sent", status: null, failure: "invalid_response", bytes: 0 }]);
-      expect(h.gate.evidence(1, "")).toBeNull();
+      expect(h.gate.evidence(1, "", "RW-01")).toBeNull();
     }
     const refusedByTransport = harness({ respond: () => ({ ok: false, reason: "invalid_response" }) });
     expect(await refusedByTransport.gate.request({ method: "GET", path: "/" })).toMatchObject({
@@ -827,7 +829,11 @@ describe("evidence", () => {
     const h = harness({ respond: () => ok(500, body, { "content-type": "text/plain", "x-other": "no" }) });
     const exchange = await h.gate.request({ method: "GET", path: "/api/orders/x" });
     const seen = exchange.ok ? exchange.body : "";
-    const evidence = h.gate.evidence(1, seen.slice(seen.indexOf("Error: boom"), seen.indexOf("Error: boom") + 200));
+    const evidence = h.gate.evidence(
+      1,
+      seen.slice(seen.indexOf("Error: boom"), seen.indexOf("Error: boom") + 200),
+      "RW-01",
+    );
     expect(evidence).toMatchObject({
       method: "GET",
       target: "/api/orders/x",
@@ -840,8 +846,8 @@ describe("evidence", () => {
     expect(evidence?.excerpt.length).toBeLessThanOrEqual(CAMPAIGN_LIMITS.evidenceWindowMax);
     expect(evidence?.excerpt).toContain("Error: boom");
     expect(evidence?.excerpt).not.toContain("jane@");
-    expect(h.gate.evidence(2, "")).toBeNull();
-    expect(h.gate.evidence(Number.NaN, "")).toBeNull();
+    expect(h.gate.evidence(2, "", "RW-01")).toBeNull();
+    expect(h.gate.evidence(Number.NaN, "", "RW-01")).toBeNull();
   });
 });
 

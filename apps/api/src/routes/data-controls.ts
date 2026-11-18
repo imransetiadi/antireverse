@@ -165,8 +165,10 @@ export function dataControlRoutes(deps: {
         }
         // Committed. A Campaign of this Organization that runs in this process is cut now, with nothing awaited
         // in between: the gate refuses its next request anyway (it reads the pending deletion), this ends the one
-        // in flight too. A queued one stays queued until the purge.
-        deps.campaigns?.cut(organizationId, "deletion_pending");
+        // in flight too. And one still queued or in its start checks is ended as well (D-112), as
+        // `stopped` (`deletion_pending`): it does not wait for a cancel that would never start it again. After a
+        // cancel the owner launches a new one.
+        await deps.campaigns?.cut(organizationId, "deletion_pending");
         return c.json({ deletion: outcome } satisfies DeletionResponse, 201);
       } catch (error) {
         if ((error as { code?: unknown }).code === UNIQUE_VIOLATION) return problem(c, "conflict");
