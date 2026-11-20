@@ -81,6 +81,8 @@ export const GLOBAL_TABLES: Readonly<Record<string, string>> = {
   prove_switch: "the operator's kill switch of Pentest Campaigns (slice 15a): one row, no tenant identifier",
   prove_suspensions:
     "the operator's list of Organizations whose Campaigns are suspended (slice 15a): an Organization id, a time and the operator's reason; removed with the Organization's row (cascade)",
+  system_organizations:
+    "the Organizations the API itself owns, by kind (slice 18g: the synthetic probe's Organization and App); the operator's registry, not that Organization's data, and no key",
   slo_alerts: "the burn rules firing now (slice 18d): SLO, rule and the episode's start, no tenant identifier",
   slo_flushes: "the ids of SLI batches written in the last day (slice 18d), so a retried batch is not counted twice",
   slo_minutes:

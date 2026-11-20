@@ -158,6 +158,11 @@ export interface AppDeps {
    * routes. Default: none (nothing is recorded; `startApi` passes the one it starts and flushes on close).
    */
   slo?: SloService;
+  /**
+   * The Organizations the API itself owns (slice 18g, D-116: the synthetic probes'). Their requests and Events feed no
+   * request SLI and no in-process SLO-04 sample. Default: none.
+   */
+  systemOrganizations?: { has(organizationId: string): boolean };
   /** The operator token (`AR_OPS_TOKEN`) of `GET /v1/ops/slo` and `GET /metrics`. Default: none, and they answer 404. */
   opsToken?: string;
   /** The millisecond clock of request latency for the SLIs. Default `performance.now`; tests pass a fake. */
@@ -211,7 +216,13 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     await next();
   });
   // Slice 18d: the request SLIs (route class, status, server time), counted in memory.
-  if (deps.slo !== undefined) app.use("*", sloRequests(deps.slo.recorder, deps.monotonic));
+  if (deps.slo !== undefined) {
+    const system = deps.systemOrganizations;
+    app.use(
+      "*",
+      sloRequests(deps.slo.recorder, deps.monotonic, (organizationId) => system?.has(organizationId) === true),
+    );
+  }
   // Slice 18a: a request id for every request, and the reason header of a mutating one checked before any route.
   app.use("*", auditRequest());
 

@@ -89,6 +89,8 @@ export function createOpsStore({ token, now = () => Date.now() }) {
       generated_at: new Date(at).toISOString(),
       window_days: 30,
       scope: "instance",
+      // Slice 18g: the stand-in runs no synthetic probes, so SLO-06 is not measured, as on an API without AR_PROBES=1.
+      probes: null,
       slos: SLO_CATALOG.map((def) => ({
         id: def.id,
         name: def.name,

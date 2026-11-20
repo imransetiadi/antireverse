@@ -81,11 +81,13 @@ function templateOf(c: Parameters<typeof matchedRoutes>[0]): string {
 /**
  * Records every classified request in `sink`. `monotonic`: a millisecond clock (default `performance.now`). The server
  * time starts when the request arrives, or once its body has been read (`limitBody` calls `bodyRead`): a slow upload
- * is the client's time. A request whose client has gone away (its signal aborted) is not recorded.
+ * is the client's time. A request whose client has gone away (its signal aborted) is not recorded, and neither is
+ * one authenticated with a key of an Organization `isSystem` names (the API's own synthetic probes).
  */
 export function sloRequests(
   sink: SloSink,
   monotonic: () => number = () => performance.now(),
+  isSystem: (organizationId: string) => boolean = () => false,
 ): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const signal = c.req.raw.signal;
@@ -98,6 +100,10 @@ export function sloRequests(
     if (signal.aborted) return;
     const cls = classifyRoute(c.req.method, templateOf(c));
     if (cls === null) return;
+    // Slice 18g (D-116): a request with a key of a system Organization — the synthetic probes' own publish, bundle
+    // fetches, ingest and reads — is no tenant's traffic and feeds no request SLI.
+    const organizationId = (c.var as { principal?: { organizationId?: string } }).principal?.organizationId;
+    if (organizationId !== undefined && isSystem(organizationId)) return;
     const good = judgeRequest(cls, c.res.status, ms);
     if (good !== null) sink.record(cls.slo, good, ms, cls.variant);
   };

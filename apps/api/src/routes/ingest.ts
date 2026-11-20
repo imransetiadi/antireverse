@@ -16,6 +16,8 @@ export function ingestRoutes(deps: {
   bus: EventBus;
   now?: () => Date;
   slo?: SloSink | undefined;
+  /** Slice 18g (D-116): Events of a system Organization (the synthetic probes') are not SLO-04 samples here. */
+  systemOrganizations?: { has(organizationId: string): boolean } | undefined;
 }): Hono<AppEnv> {
   const { db, bus } = deps;
   const now = deps.now ?? (() => new Date());
@@ -47,7 +49,8 @@ export function ingestRoutes(deps: {
       if (!stored.delete(event.event_id)) continue;
       bus.publish({ ...event, ...stamp } satisfies StoredEvent);
       // Slice 18d, SLO-04: received to published on the live bus, per Event.
-      if (deps.slo !== undefined) {
+      // Not the synthetic probes' own Events: the prober records their end-to-end sample itself.
+      if (deps.slo !== undefined && deps.systemOrganizations?.has(organizationId) !== true) {
         const ms = now().getTime() - receivedAt.getTime();
         deps.slo.record("SLO-04", ms <= FRESH_MS, ms);
       }

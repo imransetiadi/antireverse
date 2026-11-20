@@ -66,6 +66,15 @@ export {
   pinnedFetch,
 } from "./notify/notifier.ts";
 export { checkDestination, type DestinationCheck, isForbiddenAddress, type Resolve } from "./notify/ssrf.ts";
+export {
+  createProber,
+  PROBE_JOB_DEFAULTS,
+  type ProbeRun,
+  type Prober,
+  type ProberOptions,
+  type ProbeTransport,
+} from "./probe/runner.ts";
+export { PROBE_VARIABLES, type ProbeSettings, readProbeSettings } from "./probe/settings.ts";
 export { isPublicAddress } from "./prove/address.ts";
 export { type Authorize, type AuthorizeTarget, createAuthorize, evaluateAuthorization } from "./prove/authorize.ts";
 export type { ProveDeps, ProveNetwork } from "./prove/deps.ts";

@@ -2,6 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   atThreshold,
+  PROBE_BOUNDS,
+  PROBE_PATH_PREFIX,
+  PROBES_VARIABLE,
+  ProbeStatusSchema,
   SLO_BURN_RULES,
   SLO_CATALOG,
   SLO_IDS,
@@ -78,6 +82,38 @@ describe("SLO catalog", () => {
         expect(slo.not_measured_reason, slo.id).toBeNull();
       }
     }
+  });
+
+  it("marks SLO-06 as fed by the synthetic probe only, with PB-15's bounds, and SLO-08 as needing a browser (slice 18g)", () => {
+    const of = (id: string) => SLO_CATALOG.find((slo) => slo.id === id);
+    expect(SLO_CATALOG.filter((slo) => slo.probe).map((slo) => slo.id)).toEqual(["SLO-06"]);
+    expect(of("SLO-06")?.good_within_ms).toBe(30_000);
+    expect(of("SLO-06")?.latency_targets).toEqual([
+      { variant: "all", percentile: 95, ms: 30_000 },
+      { variant: "all", percentile: 99, ms: 60_000 },
+    ]);
+    // Off by default: the reason names the switch. The indicator says what the number is not.
+    expect(of("SLO-06")?.not_measured_reason).toContain(`${PROBES_VARIABLE}=1`);
+    expect(of("SLO-06")?.indicator).toMatch(/one Shield/i);
+    expect(of("SLO-04")?.indicator).toMatch(/probe/i);
+    // Review D-116 and D-117: the probe's own traffic feeds no other SLI, and a prober that cannot run counts as failing.
+    for (const id of ["SLO-02", "SLO-03", "SLO-04", "SLO-05", "SLO-07"]) {
+      expect(of(id)?.indicator, id).toMatch(/synthetic probes' own (requests|Events) (are|is) not counted/);
+    }
+    expect(of("SLO-06")?.indicator).toMatch(/cannot be set up/);
+    expect(ProbeStatusSchema.shape.setup_failures).toBeDefined();
+    expect(of("SLO-08")?.not_measured_reason).toMatch(/Core Web Vitals/);
+    expect(of("SLO-08")?.probe).toBe(false);
+    expect(PROBES_VARIABLE).toBe("AR_PROBES");
+    expect(PROBE_PATH_PREFIX).toBe("/airverse-probe/");
+    expect(PROBE_BOUNDS).toEqual({
+      enforceGoodMs: 30_000,
+      enforceTimeoutMs: 60_000,
+      freshGoodMs: 5_000,
+      freshTimeoutMs: 30_000,
+    });
+    expect(PROBE_BOUNDS.enforceGoodMs).toBe(of("SLO-06")?.good_within_ms);
+    expect(PROBE_BOUNDS.freshGoodMs).toBe(of("SLO-04")?.good_within_ms);
   });
 
   it("states the good thresholds of the ticket and the latency targets of PERFORMANCE §2", () => {
@@ -158,6 +194,7 @@ describe("GET /v1/ops/slo", () => {
     generated_at: "2026-11-14T10:00:00.000Z",
     window_days: 30,
     scope: "instance",
+    probes: null,
     slos: [
       {
         id: "SLO-01",
@@ -177,6 +214,25 @@ describe("GET /v1/ops/slo", () => {
       },
     ],
   };
+
+  it("carries the probe status, or null when probes are off (slice 18g)", () => {
+    expect(SloReportSchema.safeParse({ ...report, probes: undefined }).success).toBe(false);
+    const probes = {
+      interval_s: 60,
+      runs: 3,
+      failures: 1,
+      consecutive_failures: 0,
+      setup_failures: 0,
+      last_run_at: "2026-11-14T09:59:00.000Z",
+      enforcement: { outcome: "good", ms: 4200.5 },
+      freshness: { outcome: "skipped", ms: null },
+    };
+    expect(SloReportSchema.parse({ ...report, probes })).toEqual({ ...report, probes });
+    expect(ProbeStatusSchema.safeParse({ ...probes, organization_id: "x" }).success).toBe(false);
+    expect(ProbeStatusSchema.safeParse({ ...probes, enforcement: { outcome: "fine", ms: 1 } }).success).toBe(false);
+    const idle = { ...probes, runs: 0, failures: 0, last_run_at: null, enforcement: null, freshness: null };
+    expect(ProbeStatusSchema.safeParse(idle).success).toBe(true);
+  });
 
   it("parses a report and refuses members it does not define", () => {
     expect(SloReportSchema.parse(report)).toEqual(report);

@@ -151,3 +151,19 @@ describe("the catalog", () => {
     expect(CRITERIA.find((c) => c.id === "sec12-kill-switches")?.gaps[0]?.reason).toMatch(/gate-campaign-safety/);
   });
 });
+
+// Slice 18g: the synthetic probes time PB-13 and PB-15 inside one running API instance against one local Shield. That
+// shows the mechanism; it is not the budget's measurement, so the criterion stays not checkable and says exactly why.
+describe("the performance criterion and the synthetic probes", () => {
+  it("stays not checkable: no check is added for the probes, and its gap names PB-13 and PB-15 as in-process only", () => {
+    const performance = CRITERIA.find((criterion) => criterion.id === "qa16-performance");
+    expect(performance?.checks).toEqual(["bench-shield", "load-smoke"]);
+    expect(performance?.gaps).toHaveLength(1);
+    const reason = performance?.gaps[0]?.reason ?? "";
+    expect(reason).toMatch(/PB-13 and PB-15/);
+    expect(reason).toMatch(/AR_PROBES=1/);
+    expect(reason).toMatch(/one running instance/);
+    expect(reason).toMatch(/not run by this gate/);
+    expect(Object.keys(CHECKS).some((id) => /probe/i.test(id))).toBe(false);
+  });
+});

@@ -73,6 +73,11 @@ export interface DetectorDeps {
    * Event's `received_at`) or failed (bad). Nothing when the write records nothing.
    */
   slo?: SloSink | undefined;
+  /**
+   * Slice 18g (D-116): Events of an Organization the API itself owns (the synthetic probes') are not looked at:
+   * no Detection, no Incident and so no alert is ever made for one.
+   */
+  isSystemOrganization?: ((organizationId: string) => boolean) | undefined;
 }
 
 /** SLO-05's bound (PB-14): a Detection recorded within 10 s of its triggering Event's receipt. */
@@ -485,6 +490,7 @@ export function createDetector(deps: DetectorDeps): Detector {
     start() {
       unsubscribe ??= bus.subscribeAll((event) => {
         try {
+          if (deps.isSystemOrganization?.(event.organization_id) === true) return;
           receive(event);
         } catch (error) {
           failed(error);

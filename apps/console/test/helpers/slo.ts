@@ -56,6 +56,8 @@ export function sloReport(overrides: Partial<Record<SloId, Partial<SloStatus>>> 
     generated_at: GENERATED_AT,
     window_days: 30,
     scope: "instance",
+    // Slice 18g: the synthetic probes are off unless a test says otherwise.
+    probes: null,
     slos: SLO_CATALOG.map((def) => sloStatus(def.id, overrides[def.id] ?? {})),
   };
 }

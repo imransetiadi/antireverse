@@ -1,4 +1,11 @@
-import { SLO_BURN_WINDOWS, SLO_CATALOG, type SloId, type SloReport } from "@antireverse/protocol";
+import {
+  type ProbeStatus,
+  SLO_BURN_WINDOWS,
+  SLO_CATALOG,
+  type SloDefinition,
+  type SloId,
+  type SloReport,
+} from "@antireverse/protocol";
 import { signWebhookBody } from "@antireverse/protocol/server";
 import type { OwnedDb } from "../db/db.ts";
 import { consoleLogger, type Logger, redacting } from "../log.ts";
@@ -26,6 +33,11 @@ import { readSloAggregates, readSloAlerts, saveSloAlertTransitions, sweepSloMinu
 // Reads (`GET /v1/ops/slo`, `GET /metrics`) use an aggregate at most `readCacheMs` old (a scrape does not re-aggregate
 // 30 days each time); a fresh one flushes the recorder first. On close (`flush`): the recorder first, then webhook posts
 // in flight get at most `closeWaitMs` before they are aborted.
+//
+// Slice 18g: an SLO that only the synthetic probes feed (SLO-06) is measured while a prober is attached
+// (`attachProbes`): then it is evaluated, alerted on and reported like the others, and the report carries the prober's
+// status. Without one it is reported as not measured, with the catalog's reason, and its firing alerts are resolved at
+// the next evaluation (review F3); so is, with a prober, a rule whose long window holds no sample.
 
 export const SLO_JOB_DEFAULTS = Object.freeze({
   /** Between evaluations: every minute. */
@@ -69,6 +81,8 @@ export interface SloService {
   report(): Promise<SloReport>;
   /** `GET /metrics`: Prometheus text format 0.0.4. */
   metrics(): Promise<string>;
+  /** Slice 18g: the synthetic probes run on this instance; `status` is read for every report. */
+  attachProbes(status: () => ProbeStatus): void;
   /**
    * Waits for the evaluation in progress, flushes the recorder (on close: the last minute), then gives webhook posts in
    * flight at most `closeWaitMs` and aborts the rest.
@@ -110,6 +124,11 @@ export function createSloService(options: SloServiceOptions): SloService {
   let running: Promise<AlertTransition[]> | undefined;
   let machine: Promise<AlertMachine> | undefined;
   let cached: { at: Date; aggregates: Map<SloId, SloAggregate> } | undefined;
+  let probes: (() => ProbeStatus) | undefined;
+
+  /** The definition as this instance measures it: a probe-fed SLO is measured while the probes run. */
+  const effective = (def: SloDefinition): SloDefinition =>
+    def.probe && probes !== undefined ? { ...def, measured: true, not_measured_reason: null } : def;
 
   const errorName = (error: unknown) => (error as Error)?.name ?? "Error";
 
@@ -209,7 +228,18 @@ export function createSloService(options: SloServiceOptions): SloService {
       const machineNow = await alerts();
       const { aggregates: current } = await aggregates(at, true);
       await db.owner((q) => sweepSloMinutes(q, at));
-      for (const def of SLO_CATALOG) {
+      for (const catalogued of SLO_CATALOG) {
+        const def = effective(catalogued);
+        if (catalogued.probe) {
+          // Review F3: an alert of a probe-fed SLO must have samples behind it. Without a prober on this instance
+          // every firing rule is resolved (the normal transition: stored, logged, sent); with one, a rule whose long
+          // window holds no sample at all. Traffic-fed SLOs keep D-094: an empty window is no evidence for them.
+          const signal = signalOf(catalogued, current.get(catalogued.id));
+          const off = probes === undefined;
+          transitions.push(
+            ...machineNow.end(catalogued.id, signal, at, (rule) => off || signal.totals[rule.long_window] === 0),
+          );
+        }
         if (!def.measured) continue;
         transitions.push(...machineNow.update(def.id, signalOf(def, current.get(def.id)), at));
       }
@@ -246,7 +276,8 @@ export function createSloService(options: SloServiceOptions): SloService {
       generated_at: at.toISOString(),
       window_days: 30,
       scope: "instance",
-      slos: SLO_CATALOG.map((def) => ({
+      probes: probes?.() ?? null,
+      slos: SLO_CATALOG.map(effective).map((def) => ({
         ...evaluateSlo(def, def.measured ? current.get(def.id) : undefined),
         alerts: def.measured ? machineNow.states(def.id) : [],
       })),
@@ -329,6 +360,9 @@ export function createSloService(options: SloServiceOptions): SloService {
     runOnce,
     report,
     metrics,
+    attachProbes(status) {
+      probes = status;
+    },
     async flush() {
       while (running !== undefined) await running.catch(() => {});
       await flushQuietly();

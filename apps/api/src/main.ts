@@ -11,6 +11,9 @@
 // Operator SLOs (slice 18d): AR_OPS_TOKEN (32+ printable characters, else the start fails) opens GET /v1/ops/slo and
 // GET /metrics, which answer 404 without it; AR_OPS_WEBHOOK_URL receives burn alerts, signed with AR_OPS_WEBHOOK_SECRET
 // (optional, 32+ characters) in an AR-Signature header like alert-channel webhooks.
+// Synthetic probes (slice 18g): AR_PROBES=1 runs the two probes of OPERATION §7 once a minute inside this process,
+// against a Shield of its own, in an Organization of its own; they feed SLO-06 and SLO-04. Off by default; any value
+// but unset, empty, 0 or 1 fails the start.
 import { readConfig } from "./config.ts";
 import { consoleLogger } from "./log.ts";
 import { type RunningApi, startApi } from "./server.ts";

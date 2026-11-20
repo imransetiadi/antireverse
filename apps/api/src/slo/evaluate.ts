@@ -226,6 +226,12 @@ export const episodeId = (slo: SloId, rule: SloBurnRule["id"], since: Date): str
 export interface AlertMachine {
   /** Steps every rule of the SLO; returns the rules that fired or resolved now. */
   update(slo: SloId, signal: SloSignal, at: Date): AlertTransition[];
+  /**
+   * Ends the firing episodes of the SLO whose rule `ends` names, whatever the burn says: a `resolved` transition each.
+   * For an SLO only the synthetic probes feed (slice 18g, review F3), whose alert has nothing behind it once the
+   * probes are off or its window holds no sample.
+   */
+  end(slo: SloId, signal: SloSignal, at: Date, ends: (rule: SloBurnRule) => boolean): AlertTransition[];
   /** The state of every rule of the SLO, in rule order. */
   states(slo: SloId): SloAlert[];
   /** Every rule firing now. */
@@ -251,6 +257,16 @@ export function createAlertMachine(initial: readonly FiringState[] = []): AlertM
           firingSince.delete(key(slo, rule.id));
           transitions.push({ slo, rule, state: "resolved", at, since: current.since, burn: signal.burn });
         }
+      }
+      return transitions;
+    },
+    end(slo, signal, at, ends) {
+      const transitions: AlertTransition[] = [];
+      for (const rule of SLO_BURN_RULES) {
+        const current = firingSince.get(key(slo, rule.id));
+        if (current === undefined || !ends(rule)) continue;
+        firingSince.delete(key(slo, rule.id));
+        transitions.push({ slo, rule, state: "resolved", at, since: current.since, burn: signal.burn });
       }
       return transitions;
     },

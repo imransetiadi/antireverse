@@ -4,7 +4,7 @@
 
 A SaaS platform that protects digital products against reverse engineering, tampering, cloning and automated abuse — and proves the protection by attacking the product with authorization.
 
-**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a), SLO measurement with the operator dashboard (18d), the release-gate runner (18e), tamper detection (21) and the Pentest Campaign pipeline with a scripted stand-in engine (15a). Not built yet: a real Campaign engine (15b), plans and billing (17b), synthetic probes, and the rest of GA hardening (18).
+**State of this repository:** slices 01–14, 16, 19 and 20 of [PRD.md](PRD.md) §18 are built: the walking skeleton, Policies, Guard attestation and signed requests, Harden, detection and alerts (Slack, webhook, email), the leak scan and Canaries, rate limits and login protection, containment, the Clone Beacon, policy simulation, the Reverse Assessment (with a scripted stand-in agent) and its CI gate, Verified Targets and Rules of Engagement, known-vulnerability Findings with virtual patches, the onboarding Set up page with the docs in `docs/`, the audit log (18a), data controls (18b: export and deletion), retention (18c), usage metering (17a), SLO measurement with the operator dashboard (18d), the release-gate runner (18e), synthetic probes for enforcement propagation and event freshness (18g), tamper detection (21) and the Pentest Campaign pipeline with a scripted stand-in engine (15a). Not built yet: a real Campaign engine (15b), plans and billing (17b), browser measurement of the Console (SLO-08), and the rest of GA hardening (18).
 
 ## How to use Airverse
 
@@ -327,6 +327,7 @@ Set `AR_OPS_TOKEN` (32–512 printable characters) to turn on operator access; w
 | SLO-03 | Policy distribution |
 | SLO-04 | Event freshness |
 | SLO-05 | Detection latency |
+| SLO-06 | Enforcement propagation — only with the synthetic probes on (see below) |
 | SLO-07 | Control API |
 | SLO-09 | Alert delivery |
 | SLO-10 | Prove |
@@ -352,7 +353,34 @@ Burn alerts:
 
 - An alert needs at least 3 events. Its state survives restarts.
 - Each alert is logged and, if `AR_OPS_WEBHOOK_URL` is set, posted there. The post is signed with `AR_OPS_WEBHOOK_SECRET` when that is set, and names the SLO's runbook.
-- SLO-06 and SLO-08 are not measured yet.
+- SLO-06 is measured only while the synthetic probes run (below). SLO-08 (Console page loads against Core Web Vitals) is not measured: it needs a browser.
+
+### Synthetic probes
+
+Start the API with `AR_PROBES=1` to run the two probes of OPERATION.md §7 once a minute. They are off by default.
+
+| Probe | What one cycle does | Feeds | Good | Bad |
+|---|---|---|---|---|
+| Enforcement | Publishes a block Rule on `/airverse-probe/<fresh nonce>` through the Control API, then waits until the probe's Shield answers 403 on that path | SLO-06 | within 30 s | later, given up at 60 s, or the publish failed |
+| Event freshness | Waits until the Event of that refused request is readable through `GET /v1/apps/:appId/events` | SLO-04 (one extra sample a minute) | within 5 s | later, or given up at 30 s |
+
+How it works:
+
+- **The real path.** The prober talks to the API over HTTP on its own listening address, with real keys. It runs a real Shield (`@antireverse/shield-node`) that polls and verifies the signed bundle and sends its Events on the SDK's own timers.
+- **Its own Organization.** Probe traffic lives in a system Organization the API creates for itself (registered in `system_organizations`). No tenant's Events, usage, Policies or bundles ever hold it, and the marked Rule exists only in the probe App's bundle, so it cannot block anyone's traffic. Its keys are made anew at every start and exist in memory only; the rows of the keys before them are removed.
+- **Not counted elsewhere.** The probe's own requests and Events feed no other SLI (SLO-02, -03, -05, -07, and the count of SLO-04 from receipt to live bus): only its two measurements are recorded. Nothing is detected on its Events, so no Incident or alert is ever made for the probe's Organization.
+- **One cycle at a time.** The next cycle is scheduled when the one before has ended. On shutdown the cycle in flight is cut and records nothing.
+- **Failures.** Each failed leg is a warning in the log (`probe failed leg=… outcome=…`) and a bad SLO sample; burn alerts fire through the rules above (SLO-06 names runbook RB-04). When the block was not enforced, the Event leg is skipped and not counted. A cycle cut by shutdown records nothing.
+- **A probe that cannot run counts as failing.** If the probe cannot be set up (its Organization, its Shield or its loopback server), up to three cycles in a row record nothing; from the fourth, each cycle is a failed SLO-06 sample, and the log and the status name the cause (`reason=setup`, `setup_failures`).
+- **Where to see it.** `GET /v1/ops/slo` carries a `probes` status (`null` when off): interval, cycles run and failed since the start, and the last cycle's two legs. `/ops` shows it above the SLO panels.
+
+What the numbers are not:
+
+- They are measured **inside one API instance, against one Shield in the same process, over the loopback interface**. They are not per-region measurements and say nothing about customers' Shields or the network between them and the API.
+- When the API is down, the prober is down too and records nothing.
+- Shield learns of a new block at its next poll (every 5 s plus jitter), so the enforcement time is mostly that wait.
+- While on, the probe Organization gains about 1,440 Policy versions, audit entries and Events a day: about 3 MB a day, or 1.1 GB a year (about 1.5 KB per audit entry and 0.6 KB per Policy version). Events go after 7 days; Policy versions and audit entries are not pruned. Rotating the probe Organization is a follow-up.
+- An SLO-06 alert that is firing when probes are switched off is resolved at the next start without them.
 
 ## Usage
 
@@ -463,6 +491,7 @@ npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out 
 | `AR_OPS_TOKEN` | API (operator routes, `/ops`) | none — operator routes answer 404 |
 | `AR_OPS_WEBHOOK_URL`, `AR_OPS_WEBHOOK_SECRET` | API (SLO burn alerts) | none — alerts are logged only |
 | `AR_PROVE_CAMPAIGNS=1` | API | off — Campaigns cannot be created |
+| `AR_PROBES=1` | API (synthetic probes) | off — SLO-06 is not measured; any value but unset, empty, `0` or `1` stops the start |
 | `AR_GATE_KEY_FILE` | release gate | `~/.config/airverse/gate-key.json` |
 | `AR_NEXT_DIST_DIR` | Console | `.next` — the browser e2e sets `.next/e2e` so it can run beside a dev server |
 

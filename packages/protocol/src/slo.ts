@@ -6,6 +6,31 @@ import { deepFreeze } from "./shared.ts";
 // per instance, in per-minute buckets of good and total counts with a fixed latency histogram; nothing in them names
 // a tenant. An operator reads them at `GET /v1/ops/slo` (this schema) and `GET /metrics` (Prometheus text), with the
 // operator token `AR_OPS_TOKEN` only.
+//
+// Slice 18g: with `AR_PROBES=1` the API runs the synthetic probes of OPERATION §7 once a minute, inside its own process
+// and against one Shield of its own: a marked block Rule, timed to its enforcement (SLO-06, PB-15), and that blocked
+// request's Event, timed to readable through the Events route (SLO-04, PB-13). SLO-06 is fed by the probe alone, so
+// the report shows it as measured only while probes run. SLO-08 needs a browser and stays not measured.
+
+/** The environment variable that turns the synthetic probes on: exactly `1`. Off by default. */
+export const PROBES_VARIABLE = "AR_PROBES";
+
+/** The marked block of a probe cycle is a Rule on this prefix and a fresh nonce; its Event carries the same route. */
+export const PROBE_PATH_PREFIX = "/airverse-probe/";
+
+/**
+ * The probes' bounds, in ms. Enforcement (PB-15): good within 30 s, given up at 60 s. Freshness (PB-13): good within
+ * 5 s, given up at 30 s. A probe that is given up is a bad sample.
+ *
+ * What the probe itself sends to the API is no tenant's traffic: its requests and Events feed none of the other SLIs
+ * (SLO-02, -03, -05, -07 and the in-process count of SLO-04), only its two measurements are recorded (D-116).
+ */
+export const PROBE_BOUNDS = deepFreeze({
+  enforceGoodMs: 30_000,
+  enforceTimeoutMs: 60_000,
+  freshGoodMs: 5_000,
+  freshTimeoutMs: 30_000,
+} as const);
 
 export const SLO_IDS = deepFreeze([
   "SLO-01",
@@ -63,9 +88,14 @@ export interface SloDefinition {
   indicator: string;
   /** The 30-day objective as a fraction (99.99 % is 0.9999). */
   objective: number;
-  /** False when this product cannot measure it yet; `not_measured_reason` says why. */
+  /**
+   * False when this product does not measure it as it stands; `not_measured_reason` says why. An SLO with `probe`
+   * is measured while the synthetic probes run: the report says so then.
+   */
   measured: boolean;
   not_measured_reason: string | null;
+  /** True when only the synthetic probes feed it (slice 18g): measured while they run, not otherwise. */
+  probe: boolean;
   /** The OPERATION §9 runbook every alert of this SLO names. */
   runbook: string;
   /** An event is good only within this many ms (SLO-07: reads). Null: no latency condition. */
@@ -93,6 +123,7 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
     objective: 0.9999,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-03",
     good_within_ms: 120,
     write_good_within_ms: null,
@@ -101,10 +132,12 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
   {
     id: "SLO-02",
     name: "Ingest",
-    indicator: "POST /v1/events: good when acknowledged (not 5xx) within 150 ms; client 4xx not counted.",
+    indicator:
+      "POST /v1/events: good when acknowledged (not 5xx) within 150 ms; client 4xx not counted. The synthetic probes' own requests are not counted.",
     objective: 0.9995,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-02",
     good_within_ms: 150,
     write_good_within_ms: null,
@@ -113,10 +146,12 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
   {
     id: "SLO-03",
     name: "Policy distribution",
-    indicator: "GET /v1/policy-bundle and /v1/signing-key: good when served (not 5xx); client 4xx not counted.",
+    indicator:
+      "GET /v1/policy-bundle and /v1/signing-key: good when served (not 5xx); client 4xx not counted. The synthetic probes' own requests are not counted.",
     objective: 0.9999,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-04",
     good_within_ms: null,
     write_good_within_ms: null,
@@ -125,10 +160,12 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
   {
     id: "SLO-04",
     name: "Event freshness",
-    indicator: "Each Event stored at ingest: good when published on the live bus within 5 s of being received (PB-13).",
+    indicator:
+      "Each Event stored at ingest: good when published on the live bus within 5 s of being received (PB-13). With the synthetic probes on, also one sample a minute: the probe's marked Event, good when readable through the Events route within 5 s of its request. In the count from receipt to live bus the synthetic probes' own Events are not counted.",
     objective: 0.99,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-02",
     good_within_ms: 5_000,
     write_good_within_ms: null,
@@ -137,10 +174,12 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
   {
     id: "SLO-05",
     name: "Detection latency",
-    indicator: "Each Detection: good when recorded within 10 s of its triggering Event being received (PB-14).",
+    indicator:
+      "Each Detection: good when recorded within 10 s of its triggering Event being received (PB-14). The synthetic probes' own Events are not counted: nothing is detected on them.",
     objective: 0.95,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-02",
     good_within_ms: 10_000,
     write_good_within_ms: null,
@@ -149,23 +188,27 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
   {
     id: "SLO-06",
     name: "Enforcement propagation",
-    indicator: "Actions applied on every Shield within PB-15.",
+    indicator:
+      "Synthetic probe, once a minute: a marked block Rule published through the Control API, good when the probe's Shield refuses the marked request within 30 s (PB-15); a probe that fails or is given up at 60 s is bad, and so is each cycle of a prober that cannot be set up, from its fourth failed cycle in a row. Measured inside this API instance against one Shield of its own: not per region, and not on every Shield.",
     objective: 0.95,
     measured: false,
-    not_measured_reason: "Needs a synthetic probe through a running Shield; the API alone cannot see enforcement.",
+    not_measured_reason:
+      "Measured by the synthetic probes only, and they are off on this instance. Start the API with AR_PROBES=1 to measure it.",
+    probe: true,
     runbook: "RB-04",
-    good_within_ms: null,
+    good_within_ms: 30_000,
     write_good_within_ms: null,
-    latency_targets: [],
+    latency_targets: [all(95, 30_000), all(99, 60_000)],
   },
   {
     id: "SLO-07",
     name: "Control API",
     indicator:
-      "Other /v1 routes of the admin key: good when not 5xx, reads within 200 ms and writes within 500 ms; client 4xx not counted.",
+      "Other /v1 routes of the admin key: good when not 5xx, reads within 200 ms and writes within 500 ms; client 4xx not counted. The synthetic probes' own requests are not counted.",
     objective: 0.999,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-07",
     good_within_ms: 200,
     write_good_within_ms: 500,
@@ -180,7 +223,9 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
     indicator: "Console page loads meeting PB-19.",
     objective: 0.999,
     measured: false,
-    not_measured_reason: "Needs measurement in the browser (Core Web Vitals); the API does not see page loads.",
+    not_measured_reason:
+      "Needs Core Web Vitals (LCP, INP, CLS) measured in a browser; the API and its synthetic probes do not see page loads.",
+    probe: false,
     runbook: "RB-07",
     good_within_ms: null,
     write_good_within_ms: null,
@@ -194,6 +239,7 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
     objective: 0.99,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-02",
     good_within_ms: 60_000,
     write_good_within_ms: null,
@@ -207,6 +253,7 @@ export const SLO_CATALOG: readonly SloDefinition[] = deepFreeze([
     objective: 0.95,
     measured: true,
     not_measured_reason: null,
+    probe: false,
     runbook: "RB-11",
     good_within_ms: 1_800_000,
     write_good_within_ms: null,
@@ -294,11 +341,50 @@ export const SloStatusSchema = z.strictObject({
 });
 export type SloStatus = z.infer<typeof SloStatusSchema>;
 
-/** `GET /v1/ops/slo`. `scope: "instance"`: the figures of the API instance that answered. */
+/**
+ * One leg of a probe cycle. `good`: within its bound. `late`: seen, but after the bound. `timeout`: given up.
+ * `failed`: could not be run (the publish was refused, the probe could not be set up). `skipped`: not exercised, as
+ * the block leg before it did not succeed; a skipped leg is not an SLI sample. `ms`: the latency, null when there is
+ * none (failed before timing began, or skipped).
+ */
+export const ProbeLegSchema = z.strictObject({
+  outcome: z.enum(["good", "late", "timeout", "failed", "skipped"]),
+  ms: z.number().min(0).nullable(),
+});
+export type ProbeLeg = z.infer<typeof ProbeLegSchema>;
+
+/**
+ * The synthetic probes of the API instance that answered (slice 18g). The counts are since this process started;
+ * the SLO buckets they feed persist. A run failed when its enforcement leg or its freshness leg was not `good`
+ * (a skipped freshness leg follows a failed enforcement leg). Nothing here names the probe's Organization.
+ */
+export const ProbeStatusSchema = z.strictObject({
+  interval_s: z.number().positive(),
+  runs: count(),
+  failures: count(),
+  consecutive_failures: count(),
+  /**
+   * Cycles in a row in which the probe could not be set up at all (its Organization, its Shield or its loopback
+   * server). Up to three record no sample; each further one is a bad SLO-06 sample (D-117). 0 once it is set up.
+   */
+  setup_failures: count(),
+  /** When the last cycle ended; null before the first. */
+  last_run_at: z.iso.datetime().nullable(),
+  /** The last cycle's legs; null before the first. */
+  enforcement: ProbeLegSchema.nullable(),
+  freshness: ProbeLegSchema.nullable(),
+});
+export type ProbeStatus = z.infer<typeof ProbeStatusSchema>;
+
+/**
+ * `GET /v1/ops/slo`. `scope: "instance"`: the figures of the API instance that answered. `probes`: null when the
+ * synthetic probes are off on that instance.
+ */
 export const SloReportSchema = z.strictObject({
   generated_at: z.iso.datetime(),
   window_days: z.literal(30),
   scope: z.literal("instance"),
+  probes: ProbeStatusSchema.nullable(),
   slos: z.array(SloStatusSchema),
 });
 export type SloReport = z.infer<typeof SloReportSchema>;

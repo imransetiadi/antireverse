@@ -6,6 +6,7 @@ import { AppShell } from "@/components/app-shell.tsx";
 import { Button, ButtonLink } from "@/components/button.tsx";
 import { PageHeader } from "@/components/page-header.tsx";
 import { OpsSummary } from "@/features/ops/ops-summary.tsx";
+import { ProbeStatusSection } from "@/features/ops/probe-status.tsx";
 import { ProveSwitch } from "@/features/ops/prove-switch.tsx";
 import { SloPanel } from "@/features/ops/slo-panel.tsx";
 import { ApiError, getProveOperatorState, getSloReport, NotFoundError, UnauthorizedError } from "@/lib/api.ts";
@@ -72,6 +73,7 @@ interface OpsPageProps {
 // `/ops` (slice 18d) — the operator SLO dashboard: one panel per SLO in catalog order, the summary above them. Signed
 // in with the operator cookie only (a tenant session does not grant it), not linked from the tenant navigation, and
 // server-rendered: it works without JavaScript, and Refresh is a plain link to this address.
+// Slice 18g: between the summary and the panels, the synthetic probes of that API instance — off, or the last cycle.
 // Slice 15a: above the SLOs, the operator's switches of Pentest Campaigns — the state, Stop all or Enable, and Suspend
 // or Resume by Organization id, each with a required reason. `?prove=&stopped=` says what the last change did.
 export default async function OpsPage({ searchParams }: OpsPageProps = {}) {
@@ -132,6 +134,7 @@ export default async function OpsPage({ searchParams }: OpsPageProps = {}) {
       {loaded.kind === "report" ? (
         <>
           <OpsSummary report={loaded.report} />
+          <ProbeStatusSection probes={loaded.report.probes} />
           {loaded.report.slos.map((slo) => (
             <SloPanel key={slo.id} slo={slo} />
           ))}

@@ -29,12 +29,22 @@ import { readSmtpSettings, type SmtpSettings, smtpSummary } from "./mail/setting
 import { createSmtpMailer } from "./mail/smtp.ts";
 import { createNotifier, DEFAULT_CONSOLE_URL, type EmailDeps, type Notifier } from "./notify/notifier.ts";
 import type { PatchCatalog } from "./patches/catalog.ts";
+import { createProbeConnect, type ProbeConnectOptions } from "./probe/connect.ts";
+import { createProber, type Prober } from "./probe/runner.ts";
+import { readProbeSettings } from "./probe/settings.ts";
+import { provisionProbeTenant } from "./probe/tenant.ts";
+import { createHttpProbeTransport, type HttpProbeOptions } from "./probe/transport.ts";
 import { type Authorize, createAuthorize } from "./prove/authorize.ts";
 import { type ProveDeps, proveNetwork } from "./prove/deps.ts";
 import { createRecheckJob, type RecheckOptions } from "./prove/recheck.ts";
 import { createSigner, type Signer } from "./signer.ts";
 import { createSloService, type SloService } from "./slo/service.ts";
 import { type OpsSettings, readOpsSettings } from "./slo/settings.ts";
+import {
+  createSystemOrganizations,
+  listSystemOrganizationIds,
+  type SystemOrganizations,
+} from "./stores/system-organizations.ts";
 import { createUsageSalts, type UsageSalts } from "./usage/salts.ts";
 
 export interface Listening {
@@ -139,6 +149,19 @@ export interface StartApiOptions {
     /** With a scripted `engine` only (tests): the probes that script may send. Default: the stand-in's catalog. */
     probes?: readonly CampaignCatalogProbe[];
   };
+  /**
+   * The synthetic probes (slice 18g). `enabled`: default true only when the environment variable `AR_PROBES` is `1`
+   * (any value but unset, empty, `0` or `1` fails the start). The rest is for tests only — no environment variable sets
+   * it: the interval and the delay before the first cycle, and shorter timers for the probe's Shield.
+   */
+  probes?: {
+    enabled?: boolean;
+    everyMs?: number;
+    startDelayMs?: number;
+    shield?: HttpProbeOptions["shield"];
+    /** In place of the real transport (HTTP to this API, a Shield, a loopback server). */
+    open?: ProbeConnectOptions["open"];
+  };
 }
 
 export interface RunningApi extends Listening {
@@ -165,6 +188,8 @@ export interface RunningApi extends Listening {
   retention: RetentionJob;
   /** The SLO recorder and its minute job (slice 18d): started with the server, flushed last on close. */
   slo: SloService;
+  /** The synthetic probes (slice 18g): started with the server, stopped first on close. Null when they are off. */
+  probes: Prober | null;
   /**
    * Ends live streams, stops accepting connections, waits for requests in flight, stops the Detector and the Prove re-check and waits
    * for their and the Clone Beacon's writes, drains the alert queue (bounded), then closes the database.
@@ -191,6 +216,8 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   const smtp = options.smtp === undefined ? readSmtpSettings(process.env) : options.smtp;
   // Likewise the operator settings: a short AR_OPS_TOKEN fails the start (slice 18d).
   const ops = options.ops ?? readOpsSettings(process.env);
+  // And the probes' switch (slice 18g): a value that is neither on nor off fails the start.
+  const probesEnabled = options.probes?.enabled ?? readProbeSettings(process.env).enabled;
   const email: EmailDeps | undefined =
     options.email ??
     (smtp === null
@@ -229,6 +256,15 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     await db.close();
     throw error;
   }
+  // Slice 18g (D-116): the Organizations the API itself owns, in memory: their requests and Events feed no SLI but
+  // the prober's own two measurements, and the Detector does not look at them.
+  let systemOrganizations: SystemOrganizations;
+  try {
+    systemOrganizations = createSystemOrganizations(await db.owner((q) => listSystemOrganizationIds(q)));
+  } catch (error) {
+    await db.close();
+    throw error;
+  }
   const bus = createEventBus();
   const shutdown = new AbortController();
   // Slice 18d: every feed writes to one recorder; the job flushes it each minute and evaluates the burn alerts.
@@ -263,6 +299,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     exposureIncidents,
     allowPrivateAlertUrls,
     slo,
+    systemOrganizations,
   };
   if (ops.token !== null) deps.opsToken = ops.token;
   if (email !== undefined) deps.email = email;
@@ -319,6 +356,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     logger,
     patches: options.patches,
     slo: slo.recorder,
+    isSystemOrganization: (organizationId) => systemOrganizations.has(organizationId),
   });
   detector = started;
   const stopDetector = started.start();
@@ -347,8 +385,48 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
   // Campaigns a previous process left running become interrupted and are never resumed; queued ones are taken again.
   await campaigns.start();
 
+  // Slice 18g: off unless AR_PROBES=1. The prober reaches this API through its own listening address only, with the
+  // keys of its own Organization, which it finds or creates at its first cycle (a failure there is a failed cycle,
+  // logged and tried again, not a failed start).
+  let probes: Prober | null = null;
+  if (probesEnabled) {
+    // A wildcard bind is reached through the loopback address.
+    const endpoint = ["0.0.0.0", "::", "[::]"].includes(listening.host)
+      ? `http://127.0.0.1:${listening.port}`
+      : listening.url;
+    const prober = createProber({
+      // The probe's Organization is provisioned once per process; after a failure only the transport is opened again
+      // (review F1). It is known as a system Organization before its first request is sent (D-116).
+      connect: createProbeConnect({
+        provision: () => provisionProbeTenant({ db, now: options.now }),
+        register: (organizationId) => systemOrganizations.add(organizationId),
+        open:
+          options.probes?.open ??
+          ((tenant, signal) =>
+            createHttpProbeTransport(
+              { endpoint, tenant, policyPublicKey: signer.publicKey, logger, shield: options.probes?.shield },
+              signal,
+            )),
+      }),
+      slo: slo.recorder,
+      logger,
+      now: options.now,
+      everyMs: options.probes?.everyMs,
+      startDelayMs: options.probes?.startDelayMs,
+    });
+    slo.attachProbes(() => prober.status());
+    prober.start();
+    probes = prober;
+    logger.info(
+      `probes on: one cycle every ${prober.status().interval_s} s, inside this API instance against one Shield of its own`,
+    );
+  }
+
   let closing: Promise<void> | undefined;
   const stop = async (): Promise<void> => {
+    // 0. The prober first: it is a client of this server. Its cycle in flight is cut (no sample), its Shield flushes
+    // and closes, and its connections go, before the server stops accepting.
+    await probes?.stop();
     // 1. Live streams return, so their responses end. 2. No new connections. 3. Idle keep-alive sockets
     // are swept while requests in flight finish; whatever is left after the grace period is cut.
     shutdown.abort();
@@ -400,6 +478,7 @@ export async function startApi(options: StartApiOptions = {}): Promise<RunningAp
     purge,
     retention,
     slo,
+    probes,
     close() {
       closing ??= stop();
       return closing;

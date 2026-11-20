@@ -139,7 +139,7 @@ export const CRITERIA: readonly Criterion[] = [
     gaps: [
       {
         reason:
-          "only PB-01, PB-02, PB-21, SLO-01 and SLO-02 are measured here; PB-03–PB-20 and PB-22 need Redis, browsers, mobile profiles, the pipeline under load or the Harden corpus, and regressions need a stored baseline",
+          "only PB-01, PB-02, PB-21, SLO-01 and SLO-02 are measured here; PB-13 and PB-15 are timed by the API's synthetic probes (AR_PROBES=1, slice 18g) inside one running instance against one local Shield, without load and not run by this gate, which is not the budget's measurement; PB-03–PB-20 and PB-22 need Redis, browsers, mobile profiles, the pipeline under load or the Harden corpus, and regressions need a stored baseline",
         slice: "18",
       },
     ],
