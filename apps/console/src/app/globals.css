@@ -23,6 +23,7 @@
   --fg-subtle: #8a95a3;
   --primary: #33cc66; /* the one accent: hsl(140 60 % 50 %) */
   --on-primary: #000000;
+  --brand: #c7fa62; /* the brand mark's trace only, as on the landing page; never an action or a state */
   --link: #7cc4ff;
   --ring: var(--primary);
   --destructive: #ef4444;
@@ -66,6 +67,7 @@
   --color-fg-subtle: var(--fg-subtle);
   --color-primary: var(--primary);
   --color-on-primary: var(--on-primary);
+  --color-brand: var(--brand);
   --color-link: var(--link);
   --color-ring: var(--ring);
   --color-destructive: var(--destructive);

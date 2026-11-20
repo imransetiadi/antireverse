@@ -117,6 +117,7 @@ Dark surfaces come only from the skill's set: `#000000`, `#181818`, `#1F1F1F`, `
 | `--fg-muted` | `#94A3B8` (same) | Secondary text | 8.2 / 6.9 / 6.4 / 5.8 : 1 |
 | `--fg-subtle` | `#8A95A3` (`#7B8794`) | Tertiary text, timestamps | 6.9 / 5.8 / 5.4 / 4.9 : 1 |
 | `--primary` | `#33CC66` (`#00FF41`) | The one accent: primary action, live, protected | 10.0 / 8.4 / 7.8 / 7.1 : 1 — hsl(140, 60 %, 50 %) |
+| `--brand` | `#C7FA62` (new) | The trace in the brand mark only, the lime of the landing page; never an action, a state or text | 17.3 : 1 on `--bg`; decorative |
 | `--on-primary` | `#000000` (`#0F172A`) | Text on primary fills | 10.0 : 1 on `--primary` |
 | `--link` | `#7CC4FF` (same) | Links (always underlined) | 11.2 / 9.5 / 8.8 / 8.0 : 1 |
 | `--ring` | `--primary` | Focus ring, 2 px with 2 px offset | 10.0 / 8.4 / 7.8 / 7.1 : 1 |

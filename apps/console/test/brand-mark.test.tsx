@@ -13,12 +13,12 @@ describe("BrandMark", () => {
     expect(svg?.getAttribute("focusable")).toBe("false");
   });
 
-  it("takes the shield and the letter from the text colour and the trace from the accent, with no raw colour", () => {
+  it("takes the shield and the letter from the text colour and the trace from the brand token, with no raw colour", () => {
     const { container } = render(<BrandMark />);
     const [shield, letter, trace] = [...container.querySelectorAll("path")];
     expect(shield?.getAttribute("stroke")).toBe("currentColor");
     expect(letter?.getAttribute("stroke")).toBe("currentColor");
-    expect(trace?.getAttribute("class")).toContain("stroke-primary");
+    expect(trace?.getAttribute("class")).toContain("stroke-brand");
     expect(container.innerHTML).not.toMatch(/#[0-9a-f]{3,8}\b/i);
   });
 
@@ -34,6 +34,17 @@ describe("BrandMark", () => {
     for (const path of paths) {
       expect(source).toContain(`d="${path.getAttribute("d")}"`);
     }
+  });
+
+  it("gives the trace the brand token's colour, the one the brand source and the icon use", () => {
+    const css = readFileSync(join(import.meta.dirname, "../src/app/globals.css"), "utf8");
+    const brand = css.match(/--brand:\s*(#[0-9a-f]{6})/i)?.[1];
+    expect(brand).toBeDefined();
+    expect(css).toContain("--color-brand: var(--brand);");
+    const source = readFileSync(join(import.meta.dirname, "../../../brand/mark-on-dark.svg"), "utf8");
+    const icon = readFileSync(join(import.meta.dirname, "../src/app/icon.svg"), "utf8");
+    expect(source.toLowerCase()).toContain(`d="m27.5 35 h60" stroke="${brand?.toLowerCase()}"`);
+    expect(icon.toLowerCase()).toContain(`d="m27.5 35 h60" stroke="${brand?.toLowerCase()}"`);
   });
 });
 
