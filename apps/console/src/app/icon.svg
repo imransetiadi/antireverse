@@ -1,6 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <title>Airverse</title>
 <rect width="64" height="64" rx="14" fill="#000000"/>
-<path d="M13.00 52.00 L28.00 12.00 L36.00 12.00 L43.69 32.50 L36.31 32.50 L32.00 21.00 L20.38 52.00 Z" fill="#FAFAFA"/>
-<rect x="24.18" y="37.0" width="27.82" height="6.5" rx="0.8" fill="#33CC66"/>
+<g transform="translate(32 32) scale(0.82) translate(-32 -32)" fill="none" stroke-width="5.5" stroke-linejoin="round">
+<path d="M53 29.5 V14 L32 7 L11 14 V34 C11 44 20 53 32 58 C44 53 53 44 53 40.5" stroke="#FAFAFA"/>
+<path d="M20.5 44 L32 19 L43.5 44" stroke="#FAFAFA" stroke-linecap="round"/>
+<path d="M27.5 35 H60" stroke="#33CC66" stroke-linecap="round"/>
+</g>
 </svg>

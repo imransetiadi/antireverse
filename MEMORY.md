@@ -619,3 +619,4 @@ Next step for whoever continues:
 
 | 2026-11-20 | Slice 18g built; decisions D-115–D-117; synthetic probes for SLO-06 and SLO-04 behind `AR_PROBES`, a system Organization kept out of the other SLOs; migration 0043 |
 | 2026-11-20 | README restructured for a public repository; GitHub description, topics and security settings set; reporting policy added; decision D-118 |
+| 2026-11-20 | Brand mark redrawn on the owner's request, to match the landing page: a shield around a caret "A" whose crossbar is a request trace leaving the shield (`brand/mark-on-dark.svg`, Console `BrandMark` and icon); the accent stays `#33CC66` (Jev 0.73 at confidence 0.68 for keeping the product accent, `ask_user` 0.22, no requirement contradicted). `jev_gate` on the diff: four claims verified, composite 0.83, safe to apply 0.73, action *escalate* on low confidence for blast radius (0.46), escalated to the owner, who approved the change and the accent (2026-11-20) |
