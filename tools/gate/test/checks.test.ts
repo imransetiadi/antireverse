@@ -107,7 +107,10 @@ describe("matrices", () => {
   describe("a check with fixed files", () => {
     const TEST = 'import { it } from "vitest";\nit("restores", () => {});\n';
     /** A repository of its own under the temporary directory, and a child that reports every selected test as passed. */
-    async function run(id: "rollback-local" | "campaign-safety" | "matrix-audit", files: Record<string, string>) {
+    async function run(
+      id: "rollback-local" | "campaign-safety" | "matrix-audit" | "sdk-reproducible" | "sdk-signed-manifest",
+      files: Record<string, string>,
+    ) {
       const root = mkdtempSync(join(tmpdir(), "airverse-gate-fixed-"));
       try {
         for (const [file, content] of Object.entries(files)) {
@@ -165,6 +168,20 @@ describe("matrices", () => {
       const none = await run("matrix-audit", {});
       expect(none.out.state).toBe("fail");
       expect(none.out.summary).toContain("apps/api/test/audit-coverage.test.ts is missing");
+    });
+
+    it("slice 23: so do the SDK checks", async () => {
+      const files = MATRICES.find((m) => m.id === "sdk-reproducible")?.files ?? [];
+      expect(files.length).toBe(3);
+      const all = Object.fromEntries(files.map((file) => [file, TEST]));
+      expect((await run("sdk-reproducible", all)).out.state).toBe("pass");
+      const { [files[2] as string]: _dropped, ...rest } = all;
+      const missing = await run("sdk-reproducible", rest);
+      expect(missing.out.state).toBe("fail");
+      expect(missing.out.summary).toContain(`${files[2]} is missing`);
+      const emptied = await run("sdk-signed-manifest", { "tools/sdk/test/manifest.test.ts": "// emptied\n" });
+      expect(emptied.out.state).toBe("fail");
+      expect(emptied.out.summary).toContain("tools/sdk/test/manifest.test.ts holds no test");
     });
   });
 });

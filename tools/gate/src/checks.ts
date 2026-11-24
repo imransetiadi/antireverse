@@ -191,6 +191,12 @@ export function createExecutors(ctx: CheckContext): Executors {
     "upgrade-local": matrix("upgrade-local"),
     "rollback-local": matrix("rollback-local"),
     "kill-switch-drill": matrix("kill-switch-drill"),
+    // Slice 23: the SDK packages built, packed and checked locally, fixed files likewise, one check per property.
+    "sdk-reproducible": matrix("sdk-reproducible"),
+    "sdk-install-smoke": matrix("sdk-install-smoke"),
+    "sdk-equivalence": matrix("sdk-equivalence"),
+    "sdk-sbom-allowlist": matrix("sdk-sbom-allowlist"),
+    "sdk-signed-manifest": matrix("sdk-signed-manifest"),
 
     "rrs-stand-in": async () => {
       const command = "tsx tools/gate/src/rrs-run.ts";

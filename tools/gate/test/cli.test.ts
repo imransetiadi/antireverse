@@ -72,5 +72,16 @@ describe("gate:release", () => {
       expect(out.stdout).toMatch(new RegExp(`Checks: .*\\b${id}\\b`));
       expect(out.stdout).toMatch(new RegExp(`Criteria: .*\\bgate-${id.replace("-drill", "")}`));
     }
+    // Slice 23: so can the five SDK checks.
+    for (const id of [
+      "sdk-reproducible",
+      "sdk-install-smoke",
+      "sdk-equivalence",
+      "sdk-sbom-allowlist",
+      "sdk-signed-manifest",
+    ]) {
+      expect(out.stdout).toMatch(new RegExp(`Checks: .*\\b${id}\\b`));
+    }
+    expect(out.stdout).toMatch(/Criteria: .*\bgate-sdk-artifacts-local\b/);
   });
 });

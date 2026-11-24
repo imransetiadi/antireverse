@@ -23,7 +23,7 @@ Airverse is a SaaS platform for web applications and APIs. Small components run 
 - **Radar (detect and respond):** [Detection and alerts](#detection-and-alerts) · [Containment](#containment) · [Known vulnerabilities (Exposure)](#known-vulnerabilities-exposure)
 - **Prove (measure):** [Reverse Assessment](#reverse-assessment) · [Verified Targets and Rules of Engagement](#verified-targets-and-rules-of-engagement) · [Pentest Campaigns](#pentest-campaigns)
 - **Govern and operate:** [Audit log](#audit-log) · [Usage](#usage) · [Data controls](#data-controls) · [Operator SLO dashboard](#operator-slo-dashboard) · [Release gate](#release-gate) · [Backup and restore](#backup-and-restore)
-- **Reference:** [Commands](#commands) · [Configuration](#configuration) · [Repository layout](#repository-layout) · [What is deliberately missing](#what-is-deliberately-missing)
+- **Reference:** [SDK packages](#sdk-packages) · [Commands](#commands) · [Configuration](#configuration) · [Repository layout](#repository-layout) · [What is deliberately missing](#what-is-deliberately-missing)
 - **Project:** [Development](#development) · [Security](#security) · [License](#license)
 
 ## Overview
@@ -73,11 +73,16 @@ The slices are the delivery plan in [PRD.md](PRD.md) §18. Slices 01–14, 16, 1
 
 Requirements: Node.js 22.12 or newer and npm. No Docker, no database to install.
 
-**Packages are not published to npm.** `@antireverse/shield-node`, `@antireverse/guard` and `@antireverse/harden` exist only as workspace packages of this repository. `npm install` at the root links them, so code inside the repository (such as `apps/range`) imports them by name. To use Shield in a server outside the repository, depend on the folder: `npm install /path/to/this/repo/packages/shield-node` (it has no runtime dependencies). Its entry point is TypeScript, so the server must run on a Node that strips types (tested on 22.23.4) or through tsx; plain Node 22.12 cannot load it. For Guard, serve the files of `packages/guard/src` (see [docs/guard.md](docs/guard.md)).
+**Packages are not published to npm.** Inside this repository `@antireverse/shield-node`, `@antireverse/guard` and `@antireverse/harden` are workspace packages: `npm install` at the root links them, so code here (such as `apps/range`) imports them by name. For a project outside the repository there are two ways:
 
-**Running Harden.** Its entry point, `packages/harden/src/cli.ts`, is a TypeScript file, run by the `antireverse` bin. On Node 22.23 or newer (tested on 22.23.4), `npx antireverse harden …` works. On Node 22.12 the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`; there, run `npx tsx packages/harden/src/cli.ts harden …` (the form every command in this README uses) or `node --experimental-strip-types node_modules/.bin/antireverse harden …` (Node prints an ExperimentalWarning).
+- **Tarballs (plain JavaScript).** `npm run sdk:pack` writes installable tarballs to `dist/sdk`; in your project, `npm install --ignore-scripts /path/to/dist/sdk/antireverse-shield-node-0.0.0.tgz` (and the Guard and Harden tarballs likewise). They run on plain Node 22.12 with no `tsx` and no type stripping, and `npx antireverse` works. See [SDK packages](#sdk-packages) for what comes with them and what their signature does and does not prove.
+- **The clone.** Depend on the folder: `npm install /path/to/this/repo/packages/shield-node` (it has no runtime dependencies). Its entry point is TypeScript, so the server must run on a Node that strips types (tested on 22.23.4) or through tsx; plain Node 22.12 cannot load it. For Guard, serve the files of `packages/guard/src` (see [docs/guard.md](docs/guard.md)). Keep the clone beside your project, not inside it: with the clone inside, npm also installs the folder's development dependencies (Express and its types).
 
-**Node for Harden.** The Harden package (Babel 8) asks for Node ≥ 22.18; it installs and runs on 22.12 with a warning. Use Node ≥ 22.18 in CI to clear it.
+**The `@antireverse` scope is not registered on npm.** Nobody owns that name on the public registry yet, so a package published there by someone else could be installed by any command that asks the registry for an `@antireverse` name. Until this change (2026-11-24) the clone path did so when the clone sat inside the project (it asked for `@antireverse/protocol`); the packages no longer list each other as dependencies and a test with a local registry checks that neither the tarballs nor Shield's folder make such a request. What you can do today: use the tarballs, or keep the clone beside the project, and never run `npm install @antireverse/<name>` — that asks the registry. Still open: registering the scope, which is the project owner's decision and has not been done.
+
+**Running Harden from the clone.** Installed from its tarball, Harden is `npx antireverse …` on every supported Node. In the clone its entry point, `packages/harden/src/cli.ts`, is a TypeScript file, run by the `antireverse` bin. On Node 22.23 or newer (tested on 22.23.4), `npx antireverse harden …` works. On Node 22.12 the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`; there, run `npx tsx packages/harden/src/cli.ts harden …` (the form every command in this README uses) or `node --experimental-strip-types node_modules/.bin/antireverse harden …` (Node prints an ExperimentalWarning).
+
+**Node for Harden.** Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12. Use a Node that Babel supports in CI.
 
 ```bash
 npm install
@@ -186,7 +191,7 @@ To install it, copy the folder into your skills directory:
 cp -R skills/airverse-setup ~/.claude/skills/
 ```
 
-Then tell Claude where your clone of this repository is, or set `AIRVERSE_REPO` to its path: the packages are not on npm, so the skill works from a clone.
+Then tell Claude where your folder of tarballs is (see [SDK packages](#sdk-packages)) or where your clone of this repository is (or set `AIRVERSE_REPO`): the packages are not on npm. The skill uses the tarballs when you name a folder and its check of the folder passes, and the clone otherwise; it tells you the fingerprint of the key that signed the tarballs so you can confirm it.
 
 - **What it will not do:** write a key into a file or ask you to paste one, add a leak-allowlist entry to get past the scan, promote a Rule to Enforce, launch a Campaign, or invent support for a framework Shield does not support.
 - **Limits (honest):** the skill is instructions for a model, not a program: a run can still make mistakes, so read its report and its diff. It was tried on two sample projects (see [tickets/22-claude-skill.md](tickets/22-claude-skill.md)), not on real ones. A test in `tools/gate/test` fails when the skill names a flag, variable, method or guide that no longer exists; it checks names, not meaning. Keep your clone beside your project, not inside it.
@@ -541,6 +546,8 @@ What the numbers are not:
 - **Options:** `--only <ids>`, `--skip-slow` (reported as not checked) and `--online` (allows `npm audit`, which contacts the registry).
 - **Signature:** the report is signed with an Ed25519 key kept outside the repository (`AR_GATE_KEY_FILE`, default `~/.config/airverse/gate-key.json`). `npm run gate:verify-report -- <dir>` accepts only the local key or `--expect <fingerprint>`.
 
+- **Local SDK checks (slice 23):** one criterion of the gate's own, `gate-sdk-artifacts-local`, with five checks: `sdk-reproducible`, `sdk-install-smoke`, `sdk-equivalence`, `sdk-sbom-allowlist` and `sdk-signed-manifest` (see [SDK packages](#sdk-packages)). As gate checks they took about 52 seconds together when last measured, most of it the two test-suite runs of `sdk-equivalence`; their tests also run inside `npm run verify`. The checklist line "SDK artifacts are reproducible, signed and carry provenance and a bill of materials" stays not checkable: nothing is published, no protected pipeline builds a release, and a local key is not provenance.
+
 Today every check that can run passes, and the verdict is `blocked` with exit code 2: 15 lines cannot be fully checked yet (real-agent RRS, Pentest Campaigns, the browser corpus, SDK signing, staging rehearsals and others).
 
 ## Backup and restore
@@ -565,6 +572,25 @@ npm run data:restore -- --from ../backups/2026-11-24 --data-dir apps/api/.data/p
 - **If a restore is killed half-way** it leaves `<data directory>.replaced-…` (what was there before) or `<data directory>.restoring-…` (a copy of the backup) behind. The next restore refuses while either exists and deletes neither: look at them, move the old data back or away, then run the restore again.
 - **Limits (honest):** the manifest detects a damaged or incomplete backup, not a forged one (it is not signed). A cold copy on the same machine — no schedule, no encryption, no off-site copy, no point-in-time recovery. A backup holds private keys in clear: keep it where the data directory itself may be kept, and outside the repository. The lock is a file beside the directory's name: an API started on another name of the same directory (a link the command was not given) is not seen. A restored directory is opened by whatever version starts on it next, which migrates it forward again; running an older version's code on a newer schema is not supported and not tested.
 
+## SDK packages
+
+`npm run sdk:pack` builds the four packages — `@antireverse/protocol`, `shield-node`, `guard` and `harden` — as plain JavaScript with type declarations and writes them to `dist/sdk` (gitignored):
+
+```bash
+npm run sdk:pack                                   # build, check the dependency allowlist, pack, bill of materials, signed manifest
+npm run sdk:verify -- dist/sdk                     # every file against the manifest, and the signature
+npm run sdk:verify -- <dir> --expect <fingerprint> # on another machine: the fingerprint the builder gave you
+```
+
+- **Nothing is published.** The version is the packages' own (`0.0.0`) and the packed manifests keep `"private": true`, so `npm publish` refuses them. This is not a release.
+- **What is in `dist/sdk`:** four tarballs, a CycloneDX 1.5 bill of materials for each (`*.cdx.json`, the runtime dependencies as `package-lock.json` pins them) and `sdk-manifest.json`: every file with its size and SHA-256, the commit and the tool versions.
+- **Dependencies.** Shield and Guard have none. The protocol needs zod. Harden needs Babel and zod and carries its own copy of the compiled protocol, so no tarball depends on another `@antireverse` package and installing one never asks a registry for that name (the scope is not registered on npm). `tools/sdk/allowlist.json` lists every runtime dependency by name and exact version with the integrity `package-lock.json` has for it; the pack fails on anything else, on other bytes under a listed version, on a package that does not come from the npm registry, on an install script, and on any dependency of Shield or Guard. `npm run sdk:allowlist` prints today's list for review.
+- **Reproducible.** Two clean builds on one machine give byte-identical tarballs. Another Node, npm or TypeScript version may not; the manifest records the versions used.
+- **The signature (read this).** The manifest is signed with the release gate's local Ed25519 key (`AR_GATE_KEY_FILE`, default `~/.config/airverse/gate-key.json`, outside the repository). `npm run sdk:pack` creates that key file on first use, like the release gate does, and prints where; it is a secret — keep it private and out of any repository. `sdk:verify` never creates a key. It fails on a changed, missing or extra file, a changed manifest, and an untrusted signer: with `--expect <fingerprint>` only that fingerprint is trusted, without it only your local key. A valid result shows that the files are the ones the holder of that key signed. It is **not provenance**: nothing proves which source or which machine built them, and nobody else approved them.
+- **Workspace development is unchanged.** The source `package.json` files still point at the TypeScript source; the packed shape is made in a staging folder at pack time. `npm run sdk:build` alone compiles into `packages/<name>/dist`.
+- **What the commands remove.** Only their own build folders, each printed before it is emptied, and only when the folder is empty or carries the marker file they wrote: `sdk:build` the four `packages/{protocol,shield-node,guard,harden}/dist`; `sdk:allowlist` those four and `dist/sdk-work` (it has to build to see what is imported); `sdk:pack` those five and `dist/sdk`; `sdk:verify` nothing.
+- **Limits (honest):** local only — no CI pipeline, no provenance attestation, no second approver, no published package, no upgrade path between versions. Harden's tarball still gets Babel and zod from your npm registry when you install it. The tarballs were installed and run by a test on Node 22.12 on one machine. Harden's packed manifest declares Babel's Node range (see Quickstart, "Node for Harden"). The packed READMEs are the guides with their commands rewritten for the installed package; `docs/getting-started.md` and `docs/reverse-assessment.md` are in the repository only.
+
 ## Commands
 
 | Command | Does |
@@ -578,6 +604,10 @@ npm run data:restore -- --from ../backups/2026-11-24 --data-dir apps/api/.data/p
 | `npm run fix` | Apply formatting and safe lint fixes |
 | `npm run gate:release` | The release gate: every check that can run, and a signed report (see [Release gate](#release-gate)) |
 | `npm run gate:verify-report -- <dir>` | Checks a gate report's signature |
+| `npm run sdk:pack` | Builds and packs the four SDK packages into `dist/sdk` with bills of materials and a signed manifest (see [SDK packages](#sdk-packages)); publishes nothing |
+| `npm run sdk:verify -- <dir> [--expect <fingerprint>]` | Checks a packed folder against its manifest and the manifest's signature |
+| `npm run sdk:build` | Compiles the packages into `packages/<name>/dist` only |
+| `npm run sdk:allowlist` | Prints today's runtime dependency closure in the form of `tools/sdk/allowlist.json` |
 | `npm run data:backup -- --to <dir>` | Copies the data directory and its key files to a new directory (API stopped; see [Backup and restore](#backup-and-restore)) |
 | `npm run data:restore -- --from <dir> --data-dir <dir> [--force] [--drop-keys]` | Verifies a backup and puts it in place; `--force` replaces the data directory that is there |
 
@@ -616,6 +646,7 @@ npm run data:restore -- --from ../backups/2026-11-24 --data-dir apps/api/.data/p
 | `apps/console` | The Console (Next.js) |
 | `apps/range` | `ar-range`, the reference target that Shield observes |
 | `tools/gate` | The release-gate runner |
+| `tools/sdk` | The SDK build, pack and verify tooling, with the dependency allowlist |
 | `tests/e2e` | The journeys over HTTP and in a real browser |
 | `docs/` | The developer guides |
 | `skills/` | The Claude skill that sets Airverse up in a project |

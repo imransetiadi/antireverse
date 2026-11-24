@@ -10,3 +10,6 @@ next-env.d.ts
 
 # Release-gate reports (slice 18e): signed, local only
 reports/gate/
+
+# SDK build output (slice 23): compiled packages, staging and tarballs, local only
+dist/

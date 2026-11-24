@@ -265,7 +265,9 @@ describe("Shield never keeps the process alive", () => {
   function run(mode: string, endpoint: string): Promise<{ code: number | null; ms: number; out: string; err: string }> {
     return new Promise((resolve, reject) => {
       const started = performance.now();
-      const child = spawn(process.execPath, ["--experimental-strip-types", "--no-warnings", fixture, mode, endpoint], {
+      // On the compiled output (slice 23) the fixture imports the compiled files: plain node, no type stripping.
+      const flags = process.env.AR_SDK_COMPILED_ROOT ? [] : ["--experimental-strip-types", "--no-warnings"];
+      const child = spawn(process.execPath, [...flags, fixture, mode, endpoint], {
         env: { ...process.env, AR_SHIELD_DISABLED: "" },
         stdio: ["ignore", "pipe", "pipe"],
       });

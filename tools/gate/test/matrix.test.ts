@@ -54,7 +54,8 @@ describe("selectMatrixFiles", () => {
     for (const matrix of MATRICES) {
       const selected = selectMatrixFiles(matrix, REPO_ROOT);
       expect(selected.length, matrix.id).toBeGreaterThan(0);
-      for (const entry of selected) expect(entry.file.startsWith("tools/"), entry.file).toBe(false);
+      // Never the gate's own tests. The SDK tooling's tests (tools/sdk, slice 23) are checks of their own.
+      for (const entry of selected) expect(entry.file.startsWith("tools/gate/"), entry.file).toBe(false);
     }
     const audit = selectMatrixFiles(
       MATRICES.find((m) => m.id === "matrix-audit") as (typeof MATRICES)[number],
@@ -84,5 +85,31 @@ describe("selectMatrixFiles", () => {
         /monitor|roll back|AR_SHIELD_DISABLED|kill switch|suspending|AR_PROVE_CAMPAIGNS/.test(name),
       ),
     ).toHaveLength(6);
+  });
+
+  it("slice 23: the SDK checks select exactly their files, in the sdk project, with the tests the gate will demand", () => {
+    const selected = (id: string) =>
+      selectMatrixFiles(MATRICES.find((m) => m.id === id) as (typeof MATRICES)[number], REPO_ROOT).map(
+        (entry) => `${entry.project}:${entry.file}`,
+      );
+    expect(selected("sdk-reproducible")).toEqual([
+      "sdk:tools/sdk/test/build.test.ts",
+      "sdk:tools/sdk/test/reproducible.test.ts",
+      "sdk:tools/sdk/test/safe.test.ts",
+    ]);
+    expect(selected("sdk-install-smoke")).toEqual(["sdk:tools/sdk/test/install-smoke.test.ts"]);
+    expect(selected("sdk-equivalence")).toEqual(["sdk:tools/sdk/test/equivalence.test.ts"]);
+    expect(selected("sdk-sbom-allowlist")).toEqual(["sdk:tools/sdk/test/sbom-allowlist.test.ts"]);
+    expect(selected("sdk-signed-manifest")).toEqual(["sdk:tools/sdk/test/manifest.test.ts"]);
+    for (const id of [
+      "sdk-reproducible",
+      "sdk-install-smoke",
+      "sdk-equivalence",
+      "sdk-sbom-allowlist",
+      "sdk-signed-manifest",
+    ]) {
+      const files = selectMatrixFiles(MATRICES.find((m) => m.id === id) as (typeof MATRICES)[number], REPO_ROOT);
+      for (const file of files) expect(file.names.length, file.file).toBeGreaterThan(3);
+    }
   });
 });

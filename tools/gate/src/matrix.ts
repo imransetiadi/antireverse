@@ -13,7 +13,12 @@ export interface Matrix {
     | "campaign-safety"
     | "upgrade-local"
     | "rollback-local"
-    | "kill-switch-drill";
+    | "kill-switch-drill"
+    | "sdk-reproducible"
+    | "sdk-install-smoke"
+    | "sdk-equivalence"
+    | "sdk-sbom-allowlist"
+    | "sdk-signed-manifest";
   /** Vitest projects (root vitest.config.ts) whose test directories are scanned. */
   projects: string[];
   /** A test or describe name matching this selects the file. */
@@ -28,6 +33,7 @@ export const PROJECT_DIRS: Record<string, string> = {
   protocol: "packages/protocol/test",
   "shield-node": "packages/shield-node/test",
   e2e: "tests/e2e",
+  sdk: "tools/sdk/test",
 };
 
 export const MATRICES: readonly Matrix[] = [
@@ -111,6 +117,21 @@ export const MATRICES: readonly Matrix[] = [
   },
   // Each switch on and off again, over HTTP. Cutting a running Campaign is campaign-safety's.
   { id: "kill-switch-drill", projects: ["e2e"], files: ["tests/e2e/kill-switch-drill.http.test.ts"] },
+  // Slice 23. The SDK packages built, packed and checked locally; fixed files, one check per property.
+  // The build's shape, the one function that removes a build folder, and two clean builds byte for byte.
+  {
+    id: "sdk-reproducible",
+    projects: ["sdk"],
+    files: ["tools/sdk/test/safe.test.ts", "tools/sdk/test/build.test.ts", "tools/sdk/test/reproducible.test.ts"],
+  },
+  // A real npm install of the tarballs in an empty project, against a loopback registry, then plain Node.
+  { id: "sdk-install-smoke", projects: ["sdk"], files: ["tools/sdk/test/install-smoke.test.ts"] },
+  // The suites of protocol, shield-node and harden again on the compiled output, compared with the source run.
+  { id: "sdk-equivalence", projects: ["sdk"], files: ["tools/sdk/test/equivalence.test.ts"] },
+  // The runtime closure, the CycloneDX documents and the dependency allowlist.
+  { id: "sdk-sbom-allowlist", projects: ["sdk"], files: ["tools/sdk/test/sbom-allowlist.test.ts"] },
+  // The signed manifest and sdk:verify.
+  { id: "sdk-signed-manifest", projects: ["sdk"], files: ["tools/sdk/test/manifest.test.ts"] },
 ];
 
 /** The literal names of `it`, `test` and `describe` calls (with modifiers such as `.skip` or `.each(...)`). */

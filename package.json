@@ -28,7 +28,11 @@
     "gate:release": "tsx tools/gate/src/cli.ts",
     "gate:verify-report": "tsx tools/gate/src/verify-cli.ts",
     "data:backup": "tsx apps/api/src/backup/cli.ts backup",
-    "data:restore": "tsx apps/api/src/backup/cli.ts restore"
+    "data:restore": "tsx apps/api/src/backup/cli.ts restore",
+    "sdk:build": "tsx tools/sdk/src/cli.ts build",
+    "sdk:pack": "tsx tools/sdk/src/cli.ts pack",
+    "sdk:verify": "tsx tools/sdk/src/cli.ts verify",
+    "sdk:allowlist": "tsx tools/sdk/src/cli.ts allowlist"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

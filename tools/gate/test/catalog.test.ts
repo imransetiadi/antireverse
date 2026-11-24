@@ -1,6 +1,6 @@
 // Slice 18e: the criteria catalog has exactly one entry per checklist line of QASUITE §16 and SECURITY §12, read from
 // the documents themselves, so a new line in either fails here until it is mapped.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CHECKS, CRITERIA, SOURCES, validateCatalog } from "../src/catalog.ts";
@@ -104,6 +104,11 @@ describe("the catalog", () => {
         "upgrade-local",
         "rollback-local",
         "kill-switch-drill",
+        "sdk-reproducible",
+        "sdk-install-smoke",
+        "sdk-equivalence",
+        "sdk-sbom-allowlist",
+        "sdk-signed-manifest",
         "bench-shield",
         "load-smoke",
         "npm-audit",
@@ -121,6 +126,11 @@ describe("the catalog", () => {
       "upgrade-local",
       "rollback-local",
       "kill-switch-drill",
+      "sdk-reproducible",
+      "sdk-install-smoke",
+      "sdk-equivalence",
+      "sdk-sbom-allowlist",
+      "sdk-signed-manifest",
       "load-smoke",
     ] as const) {
       expect(CHECKS[id].slow, id).toBe(false);
@@ -254,6 +264,92 @@ describe("slice 18h: upgrade, rollback and kill switches", () => {
       for (const file of filesOf(id)) expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
       expect(CHECKS[id]).toMatchObject({ slow: false, online: false });
     }
+  });
+});
+
+// Slice 23: the SDK packages are built, packed and checked locally, as a criterion of the gate's own. The checklist
+// line asks for provenance and speaks of releases: no local run turns it green.
+describe("slice 23: SDK artifacts", () => {
+  const criterion = (id: string) => CRITERIA.find((c) => c.id === id);
+  const filesOf = (id: string) => MATRICES.find((m) => m.id === id)?.files ?? [];
+  const SDK_CHECKS = [
+    "sdk-reproducible",
+    "sdk-install-smoke",
+    "sdk-equivalence",
+    "sdk-sbom-allowlist",
+    "sdk-signed-manifest",
+  ] as const;
+
+  it("the checklist line stays not checkable, without a check, and says what is proven locally and what is still missing", () => {
+    const line = criterion("sec12-sdk-artifacts");
+    expect(line).toMatchObject({ checks: [], requires: [] });
+    expect(line?.gaps).toHaveLength(1);
+    const reason = line?.gaps[0]?.reason ?? "";
+    expect(reason).toMatch(/gate-sdk-artifacts-local/);
+    expect(reason).toMatch(/provenance/);
+    expect(reason).toMatch(/two people/);
+    expect(reason).toMatch(/no package is published/);
+    expect(reason).toMatch(/local key/);
+    expect(reason).not.toMatch(
+      /no SDK release pipeline exists \(no published artifacts, signatures, provenance or SBOM\)/,
+    );
+    expect(criterion("qa16-security-gate")?.requires).toContain("sec12-sdk-artifacts");
+  });
+
+  it("gate-sdk-artifacts-local: five checks, one per property, and notes that say what they do not prove", () => {
+    const entry = criterion("gate-sdk-artifacts-local");
+    expect(entry).toMatchObject({
+      checks: [...SDK_CHECKS],
+      gaps: [],
+      requires: [],
+      source: { doc: "gate", section: "D-127" },
+    });
+    for (const part of [
+      /byte-identical/,
+      /npm install/,
+      /plain Node/,
+      /compiled output/,
+      /bill of materials/,
+      /allowlist/,
+      /signed manifest/,
+    ]) {
+      expect(entry?.source.text).toMatch(part);
+    }
+    const notes = entry?.notes?.join(" ") ?? "";
+    expect(notes).toMatch(/Nothing is published/);
+    expect(notes).toMatch(/not provenance/);
+    expect(notes).toMatch(/whoever holds/);
+    expect(notes).toMatch(/loopback registry/);
+    expect(notes).toMatch(/same Node and npm/);
+    expect(notes).toMatch(/0\.0\.0/);
+    expect(notes).toMatch(/private/);
+    // The titles say "local" or name the limit: none reads as a release check.
+    for (const id of SDK_CHECKS) expect(CHECKS[id].title, id).toMatch(/slice 23/);
+    expect(CHECKS["sdk-signed-manifest"].title).toMatch(/local key/);
+    expect(CHECKS["sdk-signed-manifest"].title).toMatch(/not provenance/);
+  });
+
+  it("each check names its test files, every file exists, and none is slow or online", () => {
+    expect(filesOf("sdk-reproducible")).toEqual([
+      "tools/sdk/test/safe.test.ts",
+      "tools/sdk/test/build.test.ts",
+      "tools/sdk/test/reproducible.test.ts",
+    ]);
+    expect(filesOf("sdk-install-smoke")).toEqual(["tools/sdk/test/install-smoke.test.ts"]);
+    expect(filesOf("sdk-equivalence")).toEqual(["tools/sdk/test/equivalence.test.ts"]);
+    expect(filesOf("sdk-sbom-allowlist")).toEqual(["tools/sdk/test/sbom-allowlist.test.ts"]);
+    expect(filesOf("sdk-signed-manifest")).toEqual(["tools/sdk/test/manifest.test.ts"]);
+    for (const id of SDK_CHECKS) {
+      for (const file of filesOf(id)) expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
+      expect(CHECKS[id]).toMatchObject({ slow: false, online: false });
+    }
+    // Every test file of the SDK tooling belongs to a check: none can be added and forgotten.
+    const listed = SDK_CHECKS.flatMap((id) => filesOf(id)).sort();
+    const present = readdirSync(join(REPO_ROOT, "tools/sdk/test"))
+      .filter((file) => file.endsWith(".test.ts"))
+      .map((file) => `tools/sdk/test/${file}`)
+      .sort();
+    expect(listed).toEqual(present);
   });
 });
 

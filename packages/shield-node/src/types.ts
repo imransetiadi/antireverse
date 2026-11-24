@@ -46,8 +46,12 @@ export interface ShieldLogger {
 }
 
 export interface ShieldConfig {
-  /** The Shield key of the App: `ark_<prod|stg|dev>_<43 characters>`. */
-  key: string;
+  /**
+   * The Shield key of the App: `ark_<prod|stg|dev>_<43 characters>`. Usually `process.env.AR_SHIELD_KEY`, which may
+   * be undefined: without a key, or with a malformed one, Shield disables itself, logs one line and lets every
+   * request through (`stats().disabledReason` says why).
+   */
+  key?: string | undefined;
   /** Base URL of the Airverse API, e.g. `http://127.0.0.1:8787`. */
   endpoint: string;
   flushIntervalMs?: number;
@@ -69,7 +73,7 @@ export interface ShieldConfig {
    * (a raw Ed25519 key). Shield applies only Policy Bundles signed with it. Without it Shield observes only:
    * it fetches no Policy, records Events and blocks nothing.
    */
-  policyPublicKey?: string;
+  policyPublicKey?: string | undefined;
   /** Milliseconds between two requests for the Policy Bundle. Default 5,000; never less than 100. */
   policyPollIntervalMs?: number;
   /**
@@ -79,7 +83,7 @@ export interface ShieldConfig {
    * `ip_hash` is null and actor blocks never match; prefix blocks still apply. An unusable value is treated as
    * absent with one warning. It is never sent, logged or put into an Event or an error.
    */
-  actorKey?: string;
+  actorKey?: string | undefined;
   /**
    * The media types whose body parser carries `shield.verifyBody` as its verify hook on every route a requirement
    * Rule names, e.g. `{ types: ["application/json"] }` with `express.json({ verify: shield.verifyBody })`. Each

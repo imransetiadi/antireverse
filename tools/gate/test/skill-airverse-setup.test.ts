@@ -1,9 +1,23 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { MANIFEST_FILE } from "../../sdk/src/manifest.ts";
+import { buildAndPack } from "../../sdk/src/pipeline.ts";
+import { MARKER_TEXT, tempLayout } from "../../sdk/src/safe.ts";
+import { loadOrCreateKey, signReport } from "../src/sign.ts";
 
 // The skill `skills/airverse-setup` tells Claude how to add Airverse to someone's own project.
 // It names flags, variables, files and guides of this repository. These tests keep it in step:
@@ -76,7 +90,18 @@ describe("skill airverse-setup", () => {
     const harden = sources(join(root, "packages/harden/src"));
     const flags = new Set([...body.matchAll(/(?<![A-Za-z0-9-])--[a-z][a-z-]+/g)].map((m) => m[0]));
     // Flags of other tools the skill may show.
-    for (const other of ["--experimental-strip-types", "--repo", "--help", "--save"]) flags.delete(other);
+    for (const other of [
+      "--experimental-strip-types",
+      "--repo",
+      "--help",
+      "--save",
+      "--tarballs",
+      "--signer",
+      "--integrity-only",
+      "--ignore-scripts",
+      "--save-dev",
+    ])
+      flags.delete(other);
     expect(flags.size).toBeGreaterThan(8);
     for (const flag of flags) expect(harden.includes(`"${flag}"`), flag).toBe(true);
   });
@@ -176,6 +201,7 @@ describe("skill airverse-setup: preflight", () => {
       [...body.matchAll(/`((?:repo|packages|harden|node)\.[A-Za-z]+)`/g)].map((m) => m[1] as string),
     );
     expect(named.size).toBeGreaterThan(4);
+    expect(report.tarballs).toBeNull();
     for (const path of named) {
       const [group, key] = path.split(".") as [string, string];
       expect((report[group] as Record<string, unknown>)[key], path).toBeDefined();
@@ -203,5 +229,224 @@ describe("skill airverse-setup: preflight", () => {
     expect(node.supported).toBe(true);
     const [major, minor] = process.versions.node.split(".").map(Number) as [number, number];
     expect(node.stripsTypes).toBe(major > 22 || (major === 22 && minor >= 23));
+  });
+});
+
+// Slice 23: the skill prefers a folder of tarballs when the user names one. The preflight checks it without the
+// clone, reading only: every listed file with its size and SHA-256, no other file, and the manifest's signature.
+describe("skill airverse-setup: preflight with tarballs", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "airverse-sdk-skill-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const layout = tempLayout(join(scratch, "pack"));
+  const key = loadOrCreateKey(join(scratch, "keys/gate-key.json"));
+  let copies = 0;
+  const copy = (): string => {
+    const dir = join(scratch, `copy-${++copies}`);
+    cpSync(layout.out, dir, { recursive: true });
+    return dir;
+  };
+  type Tarballs = {
+    path: string;
+    intact: boolean;
+    trusted: boolean;
+    signer: string | null;
+    version: string;
+    shield: string;
+    guard: string;
+    harden: string;
+    protocol: string;
+    command: string[];
+    problems: string[];
+  };
+  const run = (args: string[], env: NodeJS.ProcessEnv = {}) => {
+    const result = spawnSync(process.execPath, [preflight, ...args], {
+      cwd: scratch,
+      encoding: "utf8",
+      env: { ...process.env, AIRVERSE_REPO: "", AIRVERSE_SDK_DIR: "", ...env },
+    });
+    const report = JSON.parse(result.stdout) as {
+      ok: boolean;
+      mode: string;
+      repo: unknown;
+      notes: string[];
+      problems: string[];
+      tarballs: Tarballs | null;
+    };
+    return { status: result.status, stderr: result.stderr, report, tarballs: report.tarballs as Tarballs };
+  };
+
+  beforeAll(async () => {
+    await buildAndPack(layout, { key });
+  }, 120_000);
+
+  it("accepts a packed folder signed by the key the user named, without a clone, and says where each tarball is", () => {
+    const { status, report, tarballs } = run(["--tarballs", layout.out, "--signer", key.fingerprint]);
+    expect(report.problems).toEqual([]);
+    expect(status).toBe(0);
+    expect(report).toMatchObject({ ok: true, mode: "tarballs", repo: null });
+    expect(tarballs).toMatchObject({ intact: true, trusted: true, signer: key.fingerprint, problems: [] });
+    expect(tarballs.version).toMatch(/^\d+\.\d+\.\d+/);
+    for (const name of ["shield", "guard", "harden", "protocol"] as const) {
+      expect(tarballs[name]).toMatch(/\.tgz$/);
+      expect(existsSync(tarballs[name]), name).toBe(true);
+    }
+    expect(tarballs.shield).toContain("antireverse-shield-node-");
+    expect(tarballs.command).toEqual(["npx", "antireverse"]);
+    // AIRVERSE_SDK_DIR works like the flag; with a clone too, both are reported and the tarballs lead.
+    expect(run(["--signer", key.fingerprint], { AIRVERSE_SDK_DIR: layout.out }).report).toMatchObject({
+      ok: true,
+      mode: "tarballs",
+    });
+    const both = run(["--tarballs", layout.out, "--signer", key.fingerprint, "--repo", root]);
+    expect(both.report).toMatchObject({ ok: true, mode: "tarballs" });
+    expect(both.report.repo).toMatchObject({ installed: true });
+  });
+
+  // Review M2: a signature only says that somebody signed. Without the fingerprint of the key the user trusts, a
+  // folder is intact at most, never trusted, and the preflight does not say ok.
+  it("without --signer a folder is intact but not trusted: not ok, exit 1, and the problem says what to ask the user", () => {
+    const { status, report, tarballs } = run(["--tarballs", layout.out]);
+    expect(status).toBe(1);
+    expect(report.ok).toBe(false);
+    expect(tarballs).toMatchObject({ intact: true, trusted: false, signer: key.fingerprint });
+    expect(report.problems.join(" ")).toMatch(/signer .* is not checked/);
+    expect(report.problems.join(" ")).toMatch(/--signer <fingerprint>/);
+    expect(report.problems.join(" ")).toMatch(/--integrity-only/);
+  });
+
+  it("a tampered folder signed again by someone else is never ok on its own: the review's case", () => {
+    const dir = copy();
+    const other = loadOrCreateKey(join(scratch, "keys/other.json"));
+    const harden = readdirSync(dir).find((file) => file.includes("harden") && file.endsWith(".tgz")) as string;
+    appendFileSync(join(dir, harden), "tampered");
+    const { signature: _signature, ...body } = JSON.parse(readFileSync(join(dir, MANIFEST_FILE), "utf8"));
+    const entry = body.packages.find((p: { tarball: { file: string } }) => p.tarball.file === harden);
+    const bytes = readFileSync(join(dir, harden));
+    entry.tarball.size = bytes.length;
+    entry.tarball.sha256 = createHash("sha256").update(bytes).digest("hex");
+    writeFileSync(join(dir, MANIFEST_FILE), JSON.stringify(signReport(body, other)));
+    const plain = run(["--tarballs", dir]);
+    expect(plain.status).toBe(1);
+    expect(plain.report.ok).toBe(false);
+    expect(plain.tarballs).toMatchObject({ intact: true, trusted: false, signer: other.fingerprint });
+    const expected = run(["--tarballs", dir, "--signer", key.fingerprint]);
+    expect(expected.status).toBe(1);
+    expect(expected.tarballs).toMatchObject({ intact: true, trusted: false });
+    expect(expected.report.problems.join(" ")).toMatch(/signed by .* not by the expected/);
+    // Only the user can wave the signer through, and the result still does not say trusted.
+    const waved = run(["--tarballs", dir, "--integrity-only"]);
+    expect(waved.status).toBe(0);
+    expect(waved.report.ok).toBe(true);
+    expect(waved.tarballs).toMatchObject({ intact: true, trusted: false, signer: other.fingerprint });
+    expect(waved.report.notes.join(" ")).toMatch(/NOT trusted/);
+    expect(waved.report.notes.join(" ")).toMatch(/integrity only/i);
+  });
+
+  it("checks the signer's form, and --integrity-only never covers a wrong --signer or a damaged folder", () => {
+    expect(run(["--tarballs", layout.out, "--signer", "nothex"]).report.problems.join(" ")).toMatch(/--signer needs/);
+    const wrong = run(["--tarballs", layout.out, "--signer", "0".repeat(64), "--integrity-only"]);
+    expect(wrong.status).toBe(1);
+    expect(wrong.tarballs.trusted).toBe(false);
+    const damaged = copy();
+    appendFileSync(join(damaged, readdirSync(damaged).find((file) => file.endsWith(".cdx.json")) as string), " ");
+    const waved = run(["--tarballs", damaged, "--integrity-only"]);
+    expect(waved.status).toBe(1);
+    expect(waved.tarballs).toMatchObject({ intact: false, trusted: false });
+  });
+
+  it("reports a changed, missing or extra file and a changed manifest as problems, and exits 1", () => {
+    const changed = copy();
+    appendFileSync(
+      join(changed, readdirSync(changed).find((file) => file.includes("harden") && file.endsWith(".tgz")) as string),
+      "x",
+    );
+    const missing = copy();
+    rmSync(
+      join(missing, readdirSync(missing).find((file) => file.includes("guard") && file.endsWith(".tgz")) as string),
+    );
+    const extra = copy();
+    writeFileSync(join(extra, "antireverse-extra-9.9.9.tgz"), "x");
+    const edited = copy();
+    const manifest = JSON.parse(readFileSync(join(edited, MANIFEST_FILE), "utf8")) as { statement: string };
+    manifest.statement = "Built by a trusted pipeline.";
+    writeFileSync(join(edited, MANIFEST_FILE), JSON.stringify(manifest));
+    const none = copy();
+    rmSync(join(none, MANIFEST_FILE));
+    const cases: Array<[string, RegExp]> = [
+      [changed, /harden.*size/],
+      [missing, /guard.*missing/],
+      [extra, /antireverse-extra-9\.9\.9\.tgz.*not listed/],
+      [edited, /signature does not verify/],
+      [none, /sdk-manifest\.json.*missing/],
+      [join(scratch, "absent"), /does not exist/],
+    ];
+    for (const [dir, problem] of cases) {
+      const { status, report, tarballs } = run(["--tarballs", dir, "--signer", key.fingerprint]);
+      expect(status, dir).toBe(1);
+      expect(report.ok, dir).toBe(false);
+      expect(report.problems.join(" "), dir).toMatch(problem);
+      expect(tarballs?.intact ?? false, dir).toBe(false);
+      expect(tarballs?.trusted ?? false, dir).toBe(false);
+    }
+    expect(run(["--tarballs"]).report.problems.join(" ")).toMatch(/--tarballs needs a path/);
+  });
+
+  // Review L3: whatever the manifest holds, the answer is the documented JSON, never a crash.
+  it("answers with its JSON for a manifest that is null, an array, a list of nulls, or too large", () => {
+    const shapes: Array<[string, RegExp]> = [
+      ["null", /not an SDK artifact manifest/],
+      ["[]", /not an SDK artifact manifest/],
+      ['"text"', /not an SDK artifact manifest/],
+      [
+        JSON.stringify({ schema: "airverse.sdk-artifacts/1", packages: [null, 5, { name: 1 }] }),
+        /signature does not verify|malformed/,
+      ],
+      [`{"schema":"airverse.sdk-artifacts/1","pad":"${"x".repeat(1024 * 1024 + 10)}"}`, /larger than/],
+    ];
+    for (const [content, problem] of shapes) {
+      const dir = copy();
+      writeFileSync(join(dir, MANIFEST_FILE), content);
+      const { status, stderr, report, tarballs } = run(["--tarballs", dir, "--signer", key.fingerprint]);
+      expect(stderr, content.slice(0, 40)).toBe("");
+      expect(status, content.slice(0, 40)).toBe(1);
+      expect(report.problems.join(" "), content.slice(0, 40)).toMatch(problem);
+      expect(tarballs.intact).toBe(false);
+    }
+  });
+
+  it("agrees with sdk:verify's rules: the same marker text, the same manifest name, and it changes nothing", () => {
+    const source = read(preflight);
+    expect(source).toContain(JSON.stringify(MARKER_TEXT));
+    expect(source).toContain(`"${MANIFEST_FILE}"`);
+    expect(source).not.toMatch(/writeFile|appendFile|mkdir|rmSync|unlink|rename|child_process|fetch\(|https?:\/\//);
+    const before = readdirSync(layout.out).sort();
+    run(["--tarballs", layout.out, "--signer", key.fingerprint]);
+    expect(readdirSync(layout.out).sort()).toEqual(before);
+  });
+
+  it("prints every tarballs field the skill tells the reader to use, and the skill keeps its rules for them", () => {
+    const { tarballs } = run(["--tarballs", layout.out, "--signer", key.fingerprint]);
+    const body = read(skillFile);
+    const named = new Set(
+      [...body.matchAll(/`(tarballs\.[A-Za-z]+)`/g)].map((m) => (m[1] as string).slice("tarballs.".length)),
+    );
+    expect(named.size).toBeGreaterThan(4);
+    for (const field of named) expect((tarballs as unknown as Record<string, unknown>)[field], field).toBeDefined();
+    expect(body).toMatch(/--tarballs/);
+    expect(body).toMatch(/--ignore-scripts/);
+    expect(body).toMatch(/not provenance/);
+    expect(body).toMatch(/do not install/i);
+    expect(body).toMatch(/never download/i);
+    // Review M2: the fingerprint comes from the user, and the model never waves the signer through on its own.
+    expect(body).toMatch(/ask the user for the fingerprint/i);
+    expect(body).toMatch(/`tarballs\.trusted`/);
+    expect(body).toMatch(/`tarballs\.intact`/);
+    expect(body).toMatch(/--integrity-only/);
+    expect(body).toMatch(/never (pass|add|use) `--integrity-only` on your own/i);
+    expect(body).not.toMatch(/tarballs\.verified|signerChecked/);
+    expect(existsSync(join(skillDir, "evals/express-tarballs-resigned-folder/case.yaml"))).toBe(true);
+    // The clone path is still there.
+    expect(body).toMatch(/--repo/);
+    expect(body).toMatch(/AIRVERSE_REPO/);
   });
 });

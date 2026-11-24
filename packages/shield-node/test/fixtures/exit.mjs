@@ -1,4 +1,5 @@
-// Child process of shield.test.ts. Run with `node --experimental-strip-types`.
+// Child process of shield.test.ts. Run with `node --experimental-strip-types`; in the run on the compiled output
+// (AR_SDK_COMPILED_ROOT, slice 23) with plain `node`, importing the compiled files instead of the source.
 // It creates a Shield against an ingest server that never answers, records one Event, waits until the flush
 // is in flight and returns. Neither the flush timer nor the in-flight request may keep this process alive:
 // the parent asserts exit code 0 within 2 s.
@@ -6,15 +7,26 @@
 // silent server and the poll timer is armed; neither may keep the process alive.
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+
+const compiled = process.env.AR_SDK_COMPILED_ROOT;
+/** A module of Shield: the TypeScript source, or its compiled file in the run on the compiled output. */
+const load = (name) =>
+  import(
+    compiled
+      ? pathToFileURL(join(compiled, "shield-node", `${name}.js`)).href
+      : new URL(`../../src/${name}.ts`, import.meta.url).href
+  );
 
 const [mode, endpoint] = process.argv.slice(2);
 const key = `ark_dev_${"A".repeat(43)}`; // synthetic, well-formed
 let stats;
 
 if (mode === "emitter") {
-  const { createEmitter } = await import("../../src/emitter.ts");
-  const { createNodeTransport } = await import("../../src/transport.ts");
+  const { createEmitter } = await load("emitter");
+  const { createNodeTransport } = await load("transport");
   const emitter = createEmitter({
     key,
     endpoint,
@@ -39,13 +51,13 @@ if (mode === "emitter") {
   await sleep(200); // the flush timer fired and the request is in flight against the silent server
   stats = emitter.stats();
 } else if (mode === "policy") {
-  const { createShield } = await import("../../src/index.ts");
+  const { createShield } = await load("index");
   const policyPublicKey = generateKeyPairSync("ed25519").publicKey.export({ format: "jwk" }).x;
   const shield = createShield({ key, endpoint, policyPublicKey, policyPollIntervalMs: 100, requestTimeoutMs: 30_000 });
   await sleep(400); // the first Policy request was sent and is still unanswered
   stats = shield.stats();
 } else {
-  const { createShield } = await import("../../src/index.ts");
+  const { createShield } = await load("index");
   const shield = createShield({ key, endpoint, flushIntervalMs: 20, requestTimeoutMs: 30_000, logger: { warn() {} } });
   const request = { method: "GET", url: "/", socket: { remoteAddress: "127.0.0.1" } };
   const response = Object.assign(new EventEmitter(), { statusCode: 200 });

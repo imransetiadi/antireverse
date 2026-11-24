@@ -6,9 +6,11 @@ Responsible use: Harden protects software you own. It is not for evading detecti
 
 ## Running it
 
-The `antireverse` command is the `@antireverse/harden` package, which is not published to npm yet. Its entry point, `packages/harden/src/cli.ts`, is a TypeScript file.
+The `antireverse` command is the `@antireverse/harden` package, which is not published to npm yet. There are two ways to run it.
 
-On Node 22.23 or newer (tested on 22.23.4), the bin works:
+**Installed from its tarball** (`npm run sdk:pack` in the Airverse repository writes it; then, in your project, `npm install --save-dev --ignore-scripts <path>/antireverse-harden-<version>.tgz`): plain JavaScript, run as `npx antireverse …`. Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12. Where the commands below say `npx tsx packages/harden/src/cli.ts`, write `npx antireverse`.
+
+**From a clone of the repository:** its entry point there, `packages/harden/src/cli.ts`, is a TypeScript file. On Node 22.23 or newer (tested on 22.23.4), the bin works:
 
 ```bash
 npx antireverse --help
@@ -26,7 +28,7 @@ or let Node strip the types (it prints an ExperimentalWarning):
 node --experimental-strip-types node_modules/.bin/antireverse --help
 ```
 
-Every command below uses the `npx tsx` form, which works on both versions. `--help` prints the full list of options and exit codes.
+Every command below uses the clone's `npx tsx` form, which works on both versions. `--help` prints the full list of options and exit codes.
 
 ## Harden a bundle
 

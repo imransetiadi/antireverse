@@ -53,6 +53,36 @@ export const CHECKS = {
     slow: false,
     online: false,
   },
+  "sdk-reproducible": {
+    title:
+      "Local SDK build: the compiled shape of the four packages, and two clean builds packed byte for byte the same (slice 23); on one machine, not a release",
+    slow: false,
+    online: false,
+  },
+  "sdk-install-smoke": {
+    title:
+      "Local SDK install: the tarballs installed by npm into an empty project against a loopback registry and run on plain Node (slice 23); not the public registry",
+    slow: false,
+    online: false,
+  },
+  "sdk-equivalence": {
+    title:
+      "Local SDK equivalence: the suites of protocol, shield-node and harden on the compiled output, test by test as on the source (slice 23)",
+    slow: false,
+    online: false,
+  },
+  "sdk-sbom-allowlist": {
+    title:
+      "Local SDK dependencies: a CycloneDX bill of materials per package from the lockfile, and the runtime closure against the committed allowlist (slice 23)",
+    slow: false,
+    online: false,
+  },
+  "sdk-signed-manifest": {
+    title:
+      "Local SDK manifest: sizes and SHA-256 of every tarball and bill of materials, signed with the local key, and sdk:verify (slice 23); a local signature, not provenance",
+    slow: false,
+    online: false,
+  },
   "bench-shield": { title: "Shield overhead bench against PB-01 and PB-02", slow: true, online: false },
   "load-smoke": {
     title: "Local load smoke of the API against PB-21, SLO-02 and SLO-01 (client-side percentiles)",
@@ -259,7 +289,8 @@ export const CRITERIA: readonly Criterion[] = [
     checks: [],
     gaps: [
       {
-        reason: "no SDK release pipeline exists (no published artifacts, signatures, provenance or SBOM)",
+        reason:
+          "there is no release: no package is published, no protected pipeline builds one, nothing attests provenance and no two people approve; locally the four packages are built, packed reproducibly, installed and run, compared with their source, given a bill of materials and listed in a manifest signed with the local key (gate-sdk-artifacts-local, slice 23) — a signature by whoever holds that key on one machine, which is not the signature and provenance of a release",
         slice: "18",
       },
     ],
@@ -401,6 +432,29 @@ export const CRITERIA: readonly Criterion[] = [
       "Local: one API process and one Shield on loopback, a Shield that polls every 250 ms (the default is 5 s). This is not a drill in staging.",
       "AR_SHIELD_DISABLED and AR_PROVE_CAMPAIGNS are read at start: the drill starts a new Shield or API with the variable, as a redeploy would. Neither leaves an audit entry.",
       "Lifting the Campaign kill switch writes no audit entry: it is recorded in the switch's own state (read back by the drill) and in the API's log. Throwing it, and suspending or resuming an Organization, each write one in the affected Organization's chain.",
+    ],
+  },
+  {
+    id: "gate-sdk-artifacts-local",
+    title:
+      "The SDK packages build, pack reproducibly, install, behave like their source and are listed and signed locally",
+    source: {
+      doc: "gate",
+      section: "D-127",
+      text: "The four packages (@antireverse/protocol, shield-node, guard, harden) are compiled to JavaScript and declarations and packed: two clean builds give byte-identical tarballs; the tarballs install by npm install into an empty project outside the repository with no network and run on plain Node (Shield reports itself disabled without a key, the antireverse command runs a real Harden pass, Guard imports as plain ES modules, a TypeScript consumer type-checks); the test suites of the compiled packages pass on the compiled output test by test as on the source; each package has a CycloneDX bill of materials of its runtime closure and that closure matches the committed allowlist, with no install script and no dependency at all for Shield and Guard; and a signed manifest lists every file with size and SHA-256, which sdk:verify checks.",
+    },
+    checks: ["sdk-reproducible", "sdk-install-smoke", "sdk-equivalence", "sdk-sbom-allowlist", "sdk-signed-manifest"],
+    gaps: [],
+    requires: [],
+    notes: [
+      'Nothing is published and nothing is released: the version is 0.0.0 and the packed manifests keep "private": true, so npm publish refuses them.',
+      "The manifest's signature is by the gate's local key: it shows that whoever holds that key signed these files on their machine. It is not provenance from a protected pipeline, and no second person approved anything.",
+      "Reproducible here means two clean builds on this machine with the same Node and npm give the same bytes; another Node, npm or TypeScript version may compress or emit differently, and the manifest records the versions used.",
+      "The install uses a loopback registry filled from the repository's own node_modules (installed against package-lock.json), with install scripts off: it shows that npm resolves the packed manifests, not what the public registry would serve on another day.",
+      "The bill of materials and the allowlist describe the closure as package-lock.json pins it; a project that installs a tarball resolves the transitive ranges again.",
+      "One test file is left out of the compiled run, by name and with its reason (harden's cli-bin test, which starts the TypeScript entry by path); the packed command is started by the install check instead.",
+      "A source module cannot be loaded in the compiled run, in Vitest or in a process a test starts. A few tests read source files as text (Shield's import check, the protocol's import graph): those say the same about the source in both runs and prove nothing about the compiled files. Every such test file is listed in tools/sdk/src/dist-plugin.ts.",
+      "A test file with a result that is not passed is run once more, alone, before the two runs are compared (some product tests have a wall-clock budget); the check's output names such files.",
     ],
   },
 ];

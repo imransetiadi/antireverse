@@ -150,7 +150,7 @@ function activeShield(
   const transport = ownTransport?.send ?? (config.transport as NonNullable<ShieldConfig["transport"]>);
   const requestTimeoutMs = config.requestTimeoutMs ?? SHIELD_DEFAULTS.requestTimeoutMs;
   const emitter: Emitter = createEmitter({
-    key: config.key,
+    key: config.key as string,
     endpoint: config.endpoint,
     flushIntervalMs: config.flushIntervalMs ?? SHIELD_DEFAULTS.flushIntervalMs,
     maxBatchSize: config.maxBatchSize ?? SHIELD_DEFAULTS.maxBatchSize,
@@ -172,7 +172,7 @@ function activeShield(
     typeof config.projectRoot === "string" && config.projectRoot !== "" ? config.projectRoot : process.cwd();
   const inventory: InventorySender | undefined = inventoryOn
     ? createInventorySender({
-        key: config.key,
+        key: config.key as string,
         endpoint: config.endpoint,
         requestTimeoutMs: positiveOr(requestTimeoutMs, SHIELD_DEFAULTS.requestTimeoutMs),
         transport,
@@ -209,10 +209,10 @@ function activeShield(
       );
     } else {
       poller = createPoller({
-        key: config.key,
+        key: config.key as string,
         endpoint: config.endpoint,
         publicKey,
-        audience: audienceOf(config.key),
+        audience: audienceOf(config.key as string),
         intervalMs: config.policyPollIntervalMs ?? POLICY_DEFAULTS.pollIntervalMs,
         requestTimeoutMs: positiveOr(requestTimeoutMs, SHIELD_DEFAULTS.requestTimeoutMs),
         transport,
@@ -240,7 +240,10 @@ function activeShield(
   }
 
   // The actor key: the option, else AR_ACTOR_KEY. Never the Shield key, never repeated anywhere.
-  const actor = resolveActorKey(config.actorKey !== undefined ? config.actorKey : process.env.AR_ACTOR_KEY, config.key);
+  const actor = resolveActorKey(
+    config.actorKey !== undefined ? config.actorKey : process.env.AR_ACTOR_KEY,
+    config.key as string,
+  );
   if (actor.unusable) {
     warn(
       "actor-key",
