@@ -17,7 +17,7 @@ Airverse is a SaaS platform for web applications and APIs. Small components run 
 
 ## Contents
 
-- **Start here:** [Overview](#overview) · [Project status](#project-status) · [Quickstart](#quickstart) · [How to use Airverse](#how-to-use-airverse) · [What works today](#what-works-today) · [Documentation](#documentation)
+- **Start here:** [Overview](#overview) · [Project status](#project-status) · [Quickstart](#quickstart) · [How to use Airverse](#how-to-use-airverse) · [What works today](#what-works-today) · [Documentation](#documentation) · [Claude skill](#claude-skill)
 - **Harden (build time):** [Hardening a bundle](#hardening-a-bundle) · [Leak scan and Canaries](#leak-scan-and-canaries) · [Clone Beacon](#clone-beacon) · [Tamper detection](#tamper-detection)
 - **Guard and Shield (run time):** [Guard and attestation](#guard-and-attestation) · [Signed requests](#signed-requests) · [Rate limits and login protection](#rate-limits-and-login-protection) · [Policy simulation](#policy-simulation)
 - **Radar (detect and respond):** [Detection and alerts](#detection-and-alerts) · [Containment](#containment) · [Known vulnerabilities (Exposure)](#known-vulnerabilities-exposure)
@@ -175,6 +175,21 @@ The specification, at the root of the repository:
 | [MEMORY.md](MEMORY.md) | The glossary (§3), the decisions with their reasons (§4) and the session handoffs |
 
 The words used in this README — Organization, App, Build, Policy, Rule, Incident, Canary, Campaign and the rest — each have one meaning, defined in [MEMORY.md](MEMORY.md) §3.
+
+## Claude skill
+
+[`skills/airverse-setup`](skills/airverse-setup/SKILL.md) is a skill for Claude (Claude Code, the Claude apps). With it installed, asking Claude to "set up Airverse in this project" makes it add Shield to your server, Guard to your pages and the Harden step to your build and CI, following the guides in `docs/`, and report what it verified and what it could not.
+
+To install it, copy the folder into your skills directory:
+
+```bash
+cp -R skills/airverse-setup ~/.claude/skills/
+```
+
+Then tell Claude where your clone of this repository is, or set `AIRVERSE_REPO` to its path: the packages are not on npm, so the skill works from a clone.
+
+- **What it will not do:** write a key into a file or ask you to paste one, add a leak-allowlist entry to get past the scan, promote a Rule to Enforce, launch a Campaign, or invent support for a framework Shield does not support.
+- **Limits (honest):** the skill is instructions for a model, not a program: a run can still make mistakes, so read its report and its diff. It was tried on two sample projects (see [tickets/22-claude-skill.md](tickets/22-claude-skill.md)), not on real ones. A test in `tools/gate/test` fails when the skill names a flag, variable, method or guide that no longer exists; it checks names, not meaning. Keep your clone beside your project, not inside it.
 
 ## Hardening a bundle
 
@@ -575,6 +590,7 @@ Today every check that can run passes, and the verdict is `blocked` with exit co
 | `tools/gate` | The release-gate runner |
 | `tests/e2e` | The journeys over HTTP and in a real browser |
 | `docs/` | The developer guides |
+| `skills/` | The Claude skill that sets Airverse up in a project |
 | `brand/` | The Airverse mark |
 | `*.md` at the root | The specification: PRD, SDD, SECURITY, PERFORMANCE, OPERATION, QASUITE, UIUX, MEMORY |
 | `tickets/`, `plans/` | The ticket and implementation plan of each slice, with spike findings |

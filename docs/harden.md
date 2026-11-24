@@ -44,8 +44,8 @@ In order, Harden:
 | Option | What it does |
 |---|---|
 | `--profile <p>` | `light` = identifier mangling; `balanced` (default) = mangling + string encryption bound at the use site; `maximum` = `balanced` for now. |
-| `--out <dir>` | Writes the protected files. Without it Harden only reports and writes nothing. |
-| `--test <command>` | Runs this command against the protected copy as the equivalence gate. |
+| `--out <dir>` | Writes the protected files. Without it Harden only reports and writes nothing. Use a folder other than `<bundle-dir>`: the same folder is overwritten. |
+| `--test <command>` | Runs this command against the protected copy as the equivalence gate. The command runs inside a temporary copy of `<bundle-dir>` that holds the protected files, not in your project root: give a command that tests the files in its current directory (name your test script by absolute path), and do not `cd` back into the project, which would test the unprotected build. |
 | `--seed <n>` | An integer seed for reproducible output (with `--register`, apart from the integrity marker's line, see below). |
 | `--map <file.json>` | A JSON map of `"relative/path": "skip"` to emit a file unchanged. |
 | `--integrity` | Wraps already-bundled (non-ESM) output in a tamper self-check. Refused on ESM input. |
