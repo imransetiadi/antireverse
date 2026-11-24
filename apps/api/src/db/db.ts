@@ -51,6 +51,16 @@ export async function openDb(options: { dataDir?: string } = {}): Promise<OwnedD
     releaseLock();
     throw error;
   }
+  return attachDb(pg, releaseLock);
+}
+
+/**
+ * The database over an open PGlite instance: applies pending migrations, switches the session to the request role
+ * and hands out transactions. `openDb` is this over a new instance; the upgrade check (slice 18h) calls it over an
+ * instance loaded from an earlier schema version, so that it upgrades and serves through the code a start-up runs.
+ * On a failure, and on `close()`, the instance is closed and `releaseLock` is called.
+ */
+export async function attachDb(pg: PGlite, releaseLock: () => void = () => {}): Promise<OwnedDb> {
   try {
     // Migrations need the owner. Everything after this line is fail-closed: the session role is switched
     // once and stays switched through errors and rollbacks, so no query can run as the superuser.

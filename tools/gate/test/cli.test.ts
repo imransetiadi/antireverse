@@ -67,5 +67,10 @@ describe("gate:release", () => {
     expect(out.stdout).toMatch(/--only <ids>/);
     expect(out.stdout).toMatch(/--skip-slow/);
     expect(out.stdout).toMatch(/--online/);
+    // Slice 18h: the local upgrade, rollback and kill-switch checks can be run on their own.
+    for (const id of ["upgrade-local", "rollback-local", "kill-switch-drill"]) {
+      expect(out.stdout).toMatch(new RegExp(`Checks: .*\\b${id}\\b`));
+      expect(out.stdout).toMatch(new RegExp(`Criteria: .*\\bgate-${id.replace("-drill", "")}`));
+    }
   });
 });

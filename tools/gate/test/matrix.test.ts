@@ -62,4 +62,27 @@ describe("selectMatrixFiles", () => {
     );
     expect(audit.map((e) => e.file)).toContain("apps/api/test/audit-coverage.test.ts");
   });
+
+  it("slice 18h: the upgrade, rollback and kill-switch checks select exactly their files, each in its project", () => {
+    const selected = (id: string) =>
+      selectMatrixFiles(MATRICES.find((m) => m.id === id) as (typeof MATRICES)[number], REPO_ROOT).map(
+        (entry) => `${entry.project}:${entry.file}`,
+      );
+    expect(selected("upgrade-local")).toEqual(["api:apps/api/test/upgrade.test.ts"]);
+    expect(selected("rollback-local")).toEqual([
+      "api:apps/api/test/backup.test.ts",
+      "api:apps/api/test/rollback-rehearsal.test.ts",
+    ]);
+    expect(selected("kill-switch-drill")).toEqual(["e2e:tests/e2e/kill-switch-drill.http.test.ts"]);
+    // Every test of these files counts: the names the gate will demand a passed result for.
+    const names = selectMatrixFiles(
+      MATRICES.find((m) => m.id === "kill-switch-drill") as (typeof MATRICES)[number],
+      REPO_ROOT,
+    )[0]?.names;
+    expect(
+      names?.filter((name) =>
+        /monitor|roll back|AR_SHIELD_DISABLED|kill switch|suspending|AR_PROVE_CAMPAIGNS/.test(name),
+      ),
+    ).toHaveLength(6);
+  });
 });

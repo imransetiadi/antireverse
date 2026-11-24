@@ -35,6 +35,24 @@ export const CHECKS = {
     slow: false,
     online: false,
   },
+  "upgrade-local": {
+    title:
+      "Local schema upgrade: a database seeded at every migration prefix is upgraded to the head (slice 18h); not an SDK upgrade",
+    slow: false,
+    online: false,
+  },
+  "rollback-local": {
+    title:
+      "Local rollback rehearsal: the backup and restore commands, and backup, upgrade, restore, serve on one data directory (slice 18h); not staging",
+    slow: false,
+    online: false,
+  },
+  "kill-switch-drill": {
+    title:
+      "Local kill-switch drill: every switch that exists thrown and taken back over HTTP, with what the API records of each (slice 18h); not staging",
+    slow: false,
+    online: false,
+  },
   "bench-shield": { title: "Shield overhead bench against PB-01 and PB-02", slow: true, online: false },
   "load-smoke": {
     title: "Local load smoke of the API against PB-21, SLO-02 and SLO-01 (client-side percentiles)",
@@ -182,7 +200,13 @@ export const CRITERIA: readonly Criterion[] = [
     title: "Upgrade path from every SDK minor",
     source: qa("Upgrade path tested from every supported SDK minor."),
     checks: [],
-    gaps: [{ reason: "no SDK minor has been released, so there is no upgrade path to test", slice: "unplanned" }],
+    gaps: [
+      {
+        reason:
+          "no SDK minor has been released, so there is no SDK upgrade path to test; what can be tested without a release is the database schema: every migration prefix with seeded data upgrades to the head (gate-upgrade-local, slice 18h), which says nothing about an older Shield, Guard or Harden against this API",
+        slice: "unplanned",
+      },
+    ],
     requires: [],
   },
   {
@@ -190,7 +214,13 @@ export const CRITERIA: readonly Criterion[] = [
     title: "Rollback rehearsed",
     source: qa("Rollback rehearsed."),
     checks: [],
-    gaps: [{ reason: "there is no staging deployment to rehearse a rollback on", slice: "18" }],
+    gaps: [
+      {
+        reason:
+          "there is no staging deployment to rehearse a rollback on, and no build of a previous version to roll back to; locally the data rollback is rehearsed — backup, upgrade, restore, serve on one data directory (gate-rollback-local, slice 18h) — while the previous version's code on the upgraded schema, the one-command rollback of a deployment and the automatic rollback after failed probes are not",
+        slice: "18",
+      },
+    ],
     requires: [],
   },
   {
@@ -275,7 +305,7 @@ export const CRITERIA: readonly Criterion[] = [
     gaps: [
       {
         reason:
-          "there is no staging environment to exercise them in; the Campaign kill switches (owner stop, operator kill and suspension) are exercised locally by gate-campaign-safety",
+          "there is no staging environment to exercise them in, and nothing records an exercise per release; locally every switch that exists is thrown and taken back by gate-kill-switch-drill (with gate-campaign-safety for running Campaigns) and the data rollback is rehearsed by gate-rollback-local (slice 18h); App safe mode, global safe mode and the Guard kill switch do not exist yet",
         slice: "18",
       },
     ],
@@ -319,6 +349,58 @@ export const CRITERIA: readonly Criterion[] = [
     notes: [
       "The engine is the scripted stand-in of slice 15a: it measures the pipeline and its safety controls. This is not a penetration test.",
       "The request gate is application code in the API process: there is no VM or egress proxy behind it (ticket 15a, honest limits).",
+    ],
+  },
+  {
+    id: "gate-upgrade-local",
+    title: "Every earlier schema version upgrades to the head with its data",
+    source: {
+      doc: "gate",
+      section: "D-120",
+      text: "A database at every migration prefix below the head, holding a seeded row in every table of that version, is upgraded to the head by the start-up path: every row and value survives and can still be written, each audit chain verifies, row-level security isolates the tenants, the API serves the data through its routes with the keys seeded at the first migration, and a second migration run applies nothing.",
+    },
+    checks: ["upgrade-local"],
+    gaps: [],
+    requires: [],
+    notes: [
+      "No version has been released: 'a previous version' here is a migration prefix (the schema after 0001…K), not a release and not an SDK upgrade.",
+      "The seeds are written against each version's columns, checks and triggers; the JSON inside them (Event payloads, Build manifests, Policy rules) has today's shape, because no older writer exists to copy.",
+      "PGlite in memory, a few rows per table: this says nothing about the time or the locks of a migration on a large database.",
+    ],
+  },
+  {
+    id: "gate-rollback-local",
+    title: "The backup taken before an upgrade restores, and the API serves it",
+    source: {
+      doc: "gate",
+      section: "D-121",
+      text: "A data directory at the schema before the head, with its key files, is backed up by the backup command, upgraded by an API start and written to; the restore command then puts back the old schema, every row and the key files byte for byte, and the API started on it serves the state from before the upgrade: the Shield key authenticates, the Policy Bundle verifies under the same public key, the attestation keys load and the audit chains verify.",
+    },
+    checks: ["rollback-local"],
+    gaps: [],
+    requires: [],
+    notes: [
+      "This is a data rollback: restoring a cold backup (npm run data:backup, npm run data:restore). Everything written after the backup is lost. Only a data directory is ever replaced, and only with --force.",
+      "The previous version's code on the upgraded schema is not rehearsed: no build of a previous version exists, and the only code there is migrates the restored directory forward again when it starts.",
+      "One process on one machine, temporary directories: not a deployment, not staging, and no backup schedule or off-site copy exists.",
+    ],
+  },
+  {
+    id: "gate-kill-switch-drill",
+    title: "Every kill switch that exists works, on and off",
+    source: {
+      doc: "gate",
+      section: "D-123",
+      text: "Each switch is thrown, its effect observed, taken back, and normal behaviour observed again, over HTTP: a Rule set back to monitor and a Policy roll back as a real Shield applies them, AR_SHIELD_DISABLED and Shield's disabled option on a Shield in front of a handler, the operator's Campaign kill switch and the suspension of one Organization, and the service flag AR_PROVE_CAMPAIGNS; with what the API records of each read back (an audit entry where the switch writes one, the switch's own state where it does not).",
+    },
+    checks: ["kill-switch-drill", "campaign-safety"],
+    gaps: [],
+    requires: [],
+    notes: [
+      "App safe mode, global safe mode and the Guard kill switch do not exist in code yet (OPERATION §15 names them): nothing is drilled for them.",
+      "Local: one API process and one Shield on loopback, a Shield that polls every 250 ms (the default is 5 s). This is not a drill in staging.",
+      "AR_SHIELD_DISABLED and AR_PROVE_CAMPAIGNS are read at start: the drill starts a new Shield or API with the variable, as a redeploy would. Neither leaves an audit entry.",
+      "Lifting the Campaign kill switch writes no audit entry: it is recorded in the switch's own state (read back by the drill) and in the API's log. Throwing it, and suspending or resuming an Organization, each write one in the affected Organization's chain.",
     ],
   },
 ];

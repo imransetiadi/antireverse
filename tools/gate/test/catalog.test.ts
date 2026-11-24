@@ -101,6 +101,9 @@ describe("the catalog", () => {
         "matrix-privacy",
         "rrs-stand-in",
         "campaign-safety",
+        "upgrade-local",
+        "rollback-local",
+        "kill-switch-drill",
         "bench-shield",
         "load-smoke",
         "npm-audit",
@@ -115,6 +118,9 @@ describe("the catalog", () => {
       "matrix-privacy",
       "rrs-stand-in",
       "campaign-safety",
+      "upgrade-local",
+      "rollback-local",
+      "kill-switch-drill",
       "load-smoke",
     ] as const) {
       expect(CHECKS[id].slow, id).toBe(false);
@@ -149,6 +155,105 @@ describe("the catalog", () => {
       expect(gap?.reason, id).not.toMatch(/does not exist yet/);
     }
     expect(CRITERIA.find((c) => c.id === "sec12-kill-switches")?.gaps[0]?.reason).toMatch(/gate-campaign-safety/);
+  });
+});
+
+// Slice 18h: the upgrade check, the rollback rehearsal and the kill-switch drill run locally, as criteria of the
+// gate's own. The checklist lines speak of released SDK minors and of staging: no local run turns them green.
+describe("slice 18h: upgrade, rollback and kill switches", () => {
+  const criterion = (id: string) => CRITERIA.find((c) => c.id === id);
+  const filesOf = (id: string) => MATRICES.find((m) => m.id === id)?.files ?? [];
+
+  it("the three checklist lines stay not checkable, without a check, and say what is proven locally and what is not", () => {
+    const upgrade = criterion("qa16-upgrade");
+    expect(upgrade).toMatchObject({ checks: [], requires: [] });
+    expect(upgrade?.gaps).toHaveLength(1);
+    expect(upgrade?.gaps[0]?.reason).toMatch(/no SDK minor has been released/);
+    expect(upgrade?.gaps[0]?.reason).toMatch(/gate-upgrade-local/);
+    expect(upgrade?.gaps[0]?.reason).toMatch(/database schema/);
+
+    const rollback = criterion("qa16-rollback");
+    expect(rollback).toMatchObject({ checks: [], requires: [] });
+    expect(rollback?.gaps).toHaveLength(1);
+    expect(rollback?.gaps[0]?.reason).toMatch(/no staging deployment/);
+    expect(rollback?.gaps[0]?.reason).toMatch(/gate-rollback-local/);
+    expect(rollback?.gaps[0]?.reason).toMatch(/previous version's code/);
+
+    const switches = criterion("sec12-kill-switches");
+    expect(switches).toMatchObject({ checks: [], requires: [] });
+    expect(switches?.gaps).toHaveLength(1);
+    expect(switches?.gaps[0]?.reason).toMatch(/no staging environment/);
+    expect(switches?.gaps[0]?.reason).toMatch(/gate-kill-switch-drill/);
+    expect(switches?.gaps[0]?.reason).toMatch(/gate-rollback-local/);
+    // The security gate still includes the kill-switch line, so it cannot complete from a local run either.
+    expect(criterion("qa16-security-gate")?.requires).toContain("sec12-kill-switches");
+  });
+
+  it("gate-upgrade-local: every migration prefix with seeded data, upgraded to the head", () => {
+    const entry = criterion("gate-upgrade-local");
+    expect(entry).toMatchObject({ checks: ["upgrade-local"], gaps: [], requires: [], source: { doc: "gate" } });
+    expect(entry?.source.text).toMatch(/migration prefix/);
+    expect(entry?.source.text).toMatch(/audit chain/);
+    expect(entry?.source.text).toMatch(/second migration run applies nothing/);
+    const notes = entry?.notes?.join(" ") ?? "";
+    expect(notes).toMatch(/No version has been released/);
+    expect(notes).toMatch(/not an SDK upgrade/);
+    expect(notes).toMatch(/today's shape/);
+    expect(entry?.source.text).toMatch(/can still be written/);
+    expect(filesOf("upgrade-local")).toEqual(["apps/api/test/upgrade.test.ts"]);
+  });
+
+  it("gate-rollback-local: the backup taken before an upgrade, restored, served", () => {
+    const entry = criterion("gate-rollback-local");
+    expect(entry).toMatchObject({ checks: ["rollback-local"], gaps: [], requires: [], source: { doc: "gate" } });
+    expect(entry?.source.text).toMatch(/backup/);
+    expect(entry?.source.text).toMatch(/key files/);
+    const notes = entry?.notes?.join(" ") ?? "";
+    expect(notes).toMatch(/data rollback/);
+    expect(notes).toMatch(/previous version's code on the upgraded schema is not rehearsed/);
+    expect(notes).toMatch(/Everything written after the backup is lost/);
+    expect(notes).toMatch(/Only a data directory is ever replaced/);
+    expect(filesOf("rollback-local")).toEqual([
+      "apps/api/test/backup.test.ts",
+      "apps/api/test/rollback-rehearsal.test.ts",
+    ]);
+  });
+
+  it("gate-kill-switch-drill: the drill, plus the Campaign safety suite that cuts running Campaigns", () => {
+    const entry = criterion("gate-kill-switch-drill");
+    expect(entry).toMatchObject({
+      checks: ["kill-switch-drill", "campaign-safety"],
+      gaps: [],
+      requires: [],
+      source: { doc: "gate" },
+    });
+    for (const name of [
+      /monitor/,
+      /roll back/i,
+      /AR_SHIELD_DISABLED/,
+      /kill switch/,
+      /suspension/,
+      /AR_PROVE_CAMPAIGNS/,
+    ]) {
+      expect(entry?.source.text).toMatch(name);
+    }
+    const notes = entry?.notes?.join(" ") ?? "";
+    expect(notes).toMatch(/App safe mode, global safe mode and the Guard kill switch do not exist/);
+    expect(notes).toMatch(/not a drill in staging/);
+    // Review M3: not every switch writes an audit entry, and the catalog must not say that it does.
+    expect(notes).toMatch(/Lifting the Campaign kill switch writes no audit entry/);
+    expect(`${entry?.source.text} ${CHECKS["kill-switch-drill"].title}`).not.toMatch(/with (its|the) audit entries/);
+    expect(entry?.source.text).toMatch(/what the API records/);
+    expect(entry?.source.text).toMatch(/disabled option/);
+    expect(filesOf("kill-switch-drill")).toEqual(["tests/e2e/kill-switch-drill.http.test.ts"]);
+  });
+
+  it("every file of the three checks exists, and none of the checks is skipped by --skip-slow", () => {
+    for (const id of ["upgrade-local", "rollback-local", "kill-switch-drill"] as const) {
+      expect(filesOf(id).length, id).toBeGreaterThan(0);
+      for (const file of filesOf(id)) expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
+      expect(CHECKS[id]).toMatchObject({ slow: false, online: false });
+    }
   });
 });
 

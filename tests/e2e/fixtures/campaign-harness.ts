@@ -164,7 +164,13 @@ export interface Harness {
 /** Spacing and deadline of the test transport: the budgets themselves are the protocol's and are not shortened. */
 export const FAST = { minSpacingMs: 15, requestTimeoutMs: 400 };
 
-export async function startHarness(options: { enabled?: boolean; production?: boolean } = {}): Promise<Harness> {
+export async function startHarness(
+  options: {
+    /** `"environment"`: not passed at all, so that `AR_PROVE_CAMPAIGNS` decides, as it does outside tests. */
+    enabled?: boolean | "environment";
+    production?: boolean;
+  } = {},
+): Promise<Harness> {
   const target = await startTarget();
   const dns = fakeDns();
   dns.addresses.set(HOST, ["127.0.0.1"]);
@@ -177,7 +183,7 @@ export async function startHarness(options: { enabled?: boolean; production?: bo
     recheck: { setTimer: () => ({}), clearTimer: () => {} },
     ops: { token: OPS_TOKEN, webhook: null },
     campaigns: {
-      enabled: options.enabled ?? true,
+      ...(options.enabled === "environment" ? {} : { enabled: options.enabled ?? true }),
       // `production`: no test-only option at all, as the API runs outside tests.
       ...(options.production === true ? {} : { testing: { ca: CA, port: target.port, allowLoopback: true, ...FAST } }),
       engine: (run) => (engine.run ?? runCampaignEngine)(run),

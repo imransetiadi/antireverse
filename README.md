@@ -22,7 +22,7 @@ Airverse is a SaaS platform for web applications and APIs. Small components run 
 - **Guard and Shield (run time):** [Guard and attestation](#guard-and-attestation) · [Signed requests](#signed-requests) · [Rate limits and login protection](#rate-limits-and-login-protection) · [Policy simulation](#policy-simulation)
 - **Radar (detect and respond):** [Detection and alerts](#detection-and-alerts) · [Containment](#containment) · [Known vulnerabilities (Exposure)](#known-vulnerabilities-exposure)
 - **Prove (measure):** [Reverse Assessment](#reverse-assessment) · [Verified Targets and Rules of Engagement](#verified-targets-and-rules-of-engagement) · [Pentest Campaigns](#pentest-campaigns)
-- **Govern and operate:** [Audit log](#audit-log) · [Usage](#usage) · [Data controls](#data-controls) · [Operator SLO dashboard](#operator-slo-dashboard) · [Release gate](#release-gate)
+- **Govern and operate:** [Audit log](#audit-log) · [Usage](#usage) · [Data controls](#data-controls) · [Operator SLO dashboard](#operator-slo-dashboard) · [Release gate](#release-gate) · [Backup and restore](#backup-and-restore)
 - **Reference:** [Commands](#commands) · [Configuration](#configuration) · [Repository layout](#repository-layout) · [What is deliberately missing](#what-is-deliberately-missing)
 - **Project:** [Development](#development) · [Security](#security) · [License](#license)
 
@@ -59,7 +59,7 @@ The slices are the delivery plan in [PRD.md](PRD.md) §18. Slices 01–14, 16, 1
 - Known-vulnerability Findings with virtual patches.
 - The onboarding Set up page, with the guides in [docs/](docs/).
 - Governance: the audit log (18a), data export and deletion (18b), retention (18c), usage metering (17a).
-- Operations: SLO measurement with the operator dashboard (18d), the release-gate runner (18e), synthetic probes for enforcement propagation and event freshness (18g).
+- Operations: SLO measurement with the operator dashboard (18d), the release-gate runner (18e), synthetic probes for enforcement propagation and event freshness (18g), a backup and restore command with local upgrade, rollback and kill-switch checks in the release gate (18h).
 - Tamper detection (21) and the Pentest Campaign pipeline with a scripted stand-in engine (15a).
 
 **Not built yet**
@@ -534,10 +534,36 @@ What the numbers are not:
 - **States:** each criterion is `pass`, `fail` or `not-checkable`. The verdict is `releasable` only when every criterion passes; otherwise it is `blocked`.
 - **Exit codes:** 0 releasable, 1 blocked by a failure, 2 blocked only by lines that cannot be checked yet, 3 runner error.
 - **What runs today:** `npm run verify`, the Playwright suite, the audit, tenant, authorization and privacy matrices, the stand-in RRS regression against a recorded baseline, the Shield bench against PB-01 and PB-02, and a local load smoke against PB-21, SLO-01 and SLO-02. A skipped or todo test fails its check.
+- **Local upgrade, rollback and kill-switch checks (slice 18h):** three criteria of the gate's own. As gate checks they took about 22 seconds together when last measured; their tests also run once more inside `npm run verify`. They prove a local mechanism; the checklist lines about SDK minors and staging stay `not-checkable`.
+  - `gate-upgrade-local`: a database at every earlier schema version (each migration prefix, with a seeded row in every table) is upgraded to the head; every row survives and can still be written, the audit chains verify, tenants stay isolated, the API serves the data, and a second migration run applies nothing. No version has been released, so this is not an SDK upgrade test.
+  - `gate-rollback-local`: the [backup and restore](#backup-and-restore) commands, rehearsed on one data directory: backup, upgrade, new writes, restore, serve. A data rollback only: there is no build of a previous version to run on the upgraded schema.
+  - `gate-kill-switch-drill`: each switch that exists is thrown and taken back over HTTP — a Rule back to monitor, a Policy roll back, `AR_SHIELD_DISABLED` and Shield's `disabled` option, the Campaign kill switch, the suspension of one Organization, `AR_PROVE_CAMPAIGNS` — and what the API records of each is read back: an audit entry where the switch writes one. Lifting the Campaign kill switch writes none (the switch's state and the log record it), and the two environment switches leave nothing at the API. App safe mode, global safe mode and the Guard kill switch do not exist yet.
 - **Options:** `--only <ids>`, `--skip-slow` (reported as not checked) and `--online` (allows `npm audit`, which contacts the registry).
 - **Signature:** the report is signed with an Ed25519 key kept outside the repository (`AR_GATE_KEY_FILE`, default `~/.config/airverse/gate-key.json`). `npm run gate:verify-report -- <dir>` accepts only the local key or `--expect <fingerprint>`.
 
 Today every check that can run passes, and the verdict is `blocked` with exit code 2: 15 lines cannot be fully checked yet (real-agent RRS, Pentest Campaigns, the browser corpus, SDK signing, staging rehearsals and others).
+
+## Backup and restore
+
+The API's data is the data directory (`AR_DATA_DIR`) and the key files beside it: `signing-key.json`, `attestation-keys.json`, `audit-key.json`, `mail-hash-key.json` and `usage-salts.json`. The database is of little use without them. Stop the API, then:
+
+```bash
+npm run data:backup -- --to ../backups/2026-11-24                                    # a new directory; refuses one that exists
+npm run data:restore -- --from ../backups/2026-11-24 --data-dir apps/api/.data/pg    # refuses when a data directory or key file is there
+npm run data:restore -- --from ../backups/2026-11-24 --data-dir apps/api/.data/pg --force
+```
+
+- **Which directory.** Both commands print the data directory first. `--data-dir` names it (a relative path is read from where you typed the command). Without it, `backup` uses `AR_DATA_DIR`, else `apps/api/.data/pg`; `restore` uses `AR_DATA_DIR` and otherwise refuses — it never falls back to the default directory. A relative `AR_DATA_DIR` is refused by both: the API reads it from wherever it was started, which the command cannot know.
+- **Backup** copies the data directory and the key files into a new directory (mode 0700, key files 0600) with a manifest of every file's size and SHA-256.
+- **Restore** verifies the whole backup against its manifest before it touches anything, and accepts no symbolic link inside a backup. It only ever replaces a data directory (one with a `PG_VERSION` file), an empty directory, or nothing — `--force` does not change that, and a data directory that is a symbolic link is refused.
+  - `--force` replaces the data directory and key files that are there with the backup's state: everything written since the backup is lost.
+  - `--drop-keys` is needed as well when a key file exists now that the backup does not have: restoring the backup's state removes it. The command prints which key files it restored and which it removed.
+  - If a step of the swap fails, the old directory and keys are put back. If putting them back fails too, they are kept in `<data directory>.replaced-…` beside the data directory, and the error names that directory and what to move where.
+- Both refuse while a process holds the data directory, and neither prints anything of a key (names, counts and sizes only). Refusals, failures and warnings go to the error stream. Exit codes: 0 done, 1 refused or failed, 2 usage.
+- **After a crash of the API** its lock is left behind. Both commands treat a lock whose process no longer runs as free, as the API does, and print a warning: the backup is then a copy of a directory that was not shut down cleanly, which PostgreSQL recovers when it is next opened.
+- **Before an upgrade:** back up, then start the new version (it applies its migrations at start). To go back, stop it and restore: migrations only go forward, so the backup is the way back.
+- **If a restore is killed half-way** it leaves `<data directory>.replaced-…` (what was there before) or `<data directory>.restoring-…` (a copy of the backup) behind. The next restore refuses while either exists and deletes neither: look at them, move the old data back or away, then run the restore again.
+- **Limits (honest):** the manifest detects a damaged or incomplete backup, not a forged one (it is not signed). A cold copy on the same machine — no schedule, no encryption, no off-site copy, no point-in-time recovery. A backup holds private keys in clear: keep it where the data directory itself may be kept, and outside the repository. The lock is a file beside the directory's name: an API started on another name of the same directory (a link the command was not given) is not seen. A restored directory is opened by whatever version starts on it next, which migrates it forward again; running an older version's code on a newer schema is not supported and not tested.
 
 ## Commands
 
@@ -552,6 +578,8 @@ Today every check that can run passes, and the verdict is `blocked` with exit co
 | `npm run fix` | Apply formatting and safe lint fixes |
 | `npm run gate:release` | The release gate: every check that can run, and a signed report (see [Release gate](#release-gate)) |
 | `npm run gate:verify-report -- <dir>` | Checks a gate report's signature |
+| `npm run data:backup -- --to <dir>` | Copies the data directory and its key files to a new directory (API stopped; see [Backup and restore](#backup-and-restore)) |
+| `npm run data:restore -- --from <dir> --data-dir <dir> [--force] [--drop-keys]` | Verifies a backup and puts it in place; `--force` replaces the data directory that is there |
 
 ## Configuration
 
@@ -602,7 +630,7 @@ This is a local walking skeleton, not a deployable service.
 - **No user accounts.** The Console signs in with the Organization's admin key, kept in an httpOnly cookie. Anyone who can reach the API can create an Organization. Keep it on localhost.
 - **Development storage.** The API uses PostgreSQL embedded in its process (PGlite) with real row-level security. Exactly one process may open the data directory, and it is not durable against power loss. Production will use a PostgreSQL server with the same SQL.
 - **Policies are simple.** Rules match a path pattern and methods, and block, throttle, or require a signed request. No conditions, rollout or push channel yet; simulation is an estimate from recorded traffic (see [Policy simulation](#policy-simulation)). Shield polls for the signed Policy every 5 seconds.
-- **Signing key.** The API signs Policies with an Ed25519 key in `signing-key.json` beside the data directory. Back it up with the database: losing it means re-configuring every Shield's `AR_POLICY_PUBLIC_KEY`.
+- **Signing key.** The API signs Policies with an Ed25519 key in `signing-key.json` beside the data directory. Back it up with the database (`npm run data:backup` copies both, see [Backup and restore](#backup-and-restore)): losing it means re-configuring every Shield's `AR_POLICY_PUBLIC_KEY`.
 - **Broad Rules.** Enforcing a Rule whose pattern starts with a wildcard needs a stronger confirmation; `/**` cannot be enforced.
 - **Matching is deliberately wide.** Shield also matches decoded and dot-resolved forms of the path, so a request whose path *resolves* into a blocked area is blocked too. A known limit: HEAD against a Rule limited to GET is not blocked.
 - **No rotation of Shield or admin keys, no event sampling, no deployment.** Rate limits exist, but their counters are per Shield instance (see [Rate limits and login protection](#rate-limits-and-login-protection)). The CI gates are Harden's exit codes (`--fail-on`, `--min-rrs`, `antireverse gate`); there is no hosted CI integration.

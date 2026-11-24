@@ -1,7 +1,8 @@
 // Slice 18e: each check turns its child process's exit code and output into pass / fail / not-checkable with evidence.
 // The child process is faked: these tests read what a real run prints.
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type CheckContext, createExecutors } from "../src/checks.ts";
 import { MATRICES, selectMatrixFiles } from "../src/matrix.ts";
@@ -99,6 +100,72 @@ describe("matrices", () => {
     ).toBe("fail");
     const none = " Test Files  0 passed (0)\n      Tests  0 passed (0)\n";
     expect((await createExecutors(context(() => ({ output: none })).ctx)["matrix-privacy"]()).state).toBe("fail");
+  });
+
+  // Slice 18h review M1: a check that names its files must see every one of them, with tests in it. Before, a file
+  // that was deleted or emptied simply was not selected, and the rest passed for the whole check.
+  describe("a check with fixed files", () => {
+    const TEST = 'import { it } from "vitest";\nit("restores", () => {});\n';
+    /** A repository of its own under the temporary directory, and a child that reports every selected test as passed. */
+    async function run(id: "rollback-local" | "campaign-safety" | "matrix-audit", files: Record<string, string>) {
+      const root = mkdtempSync(join(tmpdir(), "airverse-gate-fixed-"));
+      try {
+        for (const [file, content] of Object.entries(files)) {
+          mkdirSync(dirname(join(root, file)), { recursive: true });
+          writeFileSync(join(root, file), content);
+        }
+        const spec = MATRICES.find((m) => m.id === id) as (typeof MATRICES)[number];
+        const calls: RunOptions[] = [];
+        const ctx: CheckContext = {
+          root,
+          async run(options) {
+            calls.push(options);
+            const arg = options.args.find((a) => a.startsWith("--outputFile.json="));
+            const testResults = selectMatrixFiles(spec, root).map((f) => ({
+              name: join(root, f.file),
+              assertionResults: f.names.map((title) => ({ title, ancestorTitles: [], status: "passed" })),
+            }));
+            if (arg) writeFileSync(arg.slice("--outputFile.json=".length), JSON.stringify({ testResults }));
+            return { exitCode: 0, signal: null, timedOut: false, durationMs: 5, output: VITEST_OK };
+          },
+        };
+        return { out: await createExecutors(ctx)[id](), calls };
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+    const BACKUP = "apps/api/test/backup.test.ts";
+    const REHEARSAL = "apps/api/test/rollback-rehearsal.test.ts";
+
+    it("passes when every listed file is there with tests", async () => {
+      const { out } = await run("rollback-local", { [BACKUP]: TEST, [REHEARSAL]: TEST });
+      expect(out.state).toBe("pass");
+    });
+
+    it("fails, naming the file, when a listed file is missing — whatever the others do", async () => {
+      const { out } = await run("rollback-local", { [BACKUP]: TEST });
+      expect(out.state).toBe("fail");
+      expect(out.summary).toContain(`${REHEARSAL} is missing`);
+    });
+
+    it("fails, naming the file, when a listed file holds no test", async () => {
+      const { out } = await run("rollback-local", { [BACKUP]: TEST, [REHEARSAL]: "// emptied\n" });
+      expect(out.state).toBe("fail");
+      expect(out.summary).toContain(`${REHEARSAL} holds no test`);
+    });
+
+    it("the older fixed-file checks follow the same rule", async () => {
+      const safety = MATRICES.find((m) => m.id === "campaign-safety")?.files ?? [];
+      const all = Object.fromEntries(safety.map((file) => [file, TEST]));
+      expect((await run("campaign-safety", all)).out.state).toBe("pass");
+      const { [safety[0] as string]: _dropped, ...rest } = all;
+      const missing = await run("campaign-safety", rest);
+      expect(missing.out.state).toBe("fail");
+      expect(missing.out.summary).toContain(`${safety[0]} is missing`);
+      const none = await run("matrix-audit", {});
+      expect(none.out.state).toBe("fail");
+      expect(none.out.summary).toContain("apps/api/test/audit-coverage.test.ts is missing");
+    });
   });
 });
 

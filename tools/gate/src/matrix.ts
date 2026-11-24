@@ -5,7 +5,15 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export interface Matrix {
-  id: "matrix-audit" | "matrix-tenant" | "matrix-authz" | "matrix-privacy" | "campaign-safety";
+  id:
+    | "matrix-audit"
+    | "matrix-tenant"
+    | "matrix-authz"
+    | "matrix-privacy"
+    | "campaign-safety"
+    | "upgrade-local"
+    | "rollback-local"
+    | "kill-switch-drill";
   /** Vitest projects (root vitest.config.ts) whose test directories are scanned. */
   projects: string[];
   /** A test or describe name matching this selects the file. */
@@ -92,6 +100,17 @@ export const MATRICES: readonly Matrix[] = [
       "tests/e2e/campaign-review.http.test.ts",
     ],
   },
+  // Slice 18h. Fixed files, judged like every matrix: each test of each file ran and passed.
+  // Every migration prefix, seeded (apps/api/test/era-seed.ts), upgraded to the head and served.
+  { id: "upgrade-local", projects: ["api"], files: ["apps/api/test/upgrade.test.ts"] },
+  // The backup and restore commands on their own, then the rehearsal on a real data directory.
+  {
+    id: "rollback-local",
+    projects: ["api"],
+    files: ["apps/api/test/backup.test.ts", "apps/api/test/rollback-rehearsal.test.ts"],
+  },
+  // Each switch on and off again, over HTTP. Cutting a running Campaign is campaign-safety's.
+  { id: "kill-switch-drill", projects: ["e2e"], files: ["tests/e2e/kill-switch-drill.http.test.ts"] },
 ];
 
 /** The literal names of `it`, `test` and `describe` calls (with modifiers such as `.skip` or `.each(...)`). */
@@ -143,6 +162,21 @@ export function selectMatrixFiles(matrix: Matrix, root: string): SelectedFile[] 
     }
   }
   return out;
+}
+
+/**
+ * Slice 18h review M1: what is wrong with the selection of a check that names its files — a listed file that was not
+ * found (deleted, renamed, moved out of its project's test directory) or that holds no test. Such a check must fail:
+ * the files that are left would otherwise pass for the whole of it. Empty for a pattern matrix.
+ */
+export function fixedFileProblems(matrix: Matrix, selected: readonly SelectedFile[]): string[] {
+  const problems: string[] = [];
+  for (const file of matrix.files ?? []) {
+    const found = selected.find((entry) => entry.file === file);
+    if (found === undefined) problems.push(`${file} is missing`);
+    else if (found.names.length === 0) problems.push(`${file} holds no test`);
+  }
+  return problems;
 }
 
 interface JsonAssertion {

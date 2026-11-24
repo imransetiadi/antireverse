@@ -187,6 +187,8 @@ Rules:
 - A restore of one store is tested every month; a full regional failover drill runs every quarter.
 - A recovery that has not been rehearsed is treated as non-existent.
 
+> **As built (slice 18h, 2026-11-24).** None of the above exists yet. What exists is a cold copy for the local embedded database: with the API stopped, `npm run data:backup -- --to <directory>` copies the data directory and the key files beside it, and `npm run data:restore -- --from <directory> --data-dir <directory> [--force]` verifies the copy and puts it back (README, "Backup and restore"). It has no schedule, no encryption, no second location and no point-in-time recovery. The release gate rehearses it locally (`gate-rollback-local`); that is not the rollback of a deployment that §5 asks for.
+
 ## 11. Capacity and cost
 
 - Weekly review of the capacity model (PERFORMANCE.md §10) against measured growth; scale-ahead threshold at 60 % of the design point.

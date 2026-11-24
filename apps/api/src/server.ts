@@ -23,6 +23,13 @@ import { createBeaconRecorder } from "./detect/beacon.ts";
 import { createDetector, type Detector } from "./detect/detector.ts";
 import { createIntegrityRecorder } from "./detect/integrity.ts";
 import { createIncidentQueue } from "./exposure/match.ts";
+import {
+  ADDRESS_KEY_FILE,
+  ATTESTATION_KEY_FILE,
+  AUDIT_KEY_FILE,
+  SIGNING_KEY_FILE,
+  USAGE_SALTS_FILE,
+} from "./key-files.ts";
 import { consoleLogger, type Logger } from "./log.ts";
 import { type AddressHasher, createAddressHasher } from "./mail/address-key.ts";
 import { readSmtpSettings, type SmtpSettings, smtpSummary } from "./mail/settings.ts";
@@ -197,16 +204,8 @@ export interface RunningApi extends Listening {
   close(): Promise<void>;
 }
 
-/** The file name of the signing key. It lies beside the data directory, like the directory's lock. */
-export const SIGNING_KEY_FILE = "signing-key.json";
-/** The file name of the attestation key set: beside the data directory too, a separate file and key purpose. */
-export const ATTESTATION_KEY_FILE = "attestation-keys.json";
-/** The file name of the audit key (slice 18a): beside the others, a separate file and key purpose. */
-export const AUDIT_KEY_FILE = "audit-key.json";
-/** The file name of the secret that keys the per-address count of confirmation mails (slice 06b), beside the others. */
-export const ADDRESS_KEY_FILE = "mail-hash-key.json";
-/** The file name of the month salts of the Guard device references (slice 17a, review M3), beside the others. */
-export const USAGE_SALTS_FILE = "usage-salts.json";
+// The names of the secret files beside the data directory live in key-files.ts (the backup tool reads them too).
+export { ADDRESS_KEY_FILE, ATTESTATION_KEY_FILE, AUDIT_KEY_FILE, SIGNING_KEY_FILE, USAGE_SALTS_FILE };
 
 /** Opens the database, builds the app and listens: the whole API in one call, for `main.ts` and for tests. */
 export async function startApi(options: StartApiOptions = {}): Promise<RunningApi> {

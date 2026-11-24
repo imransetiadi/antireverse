@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { CheckId } from "./catalog.ts";
 import { performanceBudgets, sloTargets } from "./docs.ts";
 import { judgeLoad, type LoadRun, loadTargets } from "./load.ts";
-import { judgeMatrixJson, MATRICES, selectMatrixFiles } from "./matrix.ts";
+import { fixedFileProblems, judgeMatrixJson, MATRICES, selectMatrixFiles } from "./matrix.ts";
 import {
   judgeBench,
   judgeRrs,
@@ -100,6 +100,13 @@ export function createExecutors(ctx: CheckContext): Executors {
     const files = selectMatrixFiles(spec, ctx.root);
     const projects = [...new Set(files.map((f) => f.project))];
     const command = `vitest run ${projects.map((p) => `--project ${p}`).join(" ")} <${files.length} files>`;
+    // A check that names its files needs every one of them, with tests in it (slice 18h review M1): nothing is run
+    // on a partial selection.
+    const absent = fixedFileProblems(spec, files);
+    if (absent.length > 0) {
+      const summary = `the check's fixed files are not all there: ${absent.join("; ")}`;
+      return { id, state: "fail" as const, summary, command, durationMs: 0 };
+    }
     if (files.length === 0) {
       return { id, state: "fail" as const, summary: "no test file matched the matrix", command, durationMs: 0 };
     }
@@ -180,6 +187,10 @@ export function createExecutors(ctx: CheckContext): Executors {
     "matrix-privacy": matrix("matrix-privacy"),
     // Slice 15a: fixed files, run and judged like a matrix (every test of every file ran and passed).
     "campaign-safety": matrix("campaign-safety"),
+    // Slice 18h: the local upgrade check, the rollback rehearsal and the kill-switch drill, fixed files likewise.
+    "upgrade-local": matrix("upgrade-local"),
+    "rollback-local": matrix("rollback-local"),
+    "kill-switch-drill": matrix("kill-switch-drill"),
 
     "rrs-stand-in": async () => {
       const command = "tsx tools/gate/src/rrs-run.ts";
