@@ -1,12 +1,14 @@
 // The set-up code shown after an App is created. Code is not translated, so it does not live in the
 // message catalog; the labels around it do.
+import { RELEASED_VERSION } from "@/lib/released-version.ts";
 
 /**
- * `@antireverse/shield-node` is not on npm yet, so `npm install @antireverse/shield-node` fails. It installs from a
- * copy of the Airverse repository (checked by hand on Node 22.12: a plain http server then records Events; that
- * version needs `--experimental-strip-types`, as the package ships TypeScript source).
+ * The three packages are on npm. Every install line names the exact released version (`--save-exact` pins it in the
+ * project's `package.json`), never `latest`: the reader gets what this Console was written for.
  */
-export const SHIELD_INSTALL = "npm install /path/to/airverse/packages/shield-node";
+export const SHIELD_INSTALL = `npm install --save-exact @antireverse/shield-node@${RELEASED_VERSION}`;
+export const GUARD_INSTALL = `npm install --save-exact @antireverse/guard@${RELEASED_VERSION}`;
+export const HARDEN_INSTALL = `npm install --save-dev --save-exact @antireverse/harden@${RELEASED_VERSION}`;
 
 /** The line that hands the Shield key to the server through its environment. */
 export function shieldEnvironmentLine(shieldKey: string): string {
@@ -61,37 +63,48 @@ export function shieldNodeHttpSnippet(endpoint: string): string {
   ].join("\n");
 }
 
+/** The lines both Guard snippets share: create it with the App's values, attest, send the token. */
+function guardBody(appId: string, endpoint: string, indent: string): string[] {
+  return [
+    "",
+    "const guard = createGuard({",
+    `  appId: ${JSON.stringify(appId)},`,
+    `  endpoint: ${JSON.stringify(endpoint)},`,
+    "});",
+    "await guard.attest();",
+    "",
+    "// Send the token with each call to your server; Shield checks it.",
+    'await fetch("/api/orders", { headers: { ...guard.headers() } });',
+  ].map((line) => (line === "" ? line : `${indent}${line}`));
+}
+
+/** Guard through a bundler: imported by name from the installed package. */
+export function guardBundlerSnippet(appId: string, endpoint: string): string {
+  return ['import { createGuard } from "@antireverse/guard";', ...guardBody(appId, endpoint, "")].join("\n");
+}
+
 /**
- * Guard in a web page (README "Guard and attestation"): plain ES modules without a build step, so a module script can
- * import it from wherever the site serves the package's `src` files. It attests, then sends the token with each call.
+ * Guard without a bundler: plain ES modules, so a module script imports it from where the site serves the files of
+ * `node_modules/@antireverse/guard/dist` (`/guard`, as the package's guide does).
  */
 export function guardScriptSnippet(appId: string, endpoint: string): string {
   return [
     '<script type="module">',
-    '  import { createGuard } from "/vendor/antireverse-guard/index.js";',
-    "",
-    "  const guard = createGuard({",
-    `    appId: ${JSON.stringify(appId)},`,
-    `    endpoint: ${JSON.stringify(endpoint)},`,
-    "  });",
-    "  await guard.attest();",
-    "",
-    "  // Send the token with each call to your server; Shield checks it.",
-    '  await fetch("/api/orders", { headers: { ...guard.headers() } });',
+    '  import { createGuard } from "/guard/index.js";',
+    ...guardBody(appId, endpoint, "  "),
     "</script>",
   ].join("\n");
 }
 
 /**
- * Harden and register a bundle (README "Clone Beacon", "Hardening a bundle"), run from a copy of the Airverse
- * repository: the CLI is not on npm yet, and its `antireverse` bin is TypeScript that `npx` cannot run on Node 22.12.
- * The admin key is read only from the variable named by `--key-env`. The Build version is the commit of the app's own
- * repository (`git -C`): the command runs in the Airverse checkout, whose commit would tag every Build (review F2).
+ * Harden and register a bundle, run in the developer's own project where `@antireverse/harden` is installed.
+ * `--no-install` makes npx run only that installed copy. The admin key is read only from the variable named by
+ * `--key-env`. The Build version is the commit of the project the command runs in.
  */
 export function hardenCommand(options: { endpoint: string; appId: string; environment: string }): string {
   return [
-    "npx tsx packages/harden/src/cli.ts harden /path/to/app/dist --out /path/to/app/protected \\",
+    "npx --no-install antireverse harden dist --out dist-protected \\",
     `  --register --endpoint ${JSON.stringify(options.endpoint)} --key-env AR_ADMIN_KEY \\`,
-    `  --app ${options.appId} --environment ${options.environment} --build-version "$(git -C /path/to/app rev-parse --short HEAD)"`,
+    `  --app ${options.appId} --environment ${options.environment} --build-version "$(git rev-parse --short HEAD)"`,
   ].join("\n");
 }

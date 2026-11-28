@@ -1,5 +1,8 @@
 // Slice 16, SCR-01: the Set up page of an App — three steps, the framework picker, the snippets with the App's real
 // values, the live waiting state and the "Set up: n of 3" progress shown elsewhere.
+
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { type AppSetup, EXAMPLE_STORED_EVENT } from "@antireverse/protocol";
 import { generateKey } from "@antireverse/protocol/server";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
@@ -9,6 +12,7 @@ import { RENDER_INTERVAL_MS } from "@/features/live-feed/feed-state.ts";
 import { SetupGuide } from "@/features/setup/setup-guide.tsx";
 import { SetupProgressLink } from "@/features/setup/setup-progress.tsx";
 import { SETUP_POLL_MS } from "@/features/setup/use-setup-progress.ts";
+import { RELEASED_VERSION } from "@/lib/released-version.ts";
 import { eventAt } from "./helpers/events.ts";
 import { FakeEventSource } from "./helpers/fake-event-source.ts";
 
@@ -85,10 +89,12 @@ describe("SetupGuide — steps", () => {
     expect(screen.getByText("Step 1 of 3")).toBeTruthy();
     // The open step's panel is the element its button controls.
     const panel = document.getElementById(headers[0]?.getAttribute("aria-controls") ?? "");
-    // The package is not on npm yet: the install line works from a copy of the repository, and says so.
-    expect(panel?.textContent).toContain("npm install /path/to/airverse/packages/shield-node");
-    expect(panel?.textContent).not.toContain("npm install @antireverse/shield-node");
-    expect(panel?.textContent).toContain("The Shield package is not published to npm yet.");
+    // The package is on npm: installed by name at the exact released version, with the honest status beside it.
+    expect(panel?.textContent).toContain(`npm install --save-exact @antireverse/shield-node@${RELEASED_VERSION}`);
+    expect(panel?.textContent).not.toMatch(/path\/to\/airverse|not published|experimental-strip-types/);
+    expect(panel?.textContent).toContain(
+      `Early release (${RELEASED_VERSION}). Shield, Guard and Harden are on npm. The Airverse API and this Console are not: you run them yourself from the repository, and there is no hosted service.`,
+    );
   });
 
   it("shows when a done step was done, and opens the next one", () => {
@@ -169,6 +175,13 @@ describe("SetupGuide — Add Guard and Harden", () => {
     fireEvent.click(stepButton(/Add Guard/));
     const guard = screen.getByRole("region", { name: "Add Guard to your web pages" });
     const code = codeIn(guard).join("\n");
+    expect(code).toContain(`npm install --save-exact @antireverse/guard@${RELEASED_VERSION}`);
+    // With a bundler: by name. Without one: a module script from where the site serves the installed files.
+    expect(code).toContain('import { createGuard } from "@antireverse/guard";');
+    expect(code).toContain('import { createGuard } from "/guard/index.js";');
+    expect(code.match(new RegExp(`appId: "${APP_ID}"`, "g"))).toHaveLength(2);
+    expect(guard.textContent).toContain("node_modules/@antireverse/guard/dist");
+    expect(guard.textContent).not.toMatch(/packages\/guard\/src|not published|copy of the Airverse repository/);
     expect(code).toContain('<script type="module">');
     expect(code).toContain(`appId: "${APP_ID}"`);
     expect(code).toContain(`endpoint: "${API}"`);
@@ -186,18 +199,20 @@ describe("SetupGuide — Add Guard and Harden", () => {
     fireEvent.click(stepButton(/Harden your build/));
     const harden = screen.getByRole("region", { name: "Harden your build and register it" });
     const command = codeIn(harden).join("\n");
-    // Run from a copy of the repository: the CLI is not on npm yet, and `npx antireverse` needs a TypeScript loader.
-    expect(command).toMatch(
-      /^npx tsx packages\/harden\/src\/cli\.ts harden \/path\/to\/app\/dist --out \/path\/to\/app\/protected/,
-    );
+    // Installed in the project from npm, then run there: only the installed copy, never a download.
+    expect(command).toContain(`npm install --save-dev --save-exact @antireverse/harden@${RELEASED_VERSION}`);
+    expect(command).toMatch(/^npx --no-install antireverse harden dist --out dist-protected/m);
+    expect(command).not.toMatch(/npx (?!--no-install )|tsx|path\/to/);
+    expect(harden.textContent).toContain("--no-install makes npx run only the copy installed in your project");
+    expect(harden.textContent).not.toMatch(/not published|copy of the Airverse repository/);
     for (const part of [
       "--register",
       `--endpoint "${API}"`,
       "--key-env AR_ADMIN_KEY",
       `--app ${APP_ID}`,
       "--environment staging",
-      // The version is the commit of the developer's app, not of the Airverse checkout the command runs in (F2).
-      '--build-version "$(git -C /path/to/app rev-parse --short HEAD)"',
+      // The command runs in the developer's own project, so the Build version is that repository's commit.
+      '--build-version "$(git rev-parse --short HEAD)"',
     ]) {
       expect(command).toContain(part);
     }
@@ -411,5 +426,34 @@ describe("Set up progress", () => {
     expect(within(nav).getByTestId("app-nav-setup").textContent).toBe("Set up");
     rerender(<AppNav appId={APP_ID} current="live" />);
     expect(within(nav).getByTestId("app-nav-setup").textContent).toBe("Set up");
+  });
+});
+
+// One source for the version in every snippet, and it is the last release recorded in the repository.
+describe("the released version the Console shows", () => {
+  it("is the newest folder under releases/", () => {
+    const releases = join(import.meta.dirname, "../../../releases");
+    const newest = readdirSync(releases)
+      .filter((name) => /^\d+\.\d+\.\d+$/.test(name))
+      .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
+      .at(-1);
+    expect(RELEASED_VERSION).toBe(newest);
+  });
+
+  it("is in each install line and nowhere written out by hand", () => {
+    renderGuide();
+    for (const step of [/Add Guard/, /Harden your build/]) fireEvent.click(stepButton(step));
+    const code = codeIn(document.body).join("\n");
+    const versions = [...code.matchAll(/@antireverse\/(shield-node|guard|harden)@(\S+)/g)].map((m) => [m[1], m[2]]);
+    expect(versions).toEqual([
+      ["shield-node", RELEASED_VERSION],
+      ["guard", RELEASED_VERSION],
+      ["harden", RELEASED_VERSION],
+    ]);
+    const sources = ["features/apps/shield-snippet.ts", "lib/messages/en.ts", "features/setup/setup-guide.tsx"];
+    for (const file of sources) {
+      const text = readFileSync(join(import.meta.dirname, "../src", file), "utf8");
+      expect(text, file).not.toMatch(/@antireverse\/[a-z-]+@\d|Early release \(\d/);
+    }
   });
 });

@@ -1105,8 +1105,8 @@ export const en = {
   "setup.framework.express": "Express",
   "setup.framework.node": "Node http",
   "setup.framework.unsupported": "Next.js, Fastify, Koa and other frameworks are not supported yet.",
-  "setup.unpublished":
-    "The Shield package is not published to npm yet. Install it from your copy of the Airverse repository: replace /path/to/airverse with where that copy is. It ships TypeScript source, so on Node 22.12 start your server with --experimental-strip-types.",
+  "setup.release":
+    "Early release ({version}). Shield, Guard and Harden are on npm. The Airverse API and this Console are not: you run them yourself from the repository, and there is no hosted service.",
   "setup.node.title": "Add Shield to your Node http server",
   "setup.node.code": "Run Shield first in your request handler",
   "setup.node.route":
@@ -1116,9 +1116,10 @@ export const en = {
   "setup.guard.title": "Add Guard to your web pages",
   "setup.guard.lead":
     "Guard gets a short lived token in the browser and sends it with your calls; Shield checks it on every request that carries one.",
-  "setup.guard.script": "Load Guard in a module script",
+  "setup.guard.bundler": "With a bundler, import Guard by name",
+  "setup.guard.script": "Without a bundler, load Guard in a module script",
   "setup.guard.serve":
-    "Guard is plain ES modules without a build step and is not published to npm yet. Serve the files of packages/guard/src from your copy of the Airverse repository at the path in the script, or import @antireverse/guard through your bundler.",
+    "Guard is plain ES modules and needs no build step. Serve the files of node_modules/@antireverse/guard/dist from your site at /guard, the path in the script.",
   "setup.guard.options": "Options",
   "setup.guard.option.appId": "This App's ID. Required.",
   "setup.guard.option.endpoint": "The Airverse API the browser asks for a token. Required.",
@@ -1129,7 +1130,7 @@ export const en = {
     "Run this in your build pipeline over the bundle you ship. Your source never leaves the machine; only the Build Manifest is sent.",
   "setup.harden.command": "Harden and register the bundle",
   "setup.harden.where":
-    "Run it from your copy of the Airverse repository: the command line tool is not published to npm yet. Replace /path/to/app/dist with your bundle folder and /path/to/app/protected with the folder for the protected output. The Build version is the current commit of the repository at /path/to/app.",
+    "Run it in your project after your build. Replace dist with your bundle folder and the folder after --out with where the protected output goes. The Build version is the current commit of your repository. --no-install makes npx run only the copy installed in your project: it never downloads a package.",
   "setup.harden.key":
     "Set AR_ADMIN_KEY to an admin key in the shell or pipeline step first. The command reads the key only from the variable named by --key-env, never from an argument.",
   "setup.trouble": "Having trouble?",

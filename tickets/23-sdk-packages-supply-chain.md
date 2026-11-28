@@ -509,12 +509,13 @@ Rows that stay in the parallel phase are waits and guards: `cli-gate` 8,500 of 9
 - The maintainer's npm name and email are public on the registry.
 - Nothing checks the registry again on a schedule; `sdk:record-check --online` is run by hand. No gate check uses the network, so the gate does not know whether the registry still matches.
 - `integrity.json` is not signed. It is recomputable only by someone who has the tarballs; `--online` compares it with the registry, and the signed manifest's SHA-256 covers the same tarballs.
-- **The Console still says the packages are not published** and shows clone commands: `apps/console/src/lib/messages/en.ts` (`setup.unpublished`, `setup.guard.serve`, `setup.harden.where`), `apps/console/src/features/apps/shield-snippet.ts` (`SHIELD_INSTALL`, `hardenCommand`, the Guard import path), `apps/console/src/features/setup/setup-guide.tsx`, with `apps/console/test/setup-components.test.tsx` and `tests/e2e/journey.e2e.ts` asserting those texts. Not changed here: it is interface text with a browser test, and wants its own slice.
+- **The Console still says the packages are not published** and shows clone commands: `apps/console/src/lib/messages/en.ts` (`setup.unpublished`, `setup.guard.serve`, `setup.harden.where`), `apps/console/src/features/apps/shield-snippet.ts` (`SHIELD_INSTALL`, `hardenCommand`, the Guard import path), `apps/console/src/features/setup/setup-guide.tsx`, with `apps/console/test/setup-components.test.tsx` and `tests/e2e/journey.e2e.ts` asserting those texts. Not changed here: it is interface text with a browser test, and wants its own slice. *(Done later on 2026-11-28: see "Console set-up texts" below.)*
 - The new eval case was written, not run.
 
 **Before the next release.**
 
 - Bump the three packages' versions; nothing here did. A published version can never be reused.
+- `RELEASED_VERSION` in `apps/console/src/lib/released-version.ts` (the Console's snippets), under the same kind of test.
 - The versions written out in text: `RELEASED_VERSION` in `skills/airverse-setup/scripts/preflight.mjs` and the `@0.1.0` in the README and the four guides. A test (`release.test.ts`, "the guides after the first release") ties them to the newest folder under `releases/`, so they must move when the next record is committed, not before.
 - The status block that `tools/sdk/src/stage.ts` writes at the top of each npm page ("Early release", the blocked gate, the stand-in scores): reread it against what is true then.
 - The `--no-install` sentence in `stage.ts` now says the unscoped name is the project's placeholder; the next version's npm pages will carry it.
@@ -522,4 +523,17 @@ Rows that stay in the parallel phase are waits and guards: `cli-gate` 8,500 of 9
 - Expect staging again for a first publish of a new package name; whether a new version of an existing package is staged was not observed.
 - Commit the record of the next release under `releases/<version>/` after `sdk:published-check` passes, and add its integrities to the test.
 - Still missing for `sec12-sdk-artifacts`: a release built in CI with provenance, and a second approver.
+
+### Console set-up texts (2026-11-28)
+
+The Set up page and the App created screen (both render `SetupGuide`) now install from npm.
+
+- **Shield:** `npm install --save-exact @antireverse/shield-node@<version>`; the code snippets are unchanged. Under it, where the "not published" line was: "Early release (<version>). Shield, Guard and Harden are on npm. The Airverse API and this Console are not: you run them yourself from the repository, and there is no hosted service." (message `setup.release`, replacing `setup.unpublished`).
+- **Guard:** an install line, then two snippets with the App's ID and the API: with a bundler (`import { createGuard } from "@antireverse/guard"`), and without one (a module script importing `/guard/index.js`, with the sentence to serve `node_modules/@antireverse/guard/dist` at `/guard`).
+- **Harden:** an install line (`--save-dev --save-exact`), then `npx --no-install antireverse harden dist --out dist-protected … --key-env AR_ADMIN_KEY … --build-version "$(git rev-parse --short HEAD)"`. The command runs in the developer's own project now, so the `/path/to/app` paths and `git -C` are gone. One sentence says why `--no-install`.
+- **One version source (D-153):** `apps/console/src/lib/released-version.ts`. A test fails when it is not the newest folder under `releases/`, and when a version is written by hand next to a package name in the snippet, message or guide sources. Jev was split: 0.51 for a constant exported from `@antireverse/protocol`, 0.48 for this Console module, confidence 0.43, no requirement contradicted for either. Taken: the Console module, because a protocol export would also ship inside the next Harden package for the sake of a Console text, and this is the easier one to move. **Low confidence: the owner may prefer the protocol constant.**
+- No key is shown anywhere new; the snippets read keys from the environment as before.
+- Left as they are, checked: the "Having trouble?" lists (none assumes a clone or says "not published"; Harden's list is at its limit of five, so no "install it first" entry was added), the stub scripts under `apps/console/scripts` (they carry none of these texts), and the "clone" texts of Incidents (Clone Beacon, another meaning).
+- `tests/e2e/journey.e2e.ts` asserts the new install line by pattern. **Playwright was not run here.** `tests/e2e/onboarding.e2e.ts` still serves Guard from `packages/guard/src` for its own page; it pins none of the changed texts.
+- `tests/e2e/docs.test.ts` and the guides are unchanged by this.
 

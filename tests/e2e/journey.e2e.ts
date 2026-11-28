@@ -42,7 +42,7 @@ test("a request to a server running Shield appears in the Console live feed", as
   const shieldKey = (await page.getByTestId("shield-key").textContent()) ?? "";
   expect(shieldKey).toMatch(/^ark_dev_[A-Za-z0-9_-]{43}$/);
   // The copyable set-up snippet for Express is on the same screen.
-  await expect(page.getByText("npm install /path/to/airverse/packages/shield-node")).toBeVisible();
+  await expect(page.getByText(/^npm install --save-exact @antireverse\/shield-node@\d+\.\d+\.\d+$/)).toBeVisible();
   await expect(page.getByText("app.use(shield.express());")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy" }).first()).toBeVisible();
   await expect(page.getByTestId("monitor-note")).toHaveText(

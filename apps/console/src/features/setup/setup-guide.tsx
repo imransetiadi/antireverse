@@ -5,7 +5,10 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Icon } from "@/components/icons.tsx";
 import { Snippet } from "@/components/snippet.tsx";
 import {
+  GUARD_INSTALL,
+  guardBundlerSnippet,
   guardScriptSnippet,
+  HARDEN_INSTALL,
   hardenCommand,
   SHIELD_INSTALL,
   shieldEnvironmentLine,
@@ -14,6 +17,7 @@ import {
 } from "@/features/apps/shield-snippet.ts";
 import { PolicyKeySnippet } from "@/features/policy/policy-key-snippet.tsx";
 import { formatDateTime } from "@/lib/format.ts";
+import { RELEASED_VERSION } from "@/lib/released-version.ts";
 import { ROUTES } from "@/lib/routes.ts";
 import { type MessageKey, t } from "@/lib/t.ts";
 import { currentStep, SETUP_STEPS, type SetupStepId } from "./setup-state.ts";
@@ -322,7 +326,7 @@ function ShieldStep({
         </h3>
         <div className="flex flex-col gap-1">
           <Snippet label={t("shield.setup.install")} code={SHIELD_INSTALL} />
-          <p className="body-5 text-fg-muted">{t("setup.unpublished")}</p>
+          <p className="body-5 text-fg-muted">{t("setup.release", { version: RELEASED_VERSION })}</p>
         </div>
         {shieldKey ? (
           <Snippet label={t("shield.setup.env")} code={shieldEnvironmentLine(shieldKey)} />
@@ -365,6 +369,8 @@ function GuardStep({ appId, apiUrl }: { appId: string; apiUrl: string }) {
         {t("setup.guard.title")}
       </h3>
       <p className="body-4">{t("setup.guard.lead")}</p>
+      <Snippet label={t("shield.setup.install")} code={GUARD_INSTALL} />
+      <Snippet label={t("setup.guard.bundler")} code={guardBundlerSnippet(appId, apiUrl)} />
       <div className="flex flex-col gap-1">
         <Snippet label={t("setup.guard.script")} code={guardScriptSnippet(appId, apiUrl)} />
         <p className="body-5 text-fg-muted">{t("setup.guard.serve")}</p>
@@ -395,6 +401,7 @@ function HardenStep({ appId, apiUrl, environment }: { appId: string; apiUrl: str
       </h3>
       <p className="body-4">{t("setup.harden.lead")}</p>
       <p className="body-5 text-fg-muted">{t("setup.harden.key")}</p>
+      <Snippet label={t("shield.setup.install")} code={HARDEN_INSTALL} />
       <div className="flex flex-col gap-1">
         <Snippet label={t("setup.harden.command")} code={hardenCommand({ endpoint: apiUrl, appId, environment })} />
         <p className="body-5 text-fg-muted">{t("setup.harden.where")}</p>
