@@ -2,14 +2,14 @@
 
 Guard is a small browser library: plain ES modules, no dependency, no build step, about 19 KB gzip. It gets a short-lived Attestation Token from Airverse and lets your frontend send it with API calls. Shield, on your server, verifies the token offline and records the result for every request. Guard reports; Shield decides.
 
-`@antireverse/guard` is not published to npm yet. Its files are in `packages/guard/src` of the Airverse repository; `npm run sdk:pack` there also writes a tarball (`npm install --ignore-scripts <path>/antireverse-guard-<version>.tgz`), whose `dist` folder holds the same files.
+`@antireverse/guard` is on npm: `npm install --save-exact @antireverse/guard@0.1.0`. Its files are then in `node_modules/@antireverse/guard/dist`. In a clone of the Airverse repository the same modules are in `packages/guard/src`, and `npm run sdk:pack` there writes a tarball (`npm install --ignore-scripts <path>/antireverse-guard-<version>.tgz`) with the same `dist` folder.
 
 ## Script tag
 
-Serve the files of `packages/guard/src` from your site, for example at `/guard/`. With Express:
+Serve the files of `node_modules/@antireverse/guard/dist` from your site, for example at `/guard/`. With Express:
 
 ```ts
-app.use("/guard", express.static("packages/guard/src"));
+app.use("/guard", express.static("node_modules/@antireverse/guard/dist"));
 ```
 
 Then load Guard as a module:

@@ -10,6 +10,8 @@
       "!**/test-results",
       "!**/playwright-report",
       "!**/reports/gate",
+      "!releases/*.*.*",
+      "!releases/placeholder-antireverse",
       "!**/*.tsbuildinfo",
       "!**/next-env.d.ts",
       "!**/*.md"

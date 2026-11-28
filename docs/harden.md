@@ -6,34 +6,26 @@ Responsible use: Harden protects software you own. It is not for evading detecti
 
 ## Running it
 
-The `antireverse` command is the `@antireverse/harden` package, which is not published to npm yet. There are two ways to run it.
-
-**Installed from its tarball** (`npm run sdk:pack` in the Airverse repository writes it; then, in your project, `npm install --save-dev --ignore-scripts <path>/antireverse-harden-<version>.tgz`): plain JavaScript, run as `npx --no-install antireverse …`. `--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry, a name this project does not hold. Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12. Where the commands below say `npx tsx packages/harden/src/cli.ts`, write `npx --no-install antireverse`.
-
-**From a clone of the repository:** its entry point there, `packages/harden/src/cli.ts`, is a TypeScript file. On Node 22.23 or newer (tested on 22.23.4), the bin works:
+The `antireverse` command is the `@antireverse/harden` package, which is on npm. Install it as a development dependency of the project whose bundle you protect, at an exact version:
 
 ```bash
+npm install --save-dev --save-exact @antireverse/harden@0.1.0
 npx --no-install antireverse --help
 ```
 
-On Node 22.12, the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`. Run it through `tsx` instead:
+It is plain JavaScript, run as `npx --no-install antireverse …`. `--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry. Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12.
 
-```bash
-npx tsx packages/harden/src/cli.ts --help
-```
+Every command below uses this installed form. `--help` prints the full list of options and exit codes. Harden registers what it built with an Airverse API, which is not on a registry: you run it from the repository ([Getting started](getting-started.md)).
 
-or let Node strip the types (it prints an ExperimentalWarning):
+Two alternatives to npm:
 
-```bash
-node --experimental-strip-types node_modules/.bin/antireverse --help
-```
-
-Every command below uses the clone's `npx tsx` form, which works on both versions. `--help` prints the full list of options and exit codes.
+- **A tarball you build yourself.** `npm run sdk:pack` in the Airverse repository writes it; then, in your project, `npm install --save-dev --ignore-scripts <path>/antireverse-harden-<version>.tgz`. The commands are the same.
+- **A clone of the repository.** Its entry point there is a TypeScript file. On Node 22.23 or newer (tested on 22.23.4) `npx --no-install antireverse …` works inside the clone as written. On Node 22.12 the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`: there, write `npx tsx packages/harden/src/cli.ts` in place of `npx --no-install antireverse` in every command (or `node --experimental-strip-types node_modules/.bin/antireverse`, which prints an ExperimentalWarning).
 
 ## Harden a bundle
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out <out-dir> --test "node /absolute/path/to/test-bundle.mjs"
+npx --no-install antireverse harden <bundle-dir> --profile balanced --out <out-dir> --test "node /absolute/path/to/test-bundle.mjs"
 ```
 
 In order, Harden:
@@ -79,7 +71,7 @@ export AR_ADMIN_KEY="<the admin key>"
 ```
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
+npx --no-install antireverse harden dist --out dist-protected \
   --register --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY \
   --app <appId> --environment production --build-version 1.4.0
 ```
@@ -92,7 +84,7 @@ More flags that work with `--register`:
 - `--no-integrity-marker`: does not plant the integrity marker (see below).
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
+npx --no-install antireverse harden dist --out dist-protected \
   --origin https://shop.example.com \
   --register --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY \
   --app <appId> --environment production --build-version 1.4.0 \
@@ -145,7 +137,7 @@ These flags feed the [Reverse Assessment](reverse-assessment.md), which attacks 
 - `--assess <T1|T2|T3>`: after registration, uploads the protected output (at most 25 MB and 1,000 files) and queues an Assessment at that tier. It prints the Assessment id and a Console link. Needs `--register`.
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden dist --out dist-protected --integrity \
+npx --no-install antireverse harden dist --out dist-protected --integrity \
   --register --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY \
   --app <appId> --environment production --build-version 1.4.0 \
   --routes routes.json --logic logic.json --assess T1
@@ -162,7 +154,7 @@ Without `--logic`, Logic is not assessed and the run is inconclusive. Without `-
 Add `--min-rrs <0-100>` to a `harden --register --assess <tier>` run. Harden writes `--out` first, then waits for the Assessment and fails the step when the score is lower than your threshold.
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
+npx --no-install antireverse harden dist --out dist-protected \
   --register --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY \
   --app <appId> --environment production --build-version 1.4.0 \
   --routes routes.json --logic logic.json --assess T1 --min-rrs 60
@@ -176,12 +168,12 @@ npx tsx packages/harden/src/cli.ts harden dist --out dist-protected \
 When the Assessment was queued by an earlier step, gate on it by its id:
 
 ```bash
-npx tsx packages/harden/src/cli.ts gate --assessment <asm_id> --min-rrs 60 \
+npx --no-install antireverse gate --assessment <asm_id> --min-rrs 60 \
   --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY
 ```
 
 ```bash
-npx tsx packages/harden/src/cli.ts gate --assessment <asm_id> --min-rrs 60 \
+npx --no-install antireverse gate --assessment <asm_id> --min-rrs 60 \
   --endpoint http://127.0.0.1:8787 --key-env AR_ADMIN_KEY \
   --wait 1200 --on-no-score pass --json
 ```

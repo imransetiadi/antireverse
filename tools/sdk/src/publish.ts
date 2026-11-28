@@ -35,7 +35,7 @@ export interface CheckedTarball {
   /** npm's form: sha512, base64. What the registry reports as dist.integrity after a publish. */
   integrity: string;
   /** absent: not on the registry. same / different: there, with these or other bytes. unknown: not asked or no answer. */
-  registry: "absent" | "same" | "different" | "unknown";
+  registry: "absent" | "unlisted" | "same" | "different" | "unknown";
 }
 
 export interface CheckResult {
@@ -47,6 +47,8 @@ export interface CheckResult {
   commands: string[];
   /** Whether a registry was asked at all: not when the folder itself was refused. */
   asked: boolean;
+  /** What the owner should know beside the commands (release-check, when ready). */
+  notes: string[];
 }
 
 /** A path as one word of a POSIX shell command: single quotes, so `$`, backticks, `!` and spaces are plain text. */
@@ -67,6 +69,7 @@ function releaseFolder(dir: string, options: CheckOptions): CheckResult {
     tarballs: [],
     commands: [],
     asked: false,
+    notes: [],
   };
   if (verified.problems.length > 0) return result;
   if (!verified.trusted) {
@@ -112,10 +115,22 @@ function releaseFolder(dir: string, options: CheckOptions): CheckResult {
   return result;
 }
 
-type Answer = { state: "absent" } | { state: "present"; integrity: string } | { state: "unreachable"; detail: string };
+/**
+ * absent: the registry does not know the name. unlisted: it knows the name but lists no such version — which is
+ * also what a first publish looks like while npm holds it staged behind a placeholder version (0.0.0-stage).
+ */
+type Answer =
+  | { state: "absent" }
+  | { state: "unlisted" }
+  | { state: "present"; integrity: string }
+  | { state: "unreachable"; detail: string };
 
 /** `npm view name@version dist.integrity`: read-only, with npm's own configuration left out. */
-async function ask(name: string, version: string, options: CheckOptions): Promise<Answer> {
+export async function ask(
+  name: string,
+  version: string,
+  options: Pick<CheckOptions, "registry" | "work">,
+): Promise<Answer> {
   mkdirSync(options.work, { recursive: true });
   const result = await exec(
     "npm",
@@ -126,13 +141,14 @@ async function ask(name: string, version: string, options: CheckOptions): Promis
   if (result.code === 0) {
     const text = result.stdout.trim();
     // An existing package without that version answers with nothing.
-    if (text === "") return { state: "absent" };
+    if (text === "") return { state: "unlisted" };
     try {
       const integrity = JSON.parse(text) as unknown;
       if (typeof integrity === "string" && integrity.startsWith("sha512-")) return { state: "present", integrity };
     } catch {}
     return { state: "unreachable", detail: "the registry's answer could not be read" };
   }
+  if (/No match found for version/.test(output)) return { state: "unlisted" };
   if (/E404|404 Not Found|is not in this registry/.test(output)) return { state: "absent" };
   const code = /\b(E[A-Z_]{3,}|ENOTFOUND|ECONNREFUSED|ETIMEDOUT)\b/.exec(output)?.[1] ?? `exit ${result.code}`;
   return { state: "unreachable", detail: code };
@@ -157,10 +173,14 @@ export async function releaseCheck(dir: string, options: CheckOptions): Promise<
       result.problems.push(
         `${tarball.name}@${tarball.version} is already on the registry: that version can never be published again`,
       );
-    } else tarball.registry = "absent";
+    } else tarball.registry = answer.state;
   }
   if (result.problems.length > 0) return result;
   result.ok = true;
+  result.notes = [
+    "The first publish of a new package name may be staged by npm: the registry then lists a placeholder version, 0.0.0-stage, and holds the real version back until a maintainer approves it on npmjs.com (Staged Packages) with their second factor.",
+    "Until it is approved, sdk:published-check says NOT READY for that package. Publishing the same tarball again answers 409 Conflict: that is harmless, and nothing was published twice.",
+  ];
   result.commands = [
     "npm login",
     ...result.tarballs.map((tarball) => `npm publish ${shellQuote(tarball.path)} --access public`),
@@ -182,6 +202,11 @@ export async function publishedCheck(dir: string, options: CheckOptions): Promis
     if (answer.state === "absent") {
       tarball.registry = "absent";
       result.problems.push(`${tarball.name}@${tarball.version} is not on the registry`);
+    } else if (answer.state === "unlisted") {
+      tarball.registry = "unlisted";
+      result.problems.push(
+        `${tarball.name}: the name is on the registry but ${tarball.version} is not listed. A first publish may be staged: approve it on npmjs.com (Staged Packages), then run this again`,
+      );
     } else if (answer.integrity !== tarball.integrity) {
       tarball.registry = "different";
       result.problems.push(

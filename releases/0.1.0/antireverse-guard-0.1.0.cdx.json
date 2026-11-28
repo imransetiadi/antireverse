@@ -1,0 +1,45 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40antireverse/guard@0.1.0",
+      "group": "@antireverse",
+      "name": "guard",
+      "version": "0.1.0",
+      "purl": "pkg:npm/%40antireverse/guard@0.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4cd2306ed5509aad53e0f5019bce95e69f9696bb8ced171cba3b3751a7479e17"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "airverse:scope",
+        "value": "runtime dependency closure of the packed package, as package-lock.json pins it"
+      },
+      {
+        "name": "airverse:release",
+        "value": "none: built locally, not published"
+      }
+    ]
+  },
+  "components": [],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/%40antireverse/guard@0.1.0",
+      "dependsOn": []
+    }
+  ]
+}

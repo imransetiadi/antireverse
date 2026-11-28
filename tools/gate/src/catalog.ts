@@ -290,7 +290,7 @@ export const CRITERIA: readonly Criterion[] = [
     gaps: [
       {
         reason:
-          "there is no release: no package is published, no protected pipeline builds one, nothing attests provenance and no two people approve; locally the four packages are built, packed reproducibly, installed and run, compared with their source, given a bill of materials and listed in a manifest signed with the local key (gate-sdk-artifacts-local, slice 23) — a signature by whoever holds that key on one machine, which is not the signature and provenance of a release",
+          "version 0.1.0 of Shield, Guard and Harden was published by the owner by hand on 2026-11-28 from a clean checkout, with a manifest signed by the owner's local key and recorded in releases/0.1.0 — but no protected pipeline in CI builds a release, nothing attests provenance and no two people approve one; locally the four packages are built, packed reproducibly, installed and run, compared with their source, given a bill of materials and listed in a manifest signed with the local key (gate-sdk-artifacts-local, slice 23) — a signature by whoever holds that key on one machine, which is not the signature and provenance of a release",
         slice: "18",
       },
     ],

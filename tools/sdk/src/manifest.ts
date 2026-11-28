@@ -17,7 +17,7 @@ export const MANIFEST_SCHEMA = "airverse.sdk-artifacts/1";
 /** A manifest larger than this is not read: a real one is a few kilobytes. */
 export const MANIFEST_MAX_BYTES = 1024 * 1024;
 export const MANIFEST_STATEMENT =
-  "Built and signed locally. The signature says that the holder of the signing key signed these files on their own machine; it is not provenance from a trusted builder. These packages are not published and this is not a release.";
+  "Built and signed locally. The signature says that the holder of the signing key signed these files on their own machine; it is not provenance from a trusted builder. This is a local build, not a release: these files are not the packages published on npm.";
 
 export interface ArtifactFile {
   file: string;

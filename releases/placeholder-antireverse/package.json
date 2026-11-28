@@ -1,0 +1,15 @@
+{
+  "name": "antireverse",
+  "version": "0.0.1",
+  "description": "Reserved by the Airverse project. The tool is @antireverse/harden.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/imransetiadi/antireverse.git",
+    "directory": "releases/placeholder-antireverse"
+  },
+  "homepage": "https://github.com/imransetiadi/antireverse#readme",
+  "bugs": { "url": "https://github.com/imransetiadi/antireverse/issues" },
+  "files": ["README.md", "LICENSE"],
+  "publishConfig": { "access": "public" }
+}

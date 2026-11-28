@@ -99,6 +99,7 @@ describe("skill airverse-setup", () => {
       "--signer",
       "--integrity-only",
       "--no-install",
+      "--save-exact",
       "--ignore-scripts",
       "--save-dev",
     ])
@@ -181,12 +182,14 @@ describe("skill airverse-setup: preflight", () => {
     expect((report.repo as { path: string }).path).toBe(root.replace(/\/$/, ""));
   });
 
-  it("says what is wrong, and exits 1, when there is no clone", () => {
+  // Since 0.1.0 is on npm (2026-11-28) no clone is needed to install the packages: without one the preflight
+  // answers with the npm path (D-150).
+  it("without a clone it is not stuck: it answers with the npm path", () => {
     const { status, report } = run([], scratch);
-    expect(status).toBe(1);
-    expect(report.ok).toBe(false);
+    expect(status).toBe(0);
+    expect(report.ok).toBe(true);
+    expect(report.mode).toBe("npm");
     expect(report.repo).toBeNull();
-    expect((report.problems as string[]).join(" ")).toMatch(/clone/i);
   });
 
   it("refuses a folder that is not the Airverse repository", () => {
@@ -467,5 +470,70 @@ describe("the guides' --test example", () => {
       expect(text, doc).toMatch(/temporary copy of (`<bundle-dir>`|the bundle folder)/);
     }
     expect(read(join(root, "README.md"))).toMatch(/not in your project root/);
+  });
+});
+
+// The packages are on npm since 0.1.0. The default is to install them by name at an exact version; the preflight
+// names that version, reads only and asks no registry.
+describe("skill airverse-setup: preflight for the npm path", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "airverse-skill-npm-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const run = (args: string[], cwd = scratch, env: NodeJS.ProcessEnv = {}) => {
+    const result = spawnSync(process.execPath, [preflight, ...args], {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, AIRVERSE_REPO: "", AIRVERSE_SDK_DIR: "", ...env },
+    });
+    return { status: result.status, report: JSON.parse(result.stdout) as Record<string, unknown> };
+  };
+  const released = JSON.parse(read(join(root, "packages/shield-node/package.json"))).version as string;
+
+  it("names the three packages at the repository's released version, never latest, and how to install and run them", () => {
+    const { status, report } = run([]);
+    expect(status).toBe(0);
+    expect(report).toMatchObject({ ok: true, mode: "npm", repo: null, tarballs: null, problems: [] });
+    expect(report.npm).toEqual({
+      version: released,
+      shield: `@antireverse/shield-node@${released}`,
+      guard: `@antireverse/guard@${released}`,
+      harden: `@antireverse/harden@${released}`,
+      installShield: ["npm", "install", "--save-exact", `@antireverse/shield-node@${released}`],
+      installGuard: ["npm", "install", "--save-exact", `@antireverse/guard@${released}`],
+      installHarden: ["npm", "install", "--save-dev", "--save-exact", `@antireverse/harden@${released}`],
+      command: ["npx", "--no-install", "antireverse"],
+      guardFiles: "node_modules/@antireverse/guard/dist",
+    });
+    expect(JSON.stringify(report.npm)).not.toMatch(/latest|\^|~/);
+    for (const name of ["shield-node", "guard", "harden"]) {
+      expect(JSON.parse(read(join(root, "packages", name, "package.json"))).version, name).toBe(released);
+    }
+  });
+
+  it("a clone that is named still selects the clone; one that is merely found is reported, and npm stays the way", () => {
+    expect(run(["--repo", root]).report.mode).toBe("clone");
+    expect(run([], scratch, { AIRVERSE_REPO: root }).report.mode).toBe("clone");
+    const inside = run([], root);
+    expect(inside.report.mode).toBe("npm");
+    expect(inside.report.repo).toMatchObject({ installed: true });
+    expect(run(["--repo", root]).report.npm).toMatchObject({ version: released });
+  });
+
+  it("the skill names only npm fields the preflight prints, says exact versions and keeps its rules", () => {
+    const { report } = run([]);
+    const body = read(skillFile);
+    const named = new Set([...body.matchAll(/`(npm\.[A-Za-z]+)`/g)].map((m) => (m[1] as string).slice(4)));
+    expect(named.size).toBeGreaterThanOrEqual(5);
+    for (const field of named) expect((report.npm as Record<string, unknown>)[field], field).toBeDefined();
+    expect(body).toMatch(/exact version/i);
+    expect(body).toMatch(/never `?latest`?|not `latest`/i);
+    expect(body).toMatch(/say which version you installed/i);
+    expect(body).toMatch(/--no-install/);
+    expect(body).toMatch(/--save-exact/);
+    // The only thing the skill may call "not on npm" is the protocol package.
+    expect(body).toMatch(/`@antireverse\/protocol` is not on npm/i);
+    expect(body.replace(/`@antireverse\/protocol` is not on npm/gi, "")).not.toMatch(/not on npm/i);
+    expect(existsSync(join(skillDir, "evals/express-npm-install/case.yaml"))).toBe(true);
+    // Reads only, asks no registry.
+    expect(read(preflight)).not.toMatch(/writeFile|child_process|fetch\(|https?:\/\//);
   });
 });

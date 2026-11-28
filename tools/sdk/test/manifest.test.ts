@@ -60,7 +60,8 @@ describe("the signed manifest", () => {
     const manifest = manifestOf(layout.out);
     expect(manifest.schema).toBe("airverse.sdk-artifacts/1");
     expect(manifest.statement).toMatch(/not provenance/);
-    expect(manifest.statement).toMatch(/not published/);
+    expect(manifest.statement).toMatch(/local build, not a release/);
+    expect(manifest.statement).not.toMatch(/are not published/);
     expect(manifest.packages.map((p) => p.name)).toEqual(SDK_PACKAGES.map((pkg) => pkg.name));
     for (const entry of manifest.packages) {
       expect(entry.version).toBe(sdkVersion());

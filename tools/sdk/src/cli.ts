@@ -32,6 +32,7 @@ import { MANIFEST_FILE, verifyArtifacts } from "./manifest.ts";
 import { SDK_PACKAGES } from "./packages.ts";
 import { buildAndPack, stagedClosures } from "./pipeline.ts";
 import { type CheckResult, NPM_REGISTRY, publishedCheck, releaseCheck, shellQuote } from "./publish.ts";
+import { recordCheck } from "./record.ts";
 import { releaseState } from "./release.ts";
 import { cleanBuildDir, type Layout, prepareBuildDir, repoLayout, TEMP_PREFIX, tempLayout } from "./safe.ts";
 import { stageAll } from "./stage.ts";
@@ -44,6 +45,7 @@ const USAGE = `usage:
   npm run sdk:release                                            (owner: builds the publishable tarballs; publishes nothing)
   npm run sdk:release-check -- <dir> [--expect <fingerprint>]    (before publishing; read-only)
   npm run sdk:published-check -- <dir> [--expect <fingerprint>]  (after publishing; read-only)
+  npm run sdk:record-check -- <releases/x.y.z> [--online] [--expect <fingerprint>]  (anyone; read-only)
 `;
 
 const out = (text: string) => void process.stdout.write(text);
@@ -123,6 +125,53 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
+  if (command === "record-check") {
+    // npm run sdk:record-check -- <releases/x.y.z> [--online] [--expect <fingerprint>]: a release record's signature
+    // and files; with --online also the registry's integrity of each package, read-only.
+    const online = args.includes("--online");
+    const at = args.indexOf("--expect");
+    const expect = at >= 0 ? args[at + 1] : undefined;
+    const paths = args.filter((arg, index) => !arg.startsWith("--") && (at < 0 || index !== at + 1));
+    if (paths.length !== 1 || (at >= 0 && !/^[0-9a-f]{64}$/.test(expect ?? ""))) {
+      err(USAGE);
+      return 2;
+    }
+    const dir = resolve(cwd(), paths[0] as string);
+    let result: Awaited<ReturnType<typeof recordCheck>>;
+    if (online) {
+      const base = mkdtempSync(join(tmpdir(), `${TEMP_PREFIX}check-`));
+      const work = tempLayout(base).work;
+      prepareBuildDir(work);
+      try {
+        result = await recordCheck(dir, {
+          ...(expect === undefined ? {} : { expect }),
+          online: { registry: NPM_REGISTRY, work },
+        });
+      } finally {
+        cleanBuildDir(work);
+        rmdirSync(base);
+      }
+    } else result = await recordCheck(dir, expect === undefined ? {} : { expect });
+    out(
+      `record-check: ${dir}\n${result.asked ? `Registry asked (read-only): ${NPM_REGISTRY}` : "No registry was asked (pass --online to compare with it)."}\n\n`,
+    );
+    for (const pkg of result.packages) {
+      out(
+        `${pkg.name}@${pkg.version}\n  sha256     ${pkg.sha256}\n  integrity  ${pkg.integrity ?? "?"}\n  registry   ${pkg.registry}\n`,
+      );
+    }
+    if (!result.ok) {
+      out("\nNOT CONSISTENT:\n");
+      for (const problem of result.problems) out(`  ${problem}\n`);
+      return 1;
+    }
+    out(
+      `\nconsistent: the manifest's signature verifies (signer ${result.fingerprint}; built from commit ${result.commit}) and the bills of materials match it${result.asked ? "; the registry has these integrities" : ""}.\n` +
+        "The signature is a local one by the publisher, not provenance. The sha512 list is derived and unsigned.\n",
+    );
+    return 0;
+  }
+
   if (command === "release-check" || command === "published-check") {
     let expect: string | undefined;
     const paths: string[] = [];
@@ -196,6 +245,8 @@ async function main(argv: string[]): Promise<number> {
         "This command published nothing. To publish, run these yourself, one by one, with your own npm login and one-time code:\n\n",
     );
     for (const line of result.commands) out(`${line}\n`);
+    out("\n");
+    for (const note of result.notes) out(`${note}\n`);
     out(
       "\nA published version can never be used again, and unpublishing is restricted: check the list above first.\n" +
         `Afterwards: npm run sdk:published-check -- ${shellQuote(dir)}\n`,

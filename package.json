@@ -35,7 +35,8 @@
     "sdk:allowlist": "tsx tools/sdk/src/cli.ts allowlist",
     "sdk:release": "tsx tools/sdk/src/cli.ts release",
     "sdk:release-check": "tsx tools/sdk/src/cli.ts release-check",
-    "sdk:published-check": "tsx tools/sdk/src/cli.ts published-check"
+    "sdk:published-check": "tsx tools/sdk/src/cli.ts published-check",
+    "sdk:record-check": "tsx tools/sdk/src/cli.ts record-check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

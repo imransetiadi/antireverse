@@ -135,7 +135,7 @@ export function sbomOf(
           name: "airverse:scope",
           value: "runtime dependency closure of the packed package, as package-lock.json pins it",
         },
-        { name: "airverse:release", value: "none: built locally, not published" },
+        { name: "airverse:release", value: "none: local build, not a release" },
       ],
     },
     components,

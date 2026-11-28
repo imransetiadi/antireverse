@@ -200,11 +200,11 @@ describe("the packed shape", () => {
     ).toThrow(/zod is wanted at 4\.0\.0 and, by @antireverse\/protocol, at 4\.6\.7/);
   });
 
-  it("the README is a header that says pre-release and not published, then the guide from docs/ made to fit the package", () => {
+  it("the README is a header that says local build and not a release, then the guide from docs/ made to fit the package", () => {
     for (const pkg of SDK_PACKAGES) {
       const readme = readFileSync(join(staged(pkg.short).dir, "README.md"), "utf8");
       expect(readme.startsWith(`# ${pkg.name}\n`), pkg.short).toBe(true);
-      expect(readme, pkg.short).toMatch(/not published to npm/);
+      expect(readme, pkg.short).toMatch(/Local build.*not the package published on npm.*not a release/);
       expect(readme, pkg.short).toMatch(/not provenance/);
       // Review L8: nothing in a packed README needs the clone — no clone path, no clone-only command, and no link
       // to a file that is not in the tarball.
@@ -220,8 +220,10 @@ describe("the packed shape", () => {
     expect(guide("harden")).toMatch(/`docs\/reverse-assessment\.md` in the Airverse repository/);
     expect(guide("guard")).toMatch(/node_modules\/@antireverse\/guard\/dist/);
     expect(guide("shield-node")).toMatch(/app\.use\(shield\.express\(\)\)/);
-    // The guides themselves are untouched: the clone's commands are still there.
-    expect(readFileSync(join(REPO_ROOT, "docs/harden.md"), "utf8")).toMatch(/npx tsx packages\/harden\/src\/cli\.ts/);
+    // The guide itself shows the installed form in its commands (D-151) and still tells a clone its own form.
+    const own = readFileSync(join(REPO_ROOT, "docs/harden.md"), "utf8");
+    expect(own).toMatch(/^npx --no-install antireverse harden <bundle-dir> --profile balanced/m);
+    expect(own.match(/npx tsx packages\/harden\/src\/cli\.ts/g)).toHaveLength(1);
   });
 
   it("packedGuide fails when a guide no longer holds what it replaces, instead of packing clone-only text", () => {

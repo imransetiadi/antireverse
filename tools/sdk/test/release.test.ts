@@ -15,6 +15,7 @@ import { npmPack } from "../src/pack.ts";
 import { PUBLIC_REPOSITORY, RELEASED_PACKAGES, SDK_PACKAGES, sdkPackage } from "../src/packages.ts";
 import { buildAndPack, type PackResult } from "../src/pipeline.ts";
 import { publishedCheck, releaseCheck, shellQuote } from "../src/publish.ts";
+import { INTEGRITY_FILE, recordCheck, writeRecord } from "../src/record.ts";
 import { startRegistry } from "../src/registry.ts";
 import { normaliseRemote, type ReleaseInfo, releaseState } from "../src/release.ts";
 import { BUILD_MARKER } from "../src/safe.ts";
@@ -377,7 +378,7 @@ describe("the release folder", () => {
         "dependencies",
       ]);
       expect(tarFile(gunzipSync(readFileSync(tarball.path)), "package/README.md").toString("utf8")).toMatch(
-        /not published to npm/,
+        /not the package published on npm/,
       );
     }
     expect((private_.manifest as SdkManifest).kind).toBe("local");
@@ -525,7 +526,7 @@ describe("the signed release manifest", () => {
     expect(manifest.repository).toBe(repository);
     expect(manifest.statement).toMatch(/not provenance/);
     expect(manifest.statement).toMatch(/for publication/);
-    expect(manifest.statement).not.toMatch(/not published and this is not a release/);
+    expect(manifest.statement).not.toMatch(/local build/);
     expect(manifest.packages[2]?.vendored).toEqual(["@antireverse/protocol"]);
   });
 
@@ -695,6 +696,59 @@ describe("the owner's checks, against a loopback registry", () => {
     }
   });
 
+  // Observed on 2026-11-28: npm stages the first publish of a new name. The registry then lists a placeholder
+  // version, 0.0.0-stage, and holds the real one back until a maintainer approves it on npmjs.com.
+  it("published-check tells a staged package from a missing one: the name is there, the version is not", async () => {
+    const stubDir = join(base, "stage-stub");
+    mkdirSync(stubDir, { recursive: true });
+    const stubManifest = {
+      name: "@antireverse/guard",
+      version: "0.0.0-stage",
+      description: "Temporary package placeholder for staged publishing",
+    };
+    writeFileSync(join(stubDir, "package.json"), JSON.stringify(stubManifest));
+    const [stub] = await npmPack([stubDir], join(base, "stage-out"), work);
+    const items = served();
+    const registry = await startRegistry([
+      items[0] as (typeof items)[number],
+      { manifest: stubManifest, tarball: stub as (typeof items)[number]["tarball"] },
+    ]);
+    try {
+      const result = await publishedCheck(layout.release, options(registry.url));
+      expect(result.ok).toBe(false);
+      expect(result.tarballs.map((t) => t.registry)).toEqual(["same", "unlisted", "absent"]);
+      expect(result.problems.sort()).toEqual([
+        "@antireverse/guard: the name is on the registry but 0.1.0 is not listed. A first publish may be staged: approve it on npmjs.com (Staged Packages), then run this again",
+        "@antireverse/harden@0.1.0 is not on the registry",
+      ]);
+      // Before publishing, a name that exists without the version is no obstacle.
+      const before = await releaseCheck(
+        layout.release,
+        options(
+          (await startRegistry([{ manifest: stubManifest, tarball: stub as (typeof items)[number]["tarball"] }])).url,
+        ),
+      );
+      expect(before.ok).toBe(true);
+      expect(before.tarballs.map((t) => t.registry)).toEqual(["absent", "unlisted", "absent"]);
+    } finally {
+      await registry.close();
+    }
+  });
+
+  it("release-check says, after the commands, that a first publish may be staged and must be approved", async () => {
+    const registry = await startRegistry([]);
+    try {
+      const result = await releaseCheck(layout.release, options(registry.url));
+      expect(result.notes.join(" ")).toMatch(/first publish of a new package name may be staged/);
+      expect(result.notes.join(" ")).toMatch(/0\.0\.0-stage/);
+      expect(result.notes.join(" ")).toMatch(/approve.*npmjs\.com/);
+      expect(result.notes.join(" ")).toMatch(/409.*harmless/);
+      expect((await publishedCheck(layout.release, options(registry.url))).notes).toEqual([]);
+    } finally {
+      await registry.close();
+    }
+  });
+
   it("published-check: passes when the registry has the same bytes for all three", async () => {
     const registry = await startRegistry(served());
     try {
@@ -778,5 +832,174 @@ describe("the commands", () => {
         .map((f) => readFileSync(join(REPO_ROOT, "tools/sdk/src", f), "utf8"))
         .join("\n"),
     ).not.toMatch(/\["(publish|login|adduser)"/);
+  });
+});
+
+// The record of a release kept in the repository (releases/<version>/): the signed manifest and the bills of
+// materials, without the tarballs, and beside them the sha512 the registry reports, derived and unsigned.
+describe("the release record", () => {
+  const committed = join(REPO_ROOT, "releases/0.1.0");
+  /** What registry.npmjs.org reported as dist.integrity on 2026-11-28 (checked by the coordinator). */
+  const PUBLISHED = {
+    "@antireverse/shield-node@0.1.0":
+      "sha512-Zfry5DTiNT5CWSUJ6XyTjarZwwlognXESayoVUZ/0sJdQf6TWC78YjSa/pwEHhFoeY3EJeLpOHUgn/tFnU+/zQ==",
+    "@antireverse/guard@0.1.0":
+      "sha512-Voprp7dbUcNhwW1EdjvDzKMCTSg1TsfYE8NRAWl2ZobnKueN6UJ8QExDe0zUqwLU1NKrSHnIAk5MrFztjp8Ugw==",
+    "@antireverse/harden@0.1.0":
+      "sha512-zWGUnyvwcWWF3jqgA47HKenNeqXOvgMqt7ruYoLB493mwkcvf83WYS7lWQUvmVVMIgQpFkBjW/RZy02cswuM7A==",
+  };
+
+  it("0.1.0 is recorded: signed manifest, three bills of materials, the published integrities; no tarball, nothing private", async () => {
+    expect(readdirSync(committed).sort()).toEqual([
+      "antireverse-guard-0.1.0.cdx.json",
+      "antireverse-harden-0.1.0.cdx.json",
+      "antireverse-shield-node-0.1.0.cdx.json",
+      INTEGRITY_FILE,
+      MANIFEST_FILE,
+    ]);
+    const result = await recordCheck(committed);
+    expect(result.problems).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.commit).toBe("bf1767ab62bb7fb3f882401a9a89ed9771650dd3");
+    expect(result.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(Object.fromEntries(result.packages.map((p) => [`${p.name}@${p.version}`, p.integrity]))).toEqual(PUBLISHED);
+    expect(result.asked).toBe(false);
+    for (const file of readdirSync(committed)) {
+      const text = readFileSync(join(committed, file), "utf8");
+      expect(text, file).not.toMatch(/\/Users\/|\/private\/|\/var\/folders|PRIVATE KEY/);
+    }
+    expect(JSON.parse(readFileSync(join(committed, INTEGRITY_FILE), "utf8"))).toMatchObject({
+      derived: true,
+      signed: false,
+    });
+  });
+
+  it("every version folder under releases/ is a record that checks; other folders there are not its business", async () => {
+    for (const entry of readdirSync(join(REPO_ROOT, "releases"))) {
+      if (!/^\d+\.\d+\.\d+$/.test(entry)) continue;
+      expect((await recordCheck(join(REPO_ROOT, "releases", entry))).problems, entry).toEqual([]);
+    }
+  });
+
+  it("a record written from a release folder checks, and a changed file, manifest or integrity list does not", async () => {
+    const dir = join(base, "record");
+    writeRecord(layout.release, dir);
+    expect(readdirSync(dir).filter((file) => file.endsWith(".tgz"))).toEqual([]);
+    const good = await recordCheck(dir);
+    expect(good.problems).toEqual([]);
+    expect(good.fingerprint).toBe(key.fingerprint);
+    const sbom = join(base, "record-sbom");
+    cpSync(dir, sbom, { recursive: true });
+    appendFileSync(join(sbom, released.manifest.packages[0]?.sbom.file as string), " ");
+    expect((await recordCheck(sbom)).problems.join(" ")).toMatch(/cdx\.json: size/);
+    const edited = join(base, "record-manifest");
+    cpSync(dir, edited, { recursive: true });
+    const manifest = JSON.parse(readFileSync(join(edited, MANIFEST_FILE), "utf8"));
+    manifest.source.commit = "d".repeat(40);
+    writeFileSync(join(edited, MANIFEST_FILE), JSON.stringify(manifest));
+    expect((await recordCheck(edited)).problems).toContain(`${MANIFEST_FILE}: signature does not verify`);
+    const other = join(base, "record-integrity");
+    cpSync(dir, other, { recursive: true });
+    const list = JSON.parse(readFileSync(join(other, INTEGRITY_FILE), "utf8"));
+    delete list.packages["@antireverse/guard@0.1.0"];
+    list.packages["@antireverse/guard@9.9.9"] = "sha512-AAAA";
+    writeFileSync(join(other, INTEGRITY_FILE), JSON.stringify(list));
+    expect((await recordCheck(other)).problems.join(" ")).toMatch(
+      /integrity\.json does not list exactly the manifest's packages/,
+    );
+    const extra = join(base, "record-extra");
+    cpSync(dir, extra, { recursive: true });
+    writeFileSync(join(extra, "notes.txt"), "x");
+    expect((await recordCheck(extra)).problems).toContain("notes.txt: not part of a release record");
+    expect((await recordCheck(dir, { expect: "0".repeat(64) })).problems.join(" ")).toMatch(
+      /signed by .* not by the expected/,
+    );
+  });
+
+  it("asked to, it compares the record with a registry: the same, other bytes, staged, missing", async () => {
+    const dir = join(base, "record");
+    const work = join(base, "npm-record");
+    const items = released.tarballs.map((tarball) => ({
+      manifest: packedManifest(tarball.path) as Record<string, unknown>,
+      tarball,
+    }));
+    const same = await startRegistry(items);
+    const partial = await startRegistry(items.slice(0, 1));
+    try {
+      const ok = await recordCheck(dir, { online: { registry: same.url, work } });
+      expect(ok.problems).toEqual([]);
+      expect(ok.asked).toBe(true);
+      expect(ok.packages.map((p) => p.registry)).toEqual(["same", "same", "same"]);
+      const missing = await recordCheck(dir, { online: { registry: partial.url, work } });
+      expect(missing.ok).toBe(false);
+      expect(missing.problems).toEqual([
+        "@antireverse/guard@0.1.0 is not on the registry",
+        "@antireverse/harden@0.1.0 is not on the registry",
+      ]);
+      // The integrity list is what is compared: a record that names other bytes does not match the registry.
+      const wrong = join(base, "record-wrong");
+      cpSync(dir, wrong, { recursive: true });
+      const list = JSON.parse(readFileSync(join(wrong, INTEGRITY_FILE), "utf8"));
+      list.packages["@antireverse/guard@0.1.0"] = "sha512-AAAA";
+      writeFileSync(join(wrong, INTEGRITY_FILE), JSON.stringify(list));
+      expect((await recordCheck(wrong, { online: { registry: same.url, work } })).problems).toEqual([
+        "@antireverse/guard@0.1.0: the registry's integrity is not the record's",
+      ]);
+    } finally {
+      await same.close();
+      await partial.close();
+    }
+  });
+});
+
+// The packages are on npm (2026-11-28): the guides say so, name the last recorded release exactly, and nothing
+// in them still says the opposite. The protocol is the one package that is not there.
+describe("the guides after the first release", () => {
+  const latest = readdirSync(join(REPO_ROOT, "releases"))
+    .filter((name) => /^\d+\.\d+\.\d+$/.test(name))
+    .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
+    .at(-1) as string;
+  const read = (file: string): string => readFileSync(join(REPO_ROOT, file), "utf8");
+  const installs: [string, RegExp][] = [
+    ["docs/shield.md", /npm install --save-exact @antireverse\/shield-node@(\S+)/],
+    ["docs/guard.md", /npm install --save-exact @antireverse\/guard@(\S+)/],
+    ["docs/harden.md", /npm install --save-dev --save-exact @antireverse\/harden@(\S+)/],
+    ["docs/getting-started.md", /npm install --save-exact @antireverse\/shield-node@(\S+)/],
+    ["README.md", /npm install --save-dev --save-exact @antireverse\/harden@(\S+)/],
+  ];
+
+  it("each guide installs from npm by the exact version of the last recorded release", () => {
+    expect(latest).toBe("0.1.0");
+    for (const [file, pattern] of installs) {
+      const version = pattern.exec(read(file))?.[1]?.replace(/[`.,;:)]+$/, "");
+      expect(version, file).toBe(latest);
+    }
+    expect(read("skills/airverse-setup/scripts/preflight.mjs")).toContain(`RELEASED_VERSION = "${latest}"`);
+  });
+
+  it("no guide, policy text or skill still says the packages are not on npm", () => {
+    const stale =
+      /not (yet )?published to npm|(packages|package) (are|is) not on npm|nothing is published|no package is published|holds no package|finds no package/i;
+    for (const file of [
+      ...installs.map(([file]) => file),
+      "docs/reverse-assessment.md",
+      "SECURITY.md",
+      "skills/airverse-setup/SKILL.md",
+      "tools/gate/src/catalog.ts",
+    ]) {
+      expect(read(file).match(stale)?.[0], file).toBeUndefined();
+    }
+    expect(read("README.md")).toMatch(/Not on npm: `@antireverse\/protocol`/);
+  });
+
+  it("the README tells the owner about staged publishing and anyone how to check a published package", () => {
+    const readme = read("README.md");
+    expect(readme).toMatch(/0\.0\.0-stage/);
+    expect(readme).toMatch(/Staged Packages/);
+    expect(readme).toMatch(/409 Conflict/);
+    expect(readme).toMatch(/npm view @antireverse\/shield-node@0\.1\.0 dist\.integrity/);
+    expect(readme).toMatch(/npm run sdk:record-check -- releases\/0\.1\.0/);
+    expect(readme).toMatch(/`integrity\.json` is derived[^.]*\*\*not signed\*\*/);
+    expect(JSON.parse(read("package.json")).scripts["sdk:record-check"]).toBeDefined();
   });
 });

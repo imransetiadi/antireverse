@@ -53,9 +53,13 @@ function cliCommands(file: string): DocCommand[] {
   return commands;
 }
 
-/** The `--flags` of a command line, ignoring anything inside quotes (such as a `--test "npm test"` value). */
+/**
+ * The `--flags` the command line gives to the CLI, ignoring anything inside quotes (such as a `--test "npm test"`
+ * value) and anything before the command itself: in `npx --no-install antireverse …` the first flag is npx's.
+ */
 function flagsOf(line: string): string[] {
-  const unquoted = line.replace(/"[^"]*"|'[^']*'/g, "");
+  const own = line.replace(/^.*?(?:\bantireverse|packages\/harden\/src\/cli\.ts)(?=\s)/, "");
+  const unquoted = own.replace(/"[^"]*"|'[^']*'/g, "");
   return [...unquoted.matchAll(/(?:^|\s)(--[a-z][a-z0-9-]*)/g)].map((m) => m[1] as string);
 }
 

@@ -1,0 +1,81 @@
+{
+  "schema": "airverse.sdk-artifacts/1",
+  "kind": "release",
+  "repository": "https://github.com/imransetiadi/antireverse",
+  "statement": "Built and signed locally by the publisher, from a clean working tree at the commit named here, for publication to npm. The signature says that the holder of the signing key signed these files on their own machine; it is not provenance from a trusted builder, and nobody else approved the release. Whether a package is on the registry, and with these bytes, is what `npm run sdk:published-check` asks.",
+  "created_at": "2026-11-28T08:04:38.596Z",
+  "source": {
+    "commit": "bf1767ab62bb7fb3f882401a9a89ed9771650dd3",
+    "dirty": false
+  },
+  "toolchain": {
+    "node": "22.12.0",
+    "npm": "10.9.0",
+    "typescript": "7.0.2"
+  },
+  "packages": [
+    {
+      "name": "@antireverse/shield-node",
+      "version": "0.1.0",
+      "tarball": {
+        "file": "antireverse-shield-node-0.1.0.tgz",
+        "size": 87348,
+        "sha256": "6b53c63107e22ef6dbf486af69a5decc35bbdcc8d9d641a543f427963acd2568"
+      },
+      "sbom": {
+        "file": "antireverse-shield-node-0.1.0.cdx.json",
+        "size": 1042,
+        "sha256": "708855f6e931b30752a784f195697d8f09c3fa8ae3bad12c88e9f139c8375972"
+      },
+      "dependencies": {},
+      "vendored": []
+    },
+    {
+      "name": "@antireverse/guard",
+      "version": "0.1.0",
+      "tarball": {
+        "file": "antireverse-guard-0.1.0.tgz",
+        "size": 33594,
+        "sha256": "4cd2306ed5509aad53e0f5019bce95e69f9696bb8ced171cba3b3751a7479e17"
+      },
+      "sbom": {
+        "file": "antireverse-guard-0.1.0.cdx.json",
+        "size": 1018,
+        "sha256": "50b2ab25e9b92071c7e4f2f0f45a4dea8055e48d7c6b91d835ac95a3b91b2801"
+      },
+      "dependencies": {},
+      "vendored": []
+    },
+    {
+      "name": "@antireverse/harden",
+      "version": "0.1.0",
+      "tarball": {
+        "file": "antireverse-harden-0.1.0.tgz",
+        "size": 256991,
+        "sha256": "7dece2e753cee9771016296cbd67363c2d6a59c8c41d1fd19cc6a33945f4827c"
+      },
+      "sbom": {
+        "file": "antireverse-harden-0.1.0.cdx.json",
+        "size": 17922,
+        "sha256": "630c1869eb7e0c0b9ecd01d5412d6c2e432b86ffc1357c4d4cde677bcf12c990"
+      },
+      "dependencies": {
+        "@babel/generator": "8.1.0",
+        "@babel/parser": "8.1.0",
+        "@babel/traverse": "8.1.0",
+        "@babel/types": "8.1.0",
+        "zod": "4.6.7"
+      },
+      "vendored": [
+        "@antireverse/protocol"
+      ]
+    }
+  ],
+  "signature": {
+    "algorithm": "Ed25519",
+    "public_key": "JtiTg3j6I8Qve99peZmJi6oTrl-BLN22aJVyn6UgyaE",
+    "fingerprint": "d21935e30391a6f9320366bb7e41ed2989c675ed168ea0672b92fb1ffaec0196",
+    "payload": "canonical JSON of the report without `signature`",
+    "value": "nHP9DpRWBaUP4hSu63bPGBwGs9l8iE_1IS_YJTLR1Rcg5sYO9vQtbihvxW2Os0cwJGS3FzOAj-VGMR1HDVxVDA"
+  }
+}

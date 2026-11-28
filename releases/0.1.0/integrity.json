@@ -1,0 +1,10 @@
+{
+  "about": "The sha512 of each released tarball, in the form `npm view <name>@<version> dist.integrity` reports. Derived from the same files as the SHA-256 digests in sdk-manifest.json when this record was written. The manifest is signed; this file is not.",
+  "derived": true,
+  "signed": false,
+  "packages": {
+    "@antireverse/shield-node@0.1.0": "sha512-Zfry5DTiNT5CWSUJ6XyTjarZwwlognXESayoVUZ/0sJdQf6TWC78YjSa/pwEHhFoeY3EJeLpOHUgn/tFnU+/zQ==",
+    "@antireverse/guard@0.1.0": "sha512-Voprp7dbUcNhwW1EdjvDzKMCTSg1TsfYE8NRAWl2ZobnKueN6UJ8QExDe0zUqwLU1NKrSHnIAk5MrFztjp8Ugw==",
+    "@antireverse/harden@0.1.0": "sha512-zWGUnyvwcWWF3jqgA47HKenNeqXOvgMqt7ruYoLB493mwkcvf83WYS7lWQUvmVVMIgQpFkBjW/RZy02cswuM7A=="
+  }
+}

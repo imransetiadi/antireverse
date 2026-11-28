@@ -288,7 +288,9 @@ describe("slice 23: SDK artifacts", () => {
     expect(reason).toMatch(/gate-sdk-artifacts-local/);
     expect(reason).toMatch(/provenance/);
     expect(reason).toMatch(/two people/);
-    expect(reason).toMatch(/no package is published/);
+    expect(reason).toMatch(/published by the owner by hand/);
+    expect(reason).toMatch(/no protected pipeline/);
+    expect(reason).not.toMatch(/no package is published|there is no release:/);
     expect(reason).toMatch(/local key/);
     expect(reason).not.toMatch(
       /no SDK release pipeline exists \(no published artifacts, signatures, provenance or SBOM\)/,

@@ -182,7 +182,7 @@ function dependencyEngines(pkg: SdkPackage, name: string): string | undefined {
 
 /** One sentence on why every documented command says `--no-install` (D-146). */
 export const NO_INSTALL_REASON =
-  "`--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry, a name this project does not hold.";
+  "`--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry (the unscoped `antireverse` there is this project's placeholder and has no command).";
 
 const MD_LINK = /\[([^\]]+)\]\((?!#|https?:)([^)#\s]+)(?:#[^)]*)?\)/g;
 const MD_LINK_WITH_ANCHOR = /\[([^\]]+)\]\((?!#|https?:)([^)#\s]+)(#[^)]*)?\)/g;
@@ -209,19 +209,18 @@ export function packedGuide(pkg: SdkPackage, guide: string, release?: ReleaseInf
     must(/ and the reference target \|/g, " |");
     must(/^\| `AR_API_URL` \| the reference target \|.*\n/m, "");
     must(
-      /^`@antireverse\/shield-node` is not published to npm yet;.*$/m,
+      /^`@antireverse\/shield-node` is on npm: .*$/m,
       release
         ? "`@antireverse/shield-node` is plain JavaScript with no dependency, for Node 22.12 and newer."
         : "This is `@antireverse/shield-node`, installed from its tarball: plain JavaScript with no dependency, for Node 22.12 and newer.",
     );
   } else if (pkg.short === "guard") {
     must(
-      /^`@antireverse\/guard` is not published to npm yet\..*$/m,
+      /^`@antireverse\/guard` is on npm: .*$/m,
       release
         ? "Once installed, the files of `@antireverse/guard` are in `node_modules/@antireverse/guard/dist`."
         : "This is `@antireverse/guard`, installed from its tarball. Its files are in `node_modules/@antireverse/guard/dist`.",
     );
-    must(/packages\/guard\/src/g, "node_modules/@antireverse/guard/dist");
   } else if (pkg.short === "harden") {
     const node =
       "Babel, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11): on Node 22.12 npm warns at install and the command was seen to work.";
@@ -232,7 +231,11 @@ export function packedGuide(pkg: SdkPackage, guide: string, release?: ReleaseInf
         ? `## Running it\n\nInstall it as a development dependency of the project whose bundle you protect. ${run} ${node}\n\n`
         : `## Running it\n\nThis package is installed in your project from its tarball. ${run} ${node}\n\n`,
     );
-    must(/npx tsx packages\/harden\/src\/cli\.ts/g, "npx --no-install antireverse");
+    // The guide's commands are already in the installed form (D-151); nothing of the clone's may be left.
+    if (/npx tsx|packages\/harden\/src/.test(text))
+      throw new Error(
+        `${pkg.guide} shows a clone command outside "Running it": update packedGuide in tools/sdk/src/stage.ts`,
+      );
     must(/not a commit of this repository/, "not a commit of the Airverse repository");
   }
   if (release === undefined) {
@@ -292,7 +295,7 @@ export function stagedReadme(pkg: SdkPackage, version: string, release?: Release
   const header = [
     `# ${pkg.name}`,
     "",
-    `> Version ${version}, built from the Airverse repository by \`npm run sdk:pack\`. **Pre-release:** this package is not published to npm and this tarball is not a release. It comes with a signed manifest (\`sdk-manifest.json\`) and a bill of materials; the signature is a local one by whoever built it, not provenance. The guide below is the repository's, with its commands and paths written for the installed package.`,
+    `> Version ${version}, built from the Airverse repository by \`npm run sdk:pack\`. **Local build:** this tarball is not the package published on npm and is not a release. It comes with a signed manifest (\`sdk-manifest.json\`) and a bill of materials; the signature is a local one by whoever built it, not provenance. The guide below is the repository's, with its commands and paths written for the installed package.`,
     "",
   ].join("\n");
   if (pkg.guide === undefined) {

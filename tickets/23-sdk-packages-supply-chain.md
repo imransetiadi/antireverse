@@ -162,7 +162,7 @@ Root: the scripts `sdk:build`, `sdk:pack`, `sdk:verify`, `sdk:allowlist`; the Vi
 
 ## Honest limits
 
-- **Local only.** No CI pipeline, no provenance attestation, no second approver, no published package, no rings, no yank. `sec12-sdk-artifacts` stays not checkable.
+- **Local only.** No CI pipeline, no provenance attestation, no second approver, no published package, no rings, no yank. `sec12-sdk-artifacts` stays not checkable. *(2026-11-28: three packages were published since, by hand; see "Published (2026-11-28)".)*
 - **The signature is a local key's.** It shows that the holder of the key signed these files. It does not show where they were built or from which source; the commit in the manifest is what the builder's working tree said, and "with uncommitted changes" is recorded, not refused.
 - **Reproducible on one machine with one toolchain.** Not shown across Node, npm, TypeScript versions or operating systems.
 - **The loopback registry is filled from `node_modules`**, which is trusted as `npm ci` left it; its contents are not compared with the lockfile's integrity again. The test shows that npm resolves the packed manifests, not what the public registry serves.
@@ -222,7 +222,7 @@ One independent review of the uncommitted change (2026-11-24): no HIGH; the dele
 - `--integrity-only` exists: a user can choose to install an intact folder from an unknown signer. The skill is told not to choose it; the new test case for that was written, not run.
 - D-141 makes the protocol an undeclared dependency of two workspaces: it works with npm workspaces, which is what this repository uses; a stricter package manager would refuse it.
 - `express` and `@types/express` are still asked from the registry when Shield's folder is installed from a clone inside a project. They are public names owned by their projects, so that is ordinary; it is the reason to keep the clone beside the project.
-- The `@antireverse` scope was unregistered when this slice was built. The owner registered it on 2026-11-28 (the owner's statement, not checked from the repository); nothing is published under it.
+- The `@antireverse` scope was unregistered when this slice was built. The owner registered it on 2026-11-28 (the owner's statement, not checked from the repository); nothing is published under it. *(Later the same day 0.1.0 of three packages was published under it; see "Published (2026-11-28)".)*
 
 ## 23b: Preparing the first release (2026-11-28)
 
@@ -286,7 +286,7 @@ Decided by the owner and the brief, not put to Jev: which packages, the version,
 
 ### Limits
 
-- **Nothing is published**, and nothing here has been run against a real publish: `sdk:published-check` has only ever seen a loopback registry answer "present".
+- **Nothing is published**, and nothing here has been run against a real publish: `sdk:published-check` has only ever seen a loopback registry answer "present". *(True when written. Published later on 2026-11-28; `sdk:published-check` has since run against the real registry.)*
 - **`origin/main` is the local remote-tracking ref.** A clone that has not fetched can build a release from a commit that `main` has since left behind; the command says "as this clone last fetched it" and fetches nothing.
 - **One person, one local key.** No provenance attestation (npm's `--provenance` needs a supported CI), no second approver. The README on the npm page says so.
 - **The registry check is a moment in time:** a version absent at the check can be taken by the first `npm publish` only; the second and third could in principle fail, leaving a partial release that `sdk:published-check` would report.
@@ -331,7 +331,7 @@ One independent review of the uncommitted 23b change: "fix before publishing" �
 
 **Jev on the fixes (`jev_gate`):** action `escalate` — composite 0.70, `safe_to_apply` 0.40. Six claims verified, none contradicted (0.48 to 0.98). Not independently reviewed again.
 
-**Still open for the owner:** reserve the unscoped name `antireverse` on npm (not done, not this slice's to do). Until then `--no-install` is what stands between a missing install and someone else's code.
+**Still open for the owner:** reserve the unscoped name `antireverse` on npm (not done, not this slice's to do). Until then `--no-install` is what stands between a missing install and someone else's code. *(Done later on 2026-11-28: a placeholder `antireverse@0.0.1`, D-150.)*
 
 **Limits after the review:**
 
@@ -462,3 +462,64 @@ Rows that stay in the parallel phase are waits and guards: `cli-gate` 8,500 of 9
 - Two tests failed under the extra load only because of their test timeout (`mail-message`, 88 ms alone; `kill-switch-drill`): not time budgets, not moved.
 - About 900 tests without a time bound now run late with their files. It costs a few seconds.
 - `vitest run --project guard` alone no longer runs Guard's integrity tests; the twin has to be named. The README and the configuration's header say so.
+
+## Published (2026-11-28)
+
+**Facts** (the owner published; the coordinator verified; this section records it).
+
+- `@antireverse/shield-node@0.1.0`, `@antireverse/guard@0.1.0` and `@antireverse/harden@0.1.0` are on registry.npmjs.org, dist-tag `latest`, built by `sdk:release` from commit `bf1767ab62bb7fb3f882401a9a89ed9771650dd3` in a fresh clone.
+- `@antireverse/protocol` is not published and will not be: Harden carries its own copy.
+- The unscoped name `antireverse` is held by a placeholder package with no code and no command (`antireverse@0.0.1`, D-150, source in `releases/placeholder-antireverse/`).
+- npm `dist.integrity`: shield-node `sha512-Zfry5DTiNT5CWSUJ6XyTjarZwwlognXESayoVUZ/0sJdQf6TWC78YjSa/pwEHhFoeY3EJeLpOHUgn/tFnU+/zQ==`; guard `sha512-Voprp7dbUcNhwW1EdjvDzKMCTSg1TsfYE8NRAWl2ZobnKueN6UJ8QExDe0zUqwLU1NKrSHnIAk5MrFztjp8Ugw==`; harden `sha512-zWGUnyvwcWWF3jqgA47HKenNeqXOvgMqt7ruYoLB493mwkcvf83WYS7lWQUvmVVMIgQpFkBjW/RZy02cswuM7A==`.
+
+**The surprise: staged publishing.** npm did not release the first `npm publish` of each package. It staged it ([docs](https://docs.npmjs.com/staged-publishing/)): the package appeared with a placeholder version `0.0.0-stage`, and 0.1.0 stayed hidden until the owner approved it on npmjs.com under "Staged Packages". Until then `npm view <name>@0.1.0` answered 404, `sdk:published-check` reported the packages absent, and a repeated publish answered `409 Conflict … Cannot publish over previously staged version`. Each package now lists two versions, `0.0.0-stage` and `0.1.0`. Nothing in 23b had foreseen this; the procedure in the README has the step now.
+
+**What was verified, by which command.**
+
+| What | Command | Result |
+|---|---|---|
+| The registry holds the bytes of the release folder | `npm run sdk:published-check -- dist/sdk-release` (coordinator, after approval) | passed |
+| An install by name works | a real `npm install` of the three packages from the registry on Node 22.12 (coordinator) | worked |
+| The committed record is signed and whole | `npm run sdk:record-check -- releases/0.1.0` | ok; signer `d21935e30391a6f9320366bb7e41ed2989c675ed168ea0672b92fb1ffaec0196`, commit `bf1767a…` |
+| The registry matches the record | `npm run sdk:record-check -- releases/0.1.0 --online` (read-only `npm view`) | the three packages "same" |
+| The record's integrities are the published ones | `release.test.ts`, "the release record": the values above are pinned in the test | passes |
+| The unscoped name | `npm view antireverse name version maintainers` | `antireverse@0.0.1`, the owner's account |
+
+**What changed in the repository.**
+
+- **Guides.** `README.md`, `docs/getting-started.md`, `docs/shield.md`, `docs/guard.md` and `docs/harden.md` install from npm at the exact version; tarballs and the clone are alternatives; the clone is still how the API and Console run. `docs/harden.md` shows `npx --no-install antireverse` in every command and tells a clone on Node 22.12 its own form once (D-152). `docs/getting-started.md` keeps the clone's commands: it is the page for running Airverse, and a test runs them.
+- **Release record** `releases/0.1.0/`: the signed `sdk-manifest.json` and the three bills of materials, copied unchanged from the release folder, and `integrity.json` (sha512 per tarball; derived, not signed). No tarball. `tools/sdk/src/record.ts`, `npm run sdk:record-check -- <dir> [--online] [--expect <fingerprint>]`; Biome leaves `releases/*.*.*` alone so the bytes stay the signed ones.
+- **Staging in the tools.** `sdk:release-check` prints two notes after the commands (staging and approval; the harmless 409). `sdk:published-check` tells "the name is there, the version is not listed: may be staged" from "absent".
+- **Skill.** The preflight answers `mode: "npm"` with exact versions when no folder is named, without a clone and without asking a registry (D-151). `SKILL.md` installs exact versions with `--save-exact`, never `latest`, and reports the version; new eval case `express-npm-install`.
+- **Local packs say what they are.** The header of an `sdk:pack` README, the local manifest's statement and the local bill of materials said "not published"; they now say "local build, not a release". The release statement and the 0.1.0 record are untouched.
+- **Gate.** `sec12-sdk-artifacts` stays not checkable; its reason now says that 0.1.0 was published by hand with a local signature and what is still missing (a protected CI pipeline, provenance, two people). No gate check asks the network.
+
+**Decisions.**
+
+| ID | Decision | Jev |
+|---|---|---|
+| D-151 | With no folder named, the preflight answers for npm, with the exact released version | 1.00, nothing contradicted |
+| D-152 | `docs/harden.md` shows the installed command form in its body; the clone form is named once | 0.98, nothing contradicted (the other candidate contradicted "copy the commands unchanged") |
+
+**Limits.**
+
+- No provenance attestation: the signature is the owner's local key. One person built, approved and published.
+- `0.0.0-stage` stays listed beside `0.1.0` for each package.
+- The text of each npm page is frozen inside 0.1.0. It names its build commit and still carries the sentence that the unscoped name is not the project's; it changes only with a new version.
+- The maintainer's npm name and email are public on the registry.
+- Nothing checks the registry again on a schedule; `sdk:record-check --online` is run by hand. No gate check uses the network, so the gate does not know whether the registry still matches.
+- `integrity.json` is not signed. It is recomputable only by someone who has the tarballs; `--online` compares it with the registry, and the signed manifest's SHA-256 covers the same tarballs.
+- **The Console still says the packages are not published** and shows clone commands: `apps/console/src/lib/messages/en.ts` (`setup.unpublished`, `setup.guard.serve`, `setup.harden.where`), `apps/console/src/features/apps/shield-snippet.ts` (`SHIELD_INSTALL`, `hardenCommand`, the Guard import path), `apps/console/src/features/setup/setup-guide.tsx`, with `apps/console/test/setup-components.test.tsx` and `tests/e2e/journey.e2e.ts` asserting those texts. Not changed here: it is interface text with a browser test, and wants its own slice.
+- The new eval case was written, not run.
+
+**Before the next release.**
+
+- Bump the three packages' versions; nothing here did. A published version can never be reused.
+- The versions written out in text: `RELEASED_VERSION` in `skills/airverse-setup/scripts/preflight.mjs` and the `@0.1.0` in the README and the four guides. A test (`release.test.ts`, "the guides after the first release") ties them to the newest folder under `releases/`, so they must move when the next record is committed, not before.
+- The status block that `tools/sdk/src/stage.ts` writes at the top of each npm page ("Early release", the blocked gate, the stand-in scores): reread it against what is true then.
+- The `--no-install` sentence in `stage.ts` now says the unscoped name is the project's placeholder; the next version's npm pages will carry it.
+- The guides changed, so a rebuild of 0.1.0 no longer gives the published bytes. That is expected; the record, not a rebuild, is the reference for 0.1.0.
+- Expect staging again for a first publish of a new package name; whether a new version of an existing package is staged was not observed.
+- Commit the record of the next release under `releases/<version>/` after `sdk:published-check` passes, and add its integrities to the test.
+- Still missing for `sec12-sdk-artifacts`: a release built in CI with provenance, and a second approver.
+

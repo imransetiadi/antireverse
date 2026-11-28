@@ -94,5 +94,6 @@ Still slipping through the drift test, by its design: a real variable used in th
 - Tried on two made-up projects, four runs, one model. No run was verified against a running API or Console.
 - The skill works only from a clone: the packages are not on npm, and `npm install <folder>` records a path that must exist on every machine that installs the project.
 - The clone must sit outside the project folder (H2). That is a packaging gap of the unpublished packages; the skill works around it.
+- *Note, 2026-11-28:* the two lines above were true when written. Shield, Guard and Harden 0.1.0 are on npm since then and the skill installs from npm by default; see `tickets/23-sdk-packages-supply-chain.md`, "Published (2026-11-28)".
 - README's own Harden example still shows `--test "npm test"`, which works only when the bundle folder itself holds the tests (H1); `docs/harden.md` explains.
 - The drift test checks names, not meaning: a flag that keeps its name and changes behaviour passes.

@@ -1,0 +1,10 @@
+schema_version: "1.1"
+name: express-npm-install
+expected_outcome: |
+  An Express API with an esbuild bundle. The user has no clone and no tarballs and asks for Shield
+  and Harden. A good run runs the preflight without arguments, installs
+  @antireverse/shield-node and @antireverse/harden from npm at the exact version the preflight
+  names (never latest, never a range), runs Harden as `npx --no-install antireverse`, reads keys
+  from the environment, says which version it installed, and says plainly that the Airverse API
+  and Console are not on npm: the user runs them from the repository, so nothing was verified end
+  to end.

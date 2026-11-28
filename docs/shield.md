@@ -4,7 +4,7 @@ Shield is a middleware for your Node server. It records every request as an Even
 
 Supported today: **Express** and a plain **Node `http`** server. Next.js, Fastify, Koa and other frameworks are not supported yet.
 
-`@antireverse/shield-node` is not published to npm yet; inside the Airverse repository it is a workspace package. For a server of your own, `npm run sdk:pack` in the repository writes a tarball: `npm install --ignore-scripts <path>/antireverse-shield-node-<version>.tgz`. It is plain JavaScript with no dependency and runs on plain Node 22.12. Depending on the clone's `packages/shield-node` folder also works, but its entry point there is TypeScript: the server then needs a Node that strips types, or `tsx`.
+`@antireverse/shield-node` is on npm: `npm install --save-exact @antireverse/shield-node@0.1.0`. It is plain JavaScript with no dependency and runs on plain Node 22.12. Two alternatives: `npm run sdk:pack` in the Airverse repository writes a tarball (`npm install --ignore-scripts <path>/antireverse-shield-node-<version>.tgz`), or depend on the clone's `packages/shield-node` folder, whose entry point is TypeScript: the server then needs a Node that strips types, or `tsx`. Shield reports to an Airverse API, which is not on a registry: you run it from the repository ([Getting started](getting-started.md)).
 
 ## Set up with Express
 

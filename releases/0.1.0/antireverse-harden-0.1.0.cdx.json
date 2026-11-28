@@ -1,0 +1,666 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40antireverse/harden@0.1.0",
+      "group": "@antireverse",
+      "name": "harden",
+      "version": "0.1.0",
+      "purl": "pkg:npm/%40antireverse/harden@0.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7dece2e753cee9771016296cbd67363c2d6a59c8c41d1fd19cc6a33945f4827c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "pkg:npm/%40antireverse/protocol@0.1.0",
+          "group": "@antireverse",
+          "name": "protocol",
+          "version": "0.1.0",
+          "purl": "pkg:npm/%40antireverse/protocol@0.1.0",
+          "licenses": [
+            {
+              "license": {
+                "id": "Apache-2.0"
+              }
+            }
+          ],
+          "properties": [
+            {
+              "name": "airverse:vendored",
+              "value": "compiled files copied into dist/_protocol"
+            },
+            {
+              "name": "airverse:vendored-files-sha256",
+              "value": "29e58013b07f423336ec6d46ac52dc39052194968fd7ed8f9f2d0b833a668b59"
+            }
+          ]
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "airverse:scope",
+        "value": "runtime dependency closure of the packed package, as package-lock.json pins it"
+      },
+      {
+        "name": "airverse:release",
+        "value": "none: built locally, not published"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/code-frame@8.0.6",
+      "group": "@babel",
+      "name": "code-frame",
+      "version": "8.0.6",
+      "purl": "pkg:npm/%40babel/code-frame@8.0.6",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "b8c1e1be60e6c0588bba2a336a84584d91ea305baeddf7a6fd7f4963bf25a2102e2e887c2d21860bc26a533a36715b81b01c648cc64d939e8213ba1c93c5f193"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/code-frame/-/code-frame-8.0.6.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/generator@8.1.0",
+      "group": "@babel",
+      "name": "generator",
+      "version": "8.1.0",
+      "purl": "pkg:npm/%40babel/generator@8.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "edf88127ad700d5dc01db83b9ff11f2c1bf7454fa5b1d44ff103499f276429603b7b8f059e7bca4166d51ec25008113b2474e3e3197364bf5fbd062c0548a9d8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/generator/-/generator-8.1.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/helper-globals@8.0.6",
+      "group": "@babel",
+      "name": "helper-globals",
+      "version": "8.0.6",
+      "purl": "pkg:npm/%40babel/helper-globals@8.0.6",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "39d9c0fcde762e1cc5a5e52e573e581ae4968dced33c78859956196cf952804c6870ed86c1bc55a529e2f4c56ce70c16fb067890fbb004404df6920f0d8cf598"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/helper-globals/-/helper-globals-8.0.6.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/helper-string-parser@8.0.8",
+      "group": "@babel",
+      "name": "helper-string-parser",
+      "version": "8.0.8",
+      "purl": "pkg:npm/%40babel/helper-string-parser@8.0.8",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "7d533e812b8a6ddbfd7299b244d87912fb031d4642771407dc576714a4a43581e96ec9fde5b6ebc66f844b73157908dcab08b63b9babfc38cb7e64d068eeb49e"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-8.0.8.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/helper-validator-identifier@8.0.6",
+      "group": "@babel",
+      "name": "helper-validator-identifier",
+      "version": "8.0.6",
+      "purl": "pkg:npm/%40babel/helper-validator-identifier@8.0.6",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "1d8c74626b9c851c514a99e3bdc35f7e73d2f0309ab8a3669ee988b871b78e740055ec1103b91f246c05d776b2129499b3bb3847fa011f87a9a6e5dc01077925"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-8.0.6.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/parser@8.1.0",
+      "group": "@babel",
+      "name": "parser",
+      "version": "8.1.0",
+      "purl": "pkg:npm/%40babel/parser@8.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "7e9a996000be4ed86bd7d25b10ac578421aeb6f7e6ffeae831ef942eb814288f86572ce44224cc4d285e391716200cd6f13dcea375b951abd64af0169aca7b7c"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/parser/-/parser-8.1.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/template@8.0.0",
+      "group": "@babel",
+      "name": "template",
+      "version": "8.0.0",
+      "purl": "pkg:npm/%40babel/template@8.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "7800f4416fc095b6a605bc3415e1a2c1ab1b0953eae67716d07355c8b3f707d733a8bca1e20bf0fb925348db7a95ef7ece2014ee6a8366c2931dfde34dbe1c85"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/template/-/template-8.0.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/traverse@8.1.0",
+      "group": "@babel",
+      "name": "traverse",
+      "version": "8.1.0",
+      "purl": "pkg:npm/%40babel/traverse@8.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "a10d1023a311e1c9ba6ce47f51ae472cfc6f3bbbdba2b4fb2dee4736df4699950aa4db1a3e5db28f882c438e349576998dce2f9946d279580470ae1c1ee08bd8"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/traverse/-/traverse-8.1.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40babel/types@8.1.0",
+      "group": "@babel",
+      "name": "types",
+      "version": "8.1.0",
+      "purl": "pkg:npm/%40babel/types@8.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f15f1a4930f1d35d983e60d0177d2fae8932c5515d4405366014b6573ae77cb00690ff1f9685678dc930805703d09aef7fa19631245d0ab615b24dedc8cc1946"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@babel/types/-/types-8.1.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40jridgewell/gen-mapping@0.4.0-beta.0",
+      "group": "@jridgewell",
+      "name": "gen-mapping",
+      "version": "0.4.0-beta.0",
+      "purl": "pkg:npm/%40jridgewell/gen-mapping@0.4.0-beta.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "25d18d91b1381a534f61084cd0bf797c142bedcb4b649dbbe905d02d369de2dd6849d9e7088ddf0eaf435b706a6005aff16737f874bee06b228b5a0f3027f3d7"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@jridgewell/gen-mapping/-/gen-mapping-0.4.0-beta.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40jridgewell/resolve-uri@3.1.2",
+      "group": "@jridgewell",
+      "name": "resolve-uri",
+      "version": "3.1.2",
+      "purl": "pkg:npm/%40jridgewell/resolve-uri@3.1.2",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "6d12128022233f6d3fb5b5923d63048b9e1054f45913192e0fd9492fe508c542adc15240f305b54eb6f58ccb354455e8d42053359ff98690bd42f98a59da292b"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0",
+      "group": "@jridgewell",
+      "name": "sourcemap-codec",
+      "version": "1.6.0",
+      "purl": "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "4fb8dffb9ce0b191f0349e25bd0eff69ecdbca4d27357fb32555a998703b558b04c7b6bbaabe5183921bb4916a920cdee58dacaeeab545463c43cdfb39dee217"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40jridgewell/trace-mapping@0.3.31",
+      "group": "@jridgewell",
+      "name": "trace-mapping",
+      "version": "0.3.31",
+      "purl": "pkg:npm/%40jridgewell/trace-mapping@0.3.31",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "cf3351f9275048327373c8e869e3fc410a0242bf0db98c76748232b65d507811191c9f6e5ba85e6ecad881bcfc849c1441aa374d608cb667d5f0dbb5b7038b03"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/%40types/jsesc@2.5.1",
+      "group": "@types",
+      "name": "jsesc",
+      "version": "2.5.1",
+      "purl": "pkg:npm/%40types/jsesc@2.5.1",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "f5537eeb2c4b38f2ce6affbb3f08d96f18880f66d569eab4103e2a49099d4137639d725268254a4d1e7cb75e68a87d47e6df0d836657d5269b255a0df50df86f"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/@types/jsesc/-/jsesc-2.5.1.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/js-tokens@10.0.0",
+      "name": "js-tokens",
+      "version": "10.0.0",
+      "purl": "pkg:npm/js-tokens@10.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "94cfd40734267c9468f400576cf59e9a2bdd096f15d86f051da1ddca941a232e76dec9d48e88345bbd5ac965d38e247e8b178cc951cdd977299d377f9623e0fd"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/js-tokens/-/js-tokens-10.0.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/jsesc@3.1.0",
+      "name": "jsesc",
+      "version": "3.1.0",
+      "purl": "pkg:npm/jsesc@3.1.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "fec33774ed853b35e3290849ba8d10d7bdf07f628ea3cb7823cbc7cba945f69a14a7b6ca4f4fcd1c4f1f3d7db73f07e19f291faa70b6c51c4e9d5c395ee18868"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/jsesc/-/jsesc-3.1.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/obug@3.0.0",
+      "name": "obug",
+      "version": "3.0.0",
+      "purl": "pkg:npm/obug@3.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "e6fbc1e7e5bb78fbfea77baac62f91716d570332d6d3f871b77ff85f82dce2a1ee7733a1981881c0e63a0d1a1be169da9c0106bcd70b8c5f8a34eb9fad4a0443"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/obug/-/obug-3.0.0.tgz"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/zod@4.6.7",
+      "name": "zod",
+      "version": "4.6.7",
+      "purl": "pkg:npm/zod@4.6.7",
+      "hashes": [
+        {
+          "alg": "SHA-512",
+          "content": "83c5b60f6914e9af2e9ed734e777d7d6e5412b333bcaa0315bfdf3c24f37fba472176f9228eb95f9cd30043854c335753da19aa66647fab99c5333dffb7086c2"
+        }
+      ],
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "distribution",
+          "url": "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:npm/%40antireverse/harden@0.1.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/generator@8.1.0",
+        "pkg:npm/%40babel/parser@8.1.0",
+        "pkg:npm/%40babel/traverse@8.1.0",
+        "pkg:npm/%40babel/types@8.1.0",
+        "pkg:npm/zod@4.6.7"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/code-frame@8.0.6",
+      "dependsOn": [
+        "pkg:npm/%40babel/helper-validator-identifier@8.0.6",
+        "pkg:npm/js-tokens@10.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/generator@8.1.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/parser@8.1.0",
+        "pkg:npm/%40babel/types@8.1.0",
+        "pkg:npm/%40jridgewell/gen-mapping@0.4.0-beta.0",
+        "pkg:npm/%40jridgewell/trace-mapping@0.3.31",
+        "pkg:npm/%40types/jsesc@2.5.1",
+        "pkg:npm/jsesc@3.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/helper-globals@8.0.6",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40babel/helper-string-parser@8.0.8",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40babel/helper-validator-identifier@8.0.6",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40babel/parser@8.1.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/types@8.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/template@8.0.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/code-frame@8.0.6",
+        "pkg:npm/%40babel/parser@8.1.0",
+        "pkg:npm/%40babel/types@8.1.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/traverse@8.1.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/code-frame@8.0.6",
+        "pkg:npm/%40babel/generator@8.1.0",
+        "pkg:npm/%40babel/helper-globals@8.0.6",
+        "pkg:npm/%40babel/parser@8.1.0",
+        "pkg:npm/%40babel/template@8.0.0",
+        "pkg:npm/%40babel/types@8.1.0",
+        "pkg:npm/obug@3.0.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40babel/types@8.1.0",
+      "dependsOn": [
+        "pkg:npm/%40babel/helper-string-parser@8.0.8",
+        "pkg:npm/%40babel/helper-validator-identifier@8.0.6"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40jridgewell/gen-mapping@0.4.0-beta.0",
+      "dependsOn": [
+        "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0",
+        "pkg:npm/%40jridgewell/trace-mapping@0.3.31"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40jridgewell/resolve-uri@3.1.2",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/%40jridgewell/trace-mapping@0.3.31",
+      "dependsOn": [
+        "pkg:npm/%40jridgewell/resolve-uri@3.1.2",
+        "pkg:npm/%40jridgewell/sourcemap-codec@1.6.0"
+      ]
+    },
+    {
+      "ref": "pkg:npm/%40types/jsesc@2.5.1",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/js-tokens@10.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/jsesc@3.1.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/obug@3.0.0",
+      "dependsOn": []
+    },
+    {
+      "ref": "pkg:npm/zod@4.6.7",
+      "dependsOn": []
+    }
+  ]
+}

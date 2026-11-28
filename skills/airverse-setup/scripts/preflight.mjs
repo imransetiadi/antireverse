@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Preflight for the airverse-setup skill. Reads only; changes nothing.
 //
+//   node preflight.mjs                                          (the npm path: no clone needed)
 //   node preflight.mjs [--repo <path to the Airverse clone>]
 //                      [--tarballs <folder> (--signer <fingerprint> | --integrity-only)]
 //   (--repo=<path> and --tarballs=<path> work too; AIRVERSE_REPO and AIRVERSE_SDK_DIR name them as well)
@@ -40,6 +41,9 @@ function findUp(start) {
   }
 }
 
+// The version of @antireverse/shield-node, guard and harden on npm that this skill installs. A test in the
+// repository keeps it equal to the packages' own version.
+const RELEASED_VERSION = "0.1.0";
 const MANIFEST = "sdk-manifest.json";
 const SCHEMA = "airverse.sdk-artifacts/1";
 // The marker `npm run sdk:pack` leaves in the folder it writes: the one file that may be there unlisted.
@@ -97,7 +101,7 @@ function checkTarballs(dir, expectedSigner) {
     signer: null,
     version: null,
     // Never npx without --no-install: when the command is not installed, npx would fetch an unscoped package of
-    // that name from the registry, and the project does not hold that name.
+    // that name from the registry, where it is only a placeholder and not Harden.
     command: ["npx", "--no-install", "antireverse"],
   };
   for (const name of Object.keys(TARBALLS)) result[name] = null;
@@ -250,19 +254,35 @@ function main() {
       problems.push(`${path} is not the Airverse repository (no root package named "antireverse").`);
     else repo = realpathSync(path);
   } else {
+    // No clone was named. One that is found is reported (for the guides, and for running the API and Console), but
+    // nothing depends on it: the packages are on npm.
     repo = findUp(process.cwd());
-    if (!repo && !tarballsDir)
-      problems.push(
-        "No Airverse clone found. The packages are not on npm: clone the repository, run `npm install` in it, then pass --repo <path> or set AIRVERSE_REPO.",
-      );
   }
+  // A clone the user named is the way they chose; otherwise a tarball folder they named; otherwise npm.
+  const mode = tarballs ? "tarballs" : named && repo ? "clone" : "npm";
+
+  // The npm path: exact versions, never a range or "latest". Nothing is asked of a registry here.
+  const spec = (name) => `@antireverse/${name}@${RELEASED_VERSION}`;
+  const npm = {
+    version: RELEASED_VERSION,
+    shield: spec("shield-node"),
+    guard: spec("guard"),
+    harden: spec("harden"),
+    installShield: ["npm", "install", "--save-exact", spec("shield-node")],
+    installGuard: ["npm", "install", "--save-exact", spec("guard")],
+    installHarden: ["npm", "install", "--save-dev", "--save-exact", spec("harden")],
+    // Never npx without --no-install: it would fetch an unscoped package named "antireverse".
+    command: ["npx", "--no-install", "antireverse"],
+    guardFiles: "node_modules/@antireverse/guard/dist",
+  };
 
   let harden = null;
   let packages = null;
   if (repo) {
     const tsx = join(repo, "node_modules/tsx/dist/cli.mjs");
     const installed = existsSync(tsx);
-    if (!installed) problems.push(`The clone at ${repo} is not installed: run \`npm install\` there.`);
+    if (!installed && mode === "clone")
+      problems.push(`The clone at ${repo} is not installed: run \`npm install\` there.`);
     packages = {
       shield: join(repo, "packages/shield-node"),
       guard: join(repo, "packages/guard"),
@@ -289,16 +309,18 @@ function main() {
       `Integrity only: the files match their manifest, signed by ${tarballs.signer}, and that signer is NOT trusted: nobody checked whose key it is. Say so in your report.`,
     );
   }
-  if (!tarballs && !node.stripsTypes) {
+  if (mode === "clone" && !node.stripsTypes) {
     notes.push(
       `Node ${node.version} cannot load Shield's TypeScript entry by itself: run the server through tsx, or use Node ${STRIPS_TYPES.join(".")} or newer.`,
     );
   }
   const report = {
     ok: problems.length === 0,
-    // "tarballs" when a tarball folder was named: install from it. Otherwise "clone".
-    mode: tarballs ? "tarballs" : "clone",
+    // "npm" (the default): install the packages by name at the exact version below. "tarballs" when a tarball
+    // folder was named; "clone" when a clone was named with --repo or AIRVERSE_REPO.
+    mode,
     node,
+    npm,
     repo,
     packages,
     harden,
