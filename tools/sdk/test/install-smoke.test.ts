@@ -564,7 +564,7 @@ describe("the installed packages on plain Node", () => {
 
 // Review M3: the other way to use Shield is the clone's folder. With the clone inside the project npm also installs
 // the folder's development dependencies, and asks the registry for each. None of them may be an @antireverse name:
-// that scope is not registered on npm, so whoever registers it could answer.
+// when this was written nobody held that scope on npm, and an install should not rest on who holds it.
 describe("the clone path: Shield's folder installed from a clone inside the project", () => {
   it("npm asks the registry for no @antireverse name, only for the public development dependencies", async () => {
     const dir = join(base, "clone-inside");

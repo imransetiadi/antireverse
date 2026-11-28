@@ -1,7 +1,7 @@
 // The four packages that are packed (slice 23): what a project installs — Shield, Guard, Harden — and the protocol.
 // `@antireverse/prove` is not one of them: no project installs it. No packed package depends on another: the
-// @antireverse scope is not registered on npm, so such a dependency could be answered by whoever registers it
-// (D-140). Harden, which uses the protocol at run time, carries a copy of the compiled protocol instead.
+// @antireverse scope was not registered on npm when this was decided (the owner holds it since 2026-11-28), and
+// an install should not rest on who holds a scope (D-140). Harden, which uses the protocol at run time, carries a copy of the compiled protocol instead.
 
 export interface SdkPackage {
   /** The npm name. */

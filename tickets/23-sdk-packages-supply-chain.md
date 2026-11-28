@@ -222,4 +222,4 @@ One independent review of the uncommitted change (2026-11-24): no HIGH; the dele
 - `--integrity-only` exists: a user can choose to install an intact folder from an unknown signer. The skill is told not to choose it; the new test case for that was written, not run.
 - D-141 makes the protocol an undeclared dependency of two workspaces: it works with npm workspaces, which is what this repository uses; a stricter package manager would refuse it.
 - `express` and `@types/express` are still asked from the registry when Shield's folder is installed from a clone inside a project. They are public names owned by their projects, so that is ordinary; it is the reason to keep the clone beside the project.
-- The `@antireverse` scope is still unregistered. That is the owner's decision.
+- The `@antireverse` scope was unregistered when this slice was built. The owner registered it on 2026-11-28 (the owner's statement, not checked from the repository); nothing is published under it.
