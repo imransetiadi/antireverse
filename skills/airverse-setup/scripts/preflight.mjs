@@ -96,7 +96,9 @@ function checkTarballs(dir, expectedSigner) {
     trusted: false,
     signer: null,
     version: null,
-    command: ["npx", "antireverse"],
+    // Never npx without --no-install: when the command is not installed, npx would fetch an unscoped package of
+    // that name from the registry, and the project does not hold that name.
+    command: ["npx", "--no-install", "antireverse"],
   };
   for (const name of Object.keys(TARBALLS)) result[name] = null;
   const done = () => {

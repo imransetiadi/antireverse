@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, relative } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { timingFilesOf, timingProjectOf } from "../../../vitest.timing.ts";
 import { REPO_ROOT } from "../../gate/src/paths.ts";
 import { buildAll } from "../src/build.ts";
 import { DIST_EXCLUDED, DIST_OUTSIDE_THE_GUARD, DIST_PACKAGES, distRedirect } from "../src/dist-plugin.ts";
@@ -52,7 +53,11 @@ async function run(mode: Mode, files: readonly string[] = []): Promise<{ result:
   const json = join(base, `${mode}-${++runs}.json`);
   const args =
     mode === "source"
-      ? DIST_PACKAGES.flatMap((pkg) => ["--project", pkg.short])
+      ? // Each package's project and, where it has late files (vitest.timing.ts), its late twin: every test once.
+        DIST_PACKAGES.flatMap((pkg) => [
+          pkg.short,
+          ...(timingFilesOf(pkg.short).length > 0 ? [timingProjectOf(pkg.short)] : []),
+        ]).flatMap((name) => ["--project", name])
       : ["--config", join(REPO_ROOT, "tools/sdk/vitest.dist.config.ts")];
   const result = await exec(
     process.execPath,
@@ -138,6 +143,10 @@ describe("the suites on the compiled output", () => {
   it("the compiled run never reuses a transform cached on disk (a cached module would skip the redirect and the guard)", () => {
     const config = readFileSync(join(REPO_ROOT, "tools/sdk/vitest.dist.config.ts"), "utf8");
     expect(config.match(/fsModuleCache: false/g)?.length).toBe(2);
+    // D-147: the compiled run has the same late twins as the root configuration, from the same list.
+    expect(config).toContain('from "../../vitest.timing.ts"');
+    expect(config).toContain("fileParallelism: false");
+    expect(config).toContain("groupOrder");
     expect(config).not.toMatch(/fsModuleCache: true/);
   });
 

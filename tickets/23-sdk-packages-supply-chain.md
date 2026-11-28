@@ -6,7 +6,7 @@ doc: TICKET
 slice: 23
 version: 0.1.0
 status: done
-updated: 2026-11-24
+updated: 2026-11-28
 language: en
 tags:
   - anti-reverse
@@ -223,3 +223,242 @@ One independent review of the uncommitted change (2026-11-24): no HIGH; the dele
 - D-141 makes the protocol an undeclared dependency of two workspaces: it works with npm workspaces, which is what this repository uses; a stricter package manager would refuse it.
 - `express` and `@types/express` are still asked from the registry when Shield's folder is installed from a clone inside a project. They are public names owned by their projects, so that is ordinary; it is the reason to keep the clone beside the project.
 - The `@antireverse` scope was unregistered when this slice was built. The owner registered it on 2026-11-28 (the owner's statement, not checked from the repository); nothing is published under it.
+
+## 23b: Preparing the first release (2026-11-28)
+
+**What changed outside the code:** on 2026-11-28 the owner decided to publish to npm and registered the `@antireverse` organisation there. First version 0.1.0; Shield, Guard and Harden only; `@antireverse/protocol` stays unpublished and private.
+
+**What to build:** everything the owner needs to publish by hand with their own login and one-time code, and nothing that publishes. **Nothing was published by this slice, and no document says that the packages are on npm.**
+
+### Decisions
+
+| # | Decision | Jev |
+|---|---|---|
+| D-144 | All four packages move to 0.1.0 and the rule of D-130 stays (the four share one version). The protocol is versioned with the others because Harden ships a copy of it; it is not released: it keeps `"private": true` and the release build never packs it | `all-four-0-1-0` 0.98, confidence 0.98; no requirement contradicted. Rejected: protocol stays 0.0.0 (a released Harden's bill of materials would name a version that says nothing), a version line of its own (a second rule) |
+| D-145 | The release build is a command of its own, `npm run sdk:release`, writing to a folder of its own, `dist/sdk-release`; `sdk:pack` and `dist/sdk` are unchanged, so everything in `dist/sdk` is private at all times | `separate-command-and-folder` 0.99, confidence 0.99; no requirement contradicted. Rejected: a `--release` flag writing into `dist/sdk`, a flag writing elsewhere |
+
+Decided by the owner and the brief, not put to Jev: which packages, the version, what the release refuses, what the manifest and the README must say, and that the two checks only read.
+
+### As built
+
+- **Versions.** `packages/{protocol,shield-node,guard,harden}/package.json` and their four lockfile entries say 0.1.0; Shield's `SDK_VERSION`, which it sends with every batch of Events, says 0.1.0 (the one run-time change of this slice, and what a version is).
+- **`npm run sdk:release`** (`tools/sdk/src/release.ts`, `pipeline.ts`, `stage.ts`, `cli.ts`). Before anything is built or removed it reads the repository's state and refuses: uncommitted changes (changed, staged or untracked files), a `HEAD` that is not `refs/remotes/origin/main` (the remote-tracking ref as it is — **nothing is fetched**; when the ref is missing it says to run `git fetch origin`), an `origin` URL with credentials (refused without repeating them) or one that is not `https://host/owner/name` or `git@host:owner/name`. Then: build as always, stage only the three released packages, pack into `dist/sdk-release`.
+- **The publishable manifest** has no `private` field, `publishConfig: { "access": "public" }`, `description`, `keywords`, `license` (Apache-2.0, refused otherwise), `repository` (`git+https://…​.git` with the package's `directory`), `homepage` (the package's guide in the repository), `bugs`; `engines`, `exports`, `types`, `bin`, `files` and `dependencies` as in the ordinary pack. The ordinary pack's manifests are unchanged, key for key.
+- **The README for the npm page** (`stagedReadme` with a release): the package's name and one-line description; an "Early release" block (no hosted service — the API and Console are run by the user from the repository; a local single-process system; the release gate is blocked; scores are from a scripted stand-in; built from which commit; a local signature, no provenance attestation); install by name; then the guide from `docs/`, as before, with the package-specific sentences for an install by name, its own title removed, and every link to another document as an absolute URL into the repository. The guides' "Honest limits" sections come with them.
+- **The release manifest**: `kind: "release"`, the repository, the commit, `dirty: false`, the three packages with tarball and bill of materials; signed like every other. `sdk:verify` accepts it. Harden's bill of materials names the protocol it carries by version and by a SHA-256 over the carried files (there is no protocol tarball beside it in a release).
+- **`npm run sdk:release-check -- <dir>`** and **`npm run sdk:published-check -- <dir>`** (`tools/sdk/src/publish.ts`): both verify the folder first (a trusted signer, kind `release`, exactly the three names, no `private` inside a tarball) and ask no registry when that fails. They ask with `npm view <name>@<version> dist.integrity`, with npm's configuration left out and a cache in a temporary folder. The first wants every version absent and then prints `npm login` and three `npm publish "<absolute path>" --access public` lines; the second wants every version present with the local tarball's sha512. Neither runs a command that writes.
+- **Folders.** `dist/sdk-release` is a sixth named folder of the delete function, and temporary layouts have a `release` folder of the same kind.
+- **Gate.** `tools/sdk/test/release.test.ts` is a second fixed file of the check `sdk-signed-manifest`; the criterion's first note says what the release build is and that these checks need no network and no npm login.
+- **Documents.** README: "Publishing (owner only)", the commands table, the version in the tarball example. Nothing says the packages are published.
+- **Also fixed:** the README's and the Harden guide's example used `--test "npm test"`, which works only when the bundle folder itself holds the tests (MEMORY §11, from slice 22). Both now show `--test "node /absolute/path/to/test-bundle.mjs"`, and the README says where the command runs.
+
+### Proof
+
+| Item | Proving test | Red, then green |
+|---|---|---|
+| Versions | `release.test.ts` "the four packages are 0.1.0…" | Red with the file (0.0.0); green after the four manifests, the lockfile and `SDK_VERSION` |
+| What the release refuses | `release.test.ts`, 6 tests on small git repositories of their own, and the remote's 2 | Red: no `src/release.ts`. Green |
+| The publishable shape; the ordinary pack unchanged; the same compiled files; reproducible | `release.test.ts` "the release folder" (5 tests) | Red: no release mode. Green |
+| The npm page | `release.test.ts` "the README for the npm page" (3 tests) | Red as above; one more red on a link pattern of the test itself |
+| The release manifest, verify, Harden's bill of materials | `release.test.ts` "the signed release manifest" (3 tests) | Red as above. Green |
+| The owner's two checks | `release.test.ts` "the owner's checks, against a loopback registry" (6 tests): absent, present, unreachable, not a release folder, same bytes, missing and other bytes | Red: no `src/publish.ts`. Green |
+| The commands and scripts | `release.test.ts` "the commands" (2 tests) | Red, green |
+| The release folder in the delete function | `safe.test.ts` (the layout test) | Red: `layout.release` undefined. Green |
+| Gate | `catalog.test.ts`, `matrix.test.ts` (slice 23 tests, changed first) | Red: 3 tests. Green |
+| `--test` example | `skill-airverse-setup.test.ts` "the guides' --test example" | Red: both documents showed `--test "npm test"`. Green |
+
+**In a temporary clone with a local commit (never pushed), by hand:** with the changes copied in and uncommitted, `sdk:release` refused ("uncommitted changes (27)"); committed locally, it refused ("HEAD 226d03089993 is not origin/main (7aacbe69dd0c…)"); with the clone's `origin/main` ref moved to that commit and `origin` still a local path, it refused ("the origin remote is not a repository URL"); with the clone's `origin` set to the project's https URL (nothing fetched or pushed) it built three tarballs in under a second. `sdk:verify` accepted the folder; `sdk:release-check` asked the public registry read-only, found all three versions absent and printed the four commands; `sdk:published-check` said "not on the registry" three times and exited 1. The clone and its tarballs were removed: they were built from a commit that exists nowhere else and must not be published.
+
+**Commands run (2026-11-28):** the nine Vitest projects → 295 files, 7,485 tests passed (193 s); `npx tsc -b` clean; `npx biome check` on the changed files clean; the five SDK gate checks alone → all pass, `gate-sdk-artifacts-local` pass, 71 s wall (52 s before this slice; the release tests are in `sdk-signed-manifest`, 45 tests); `apps/console/tsconfig.json` unchanged. Not run: the full gate, Playwright, the Console project.
+
+**Jev on the finished change (`jev_gate`):** action `escalate` — composite 0.63, `safe_to_apply` 0.29, correctness confidence 0. Seven claims verified, none contradicted; "release-check prints commands only when…" at 0.40 and the test-run claim at 0.25. Not independently reviewed: that comes before the owner publishes.
+
+**Not test-first:** the keyword lists and the wording of the README's status block were written with the code; the tests pin the phrases that matter. The CLI's `release` command itself is not run by a test (the working tree of a test run is rarely clean); its parts are, and the clone run above exercised it. The CLI's two checks are tested against the public registry only by that one manual run; their logic is tested against a loopback registry.
+
+### What the owner does, in order
+
+1. Have this slice committed and pushed to `main`; in a clone with `node_modules` installed: `git fetch origin`, `git status` (clean), `HEAD` on `origin/main`.
+2. `npm run sdk:release` — it prints the three tarballs, the commit and the signing key's fingerprint.
+3. `npm run sdk:release-check -- dist/sdk-release` — online. Read the list; it must end with "ready" and four commands.
+4. `npm login` (once, with the account that owns the `@antireverse` organisation), then the three `npm publish … --access public` lines as printed, each with the one-time code npm asks for.
+5. `npm run sdk:published-check -- dist/sdk-release` — it must say "published".
+6. Only then are README, guides and skill changed to "install from npm" (not part of this slice).
+
+### Limits
+
+- **Nothing is published**, and nothing here has been run against a real publish: `sdk:published-check` has only ever seen a loopback registry answer "present".
+- **`origin/main` is the local remote-tracking ref.** A clone that has not fetched can build a release from a commit that `main` has since left behind; the command says "as this clone last fetched it" and fetches nothing.
+- **One person, one local key.** No provenance attestation (npm's `--provenance` needs a supported CI), no second approver. The README on the npm page says so.
+- **The registry check is a moment in time:** a version absent at the check can be taken by the first `npm publish` only; the second and third could in principle fail, leaving a partial release that `sdk:published-check` would report.
+- **A published version is permanent.** A mistake in 0.1.0 is fixed by 0.1.1, not by publishing again.
+- **The README's status block will age:** it says the gate is blocked and scores are from a stand-in; when that changes, the text in `stage.ts` has to change before the next release.
+- **`npm view` output is parsed:** an npm version that words a missing package differently could make the check report "unreachable" instead of "absent". It fails closed.
+- ~~Harden's `@babel/core` dependency is still declared and unused~~ — removed in the pre-publish review (S1), below.
+
+### Pre-publish review (2026-11-28)
+
+One independent review of the uncommitted 23b change: "fix before publishing" — one blocker, three should-fix, notes. Contents, manifests, install by name, guards and checks otherwise held. Every finding below was fixed with a failing test first, except where said.
+
+| # | Decision | Jev |
+|---|---|---|
+| D-146 | Every text a user reads shows `npx --no-install antireverse …`; never a bare `npx antireverse`, and never `npx @antireverse/harden` either (the scope is the owner's, but that form runs whatever is latest on the registry instead of the version the project's lockfile pins) | `no-install-only` 0.97, confidence 0.96; no requirement contradicted. Rejected: allowing the scoped form as an alternative, showing `./node_modules/.bin/antireverse` |
+
+| # | Finding | Fix | Failing test first |
+|---|---|---|---|
+| B1 | Harden's packed README (and the guides, the root README, the skill's printed command) said `npx antireverse`. The unscoped name `antireverse` is not registered on npm: where the command is not installed, npx downloads and runs whatever is published under that name — in a user's CI, with the admin key in the environment | D-146, in `stage.ts`, `docs/harden.md`, `docs/getting-started.md`, `README.md`, the skill and its preflight (`["npx", "--no-install", "antireverse"]`), each with the one sentence why. The Console's snippets and the command's own `--help` never showed `npx antireverse` (the Console shows the clone's `npx tsx` form) and are unchanged | `release.test.ts` "no documented command can fetch…" (3 tests) failed on `docs/harden.md` and both Harden READMEs; the skill's drift test on the printed command |
+| S1 | `@babel/core` was a declared dependency that nothing imports: 20 more packages in every install, for good once published | Removed from `packages/harden/package.json`. Checked first: no file of Harden's source, tests or bench imports it; `@babel/{generator,parser,traverse,types}` declare no peer dependency. Lockfile: the 20 entries only it needed are gone and `escalade` is now development-only, taken from npm's own offline result; the allowlist is regenerated. Harden's closure is 18 third-party packages (39 before) | The closure, bill-of-materials and manifest tests were changed first and failed; then the whole Harden suite on source (506 tests) and on the compiled output, and the install smoke test |
+| S2 | The clean-tree check did not see git-ignored files or skip-worktree files; an ignored `.env.local` in Guard's source folder, a file under an ignored `src/dist/`, and an unseen edit all shipped | `releaseState` refuses an ignored or untracked file in any of the four source folders and any file marked skip-worktree or assume-unchanged. And staging a release takes an allowlist: every file that would ship must be compiled or copied from a source file the release commit tracks (`git ls-tree HEAD`), in its own package or, inside the vendored protocol, in the protocol's | `release.test.ts` "what a clean `git status` hides" (4 tests) and "a release ships only files of tracked sources" (2 tests): all red first |
+| S3 | `release.test.ts` read the checkout's `origin`; with a local-path origin the suite, and the gate check, failed. Three tests failed when the checkout sat under `<tmp>/airverse-sdk-*` | The tests use the pinned public repository. The delete rule no longer applies its temporary kinds inside the repository, wherever the repository is | `safe.test.ts` "inside the repository the temporary kinds do not apply…" red first; then six SDK test files (134 tests) run green inside a clone at `<tmp>/airverse-sdk-relproof2/repo` with a local-path origin |
+
+**Notes fixed:**
+
+- Shield's packed README no longer speaks of "the reference target" (its row of the variables table is gone, the other two say "your code"); Harden's says "not a commit of the Airverse repository". `packedGuide` fails when the guide no longer holds these texts.
+- `antireverse --help` said "the equivalence gate proves it"; it now says that the gate checks it with `--test`.
+- `antireverse -v` and `--version` print the package's version, read from its own `package.json` (tested on the source bin and on the installed tarball).
+- `sdk:release-check` and `sdk:published-check` print "Registry asked" only when one was; when the folder itself is refused they say that no registry was asked.
+- The printed commands quote paths for a POSIX shell with single quotes (tested with a space, `$`, a backtick, `!` and `'` in the path, by letting a shell echo the argument back).
+- A signed release folder holding a tarball whose manifest is `private` is refused by both checks before any registry is asked (automated).
+- The public repository is pinned in `tools/sdk/src/packages.ts`; a release is refused when `origin` is another repository.
+- The `0.0.0` in `packages/protocol/src/events.ts` is the value of the exported example `EXAMPLE_EVENT_BATCH` (`sdk: { name: "shield-node", version: "0.0.0" }`): sample data that tests and documentation use, not this package's version and not a comment. It ships inside Harden's copy of the protocol as that example and was left.
+
+**Found while fixing B1:** `npx --no-install antireverse`, where the command is not installed, still asks the registry whether a package of that name exists (one metadata request) before it stops; it downloads no tarball and runs nothing. The test shows this against a registry that offers a decoy `antireverse` whose command prints a marker: with `--no-install` the marker never appears and no tarball is requested; with `--yes` it does. The sentence in the texts says "never downloads or runs", not "never asks".
+
+**In a temporary clone under `<tmp>/airverse-sdk-relproof2` (local commit 1ecac6c, never pushed; nothing fetched):** `sdk:release` refused, in turn: uncommitted changes (37); `HEAD` not `origin/main`; an origin that is a local path; an origin that is another repository; an ignored `packages/guard/src/.env.local` (with `git status` empty); a skip-worktree edit of `packages/harden/src/rng.ts` (with `git status` empty). Then, with the clone's origin set to the project's URL and its `origin/main` ref at the local commit, it built: shield-node 87,348 bytes (31 entries), guard 33,592 (12), harden 256,991 (114); Harden's dependencies are `@babel/generator`, `@babel/parser`, `@babel/traverse`, `@babel/types` and `zod`. `sdk:release-check` asked the public registry read-only: all three absent, "ready", commands printed with single quotes. The clone and its tarballs were removed.
+
+**Not test-first in this round:** the `npx --no-install` test passed at once (it describes npm's behaviour); the first version of it, which expected no registry request at all, failed and led to the finding above. The README's and the ticket's wording. Equivalence and the install smoke test were not run inside the clone (the six other SDK test files were).
+
+**Commands run after the fixes (2026-11-28):** the nine Vitest projects → 295 files, 7,501 tests passed; `npx tsc -b` clean; `npx biome check` clean. The five SDK gate checks alone then failed twice on `sdk-signed-manifest` although its 56 tests passed: the gate's scan for test names had taken a string handed to a RegExp's `test` method, and then a comment quoting that shape, for tests that did not run. The test was rewritten; third run: all five pass, `gate-sdk-artifacts-local` pass, 100 s wall on a busy machine (71 s before this round). The Console was not touched and its project was not run; no full gate, no Playwright. `apps/console/tsconfig.json` unchanged.
+
+**Jev on the fixes (`jev_gate`):** action `escalate` — composite 0.70, `safe_to_apply` 0.40. Six claims verified, none contradicted (0.48 to 0.98). Not independently reviewed again.
+
+**Still open for the owner:** reserve the unscoped name `antireverse` on npm (not done, not this slice's to do). Until then `--no-install` is what stands between a missing install and someone else's code.
+
+**Limits after the review:**
+
+- The allowlist of what ships covers the code (`dist/`). `README.md`, `LICENSE` and `NOTICE` are read from the working tree, which the clean-tree and skip-worktree checks cover.
+- The ignored-file check looks at the four source folders, not at the whole repository: an ignored file elsewhere cannot reach a tarball through the build, and is not refused.
+- The pinned repository URL has to be changed in `packages.ts` if the project moves.
+- Removing `@babel/core` leaves its 20 packages in an existing `node_modules` until the next `npm ci`; nothing uses them.
+
+### Time budgets run last (2026-11-28)
+
+**What happened.** The full release gate failed twice in a row on the uncommitted tree, on one test: `packages/guard/test/integrity.test.ts`, "worst-case time of plan() (third review F8, PB-06) › 64 Builds of 32 nested same-name paths…" — `expected 25.42 to be less than 25`, then `expected 25.59 to be less than 25`. Guard's code had not changed. Alone the test reads 5.6 ms; inside the full parallel `npm test` (401 files, now with the heavier `sdk` project) about 25 ms. The best of five runs that the test already takes does not filter a slowdown that lasts.
+
+| # | Decision | Jev |
+|---|---|---|
+| D-147 | (coordinator) Budgets and best-of-five stay as they are; tests with a wall-clock budget run outside the parallel phase | `isolate-timing` 0.69, confidence 0.65; no requirement contradicted. `more-runs` 0.29. Agreed by the coordinator: the contention is sustained (4.4 times), so more runs would not filter it |
+| D-148 | The test files that hold such a test run **whole**, late and one at a time; no test file is changed and nothing is extracted | `whole-files-late` 0.87, confidence 0.84; no requirement contradicted. Rejected: extracting each test into a `*.timing.test.ts` file with shared helper modules (it means rewriting the helpers of a 3,000-line security test file before a release), a mix of both. **This differs from what the coordinator's brief suggested** (extraction); the reason is risk, and the cost is that about 900 tests that have no time bound run late too |
+| D-149 | Which files: those whose bound measures CPU work, a ratio of two measured times, or the start of a process or worker. A deliberate wait with slack, a poll-interval budget and a hang guard with ample headroom stay where they are | `cpu-and-startup-bound` 0.89, confidence 0.87; no requirement contradicted. Rejected: every file with any time bound (about 40 files, most of api and e2e, minutes of sequential time), only the two that had failed. **This is narrower than "every test that asserts a wall-clock budget"** in the brief; every such assertion is listed below with its numbers |
+
+**As built.**
+
+- `vitest.timing.ts` (repository root) lists the files, each with its project, its kind (`cpu`, `ratio`, `start-up`) and why. Thirteen files today.
+- `vitest.config.ts`: every package project comes from one helper; a project with listed files excludes them and gets a twin named `<project>-timing` (`guard-timing`, `shield-node-timing`, `harden-timing`, `prove-timing`, `api-timing`) with the same root, environment and timeout, `fileParallelism: false` and its own `sequence.groupOrder` (1 to 5). Vitest 5.1 runs groups from lowest to highest and gives a project with one worker and an explicit group a group of its own (read in `node_modules/vitest`, and proven by a run, below). No test runs twice and none is skipped.
+- `tools/sdk/vitest.dist.config.ts`: the compiled-output run has the same twins from the same list (`shield-node-timing-dist`, `harden-timing-dist`), and the equivalence check's source run names the twins too, so the two runs still hold the same tests.
+- `tools/gate/src/matrix.ts`: a file a matrix selects is run in the project that includes it; `campaign-safety` keeps its two redaction files, now run in `api-timing`.
+- `tools/gate/test/timing.test.ts`: the list against the root configuration and the matrices, and a real run whose JSON shows every late file starting after the last ordinary file ended, the late files not overlapping, each file once.
+- README, Development: how to run one package's tests (`--project guard --project guard-timing`) and where a new timing test goes.
+
+**The files that run late** (values: alone / inside the full run before the change / in the late phase after it):
+
+| File | Kind | Bound | Alone | Full run before | Late phase after |
+|---|---|---|---|---|---|
+| `packages/guard/test/integrity.test.ts` | cpu | 25 ms (PB-06), five sites | 8.7 | 22.9 (25.4 and 25.6 in the gate) | 8.1 to 8.9 |
+| `packages/shield-node/test/decide.test.ts` | cpu | p99 0.5 ms | 0.21 | 0.34 | 0.10 to 0.12 |
+| `packages/shield-node/test/patches-differential.test.ts` | ratio | under 10 | 4.8 | 5.1 | 4.6 to 4.9 |
+| `packages/shield-node/test/shield.test.ts` | start-up | 2,000 ms | 529 | 793 | 522 to 532 |
+| `packages/harden/test/leaks.test.ts` | ratio | under 30 | 21.4 | 12.9 (failed once in the equivalence run) | 10.2 to 10.7 |
+| `packages/prove/test/sandbox.test.ts` | start-up | 1,000 ms | 48 | 433 | 41 to 42 |
+| `packages/prove/test/assess-worker.test.ts` | start-up | 1.5 s | 1.04 | 1.35 (1.96 and 2.70, failed, beside a second suite) | 1.0 |
+| `packages/prove/test/logic.test.ts` | start-up | a 5 s batch limit | — | failed once beside a second suite (a timeout where a refusal was expected) | passed |
+| `packages/prove/test/tamper.test.ts` | start-up | 3,000 ms | 372 | 445 | not measured after it was added |
+| `packages/prove/test/stand-in.test.ts` | ratio | under 10 | 2.7 | up to 9.3; 10.8 (failed) in one full run | not measured after it was added |
+| `apps/api/test/integrity-review.test.ts` | cpu | 250 ms | 16 to 22 | up to 186 | not measured after it was added |
+| `apps/api/test/campaign-review-redact.test.ts` | cpu, ratio | 250 ms | 87 | 67 | 13 to 15 |
+| `apps/api/test/campaign-review2-redact.test.ts` | cpu | 250 ms | 57 | 50 | 16 to 19 |
+
+The last four were found after the first choice of eight: `assess-worker` and `logic` failed in the busy phase of the first loaded proof runs, `stand-in` failed in one plain full run, and `integrity-review` came out of a search of the measurements for bounds that move with load and came within 40 % of their limit.
+
+**Every upper bound on a measured time in the Vitest projects**, with its largest value alone and inside the full run before the change (found by a temporary hook that logged every `toBeLessThan` and `toBeLessThanOrEqual`; removed again). One row per file and bound; the last column is the full-run value as a share of the bound.
+
+| File | Bound | Alone | Full run | Share |
+|---|---|---|---|---|
+| `packages/harden/test/cli-gate.test.ts` | 9000 | 8500 | 8500 | 94 % |
+| `packages/guard/test/integrity.test.ts` | 25 | 8.7 | 22.9 | 92 % |
+| `packages/prove/test/assess-worker.test.ts` | 1.5 | 1 | 1.4 | 90 % |
+| `apps/api/test/slo-service.test.ts` | 2000 | 1503 | 1503 | 75 % |
+| `packages/shield-node/test/decide.test.ts` | 0.5 | 0.209 | 0.339 | 68 % |
+| `packages/shield-node/test/patches-differential.test.ts` | 10 | 4.8 | 5.1 | 51 % |
+| `packages/prove/test/sandbox.test.ts` | 1000 | 48.1 | 433 | 43 % |
+| `packages/harden/test/leaks.test.ts` | 30 | 21.4 | 12.9 | 43 % |
+| `packages/shield-node/test/shield.test.ts` | 2000 | 529 | 793 | 40 % |
+| `tests/e2e/policy.http.test.ts` | 15000 | 6014 | 5766 | 38 % |
+| `apps/api/test/campaign-review-redact.test.ts` | 250 | 86.8 | 67.3 | 27 % |
+| `apps/api/test/notifier.test.ts` | 1500 | 310 | 317 | 21 % |
+| `apps/api/test/campaign-review2-redact.test.ts` | 250 | 56.6 | 49.9 | 20 % |
+| `packages/prove/test/assess.test.ts` | 8000 | 1507 | 1535 | 19 % |
+| `tests/e2e/containment.http.test.ts` | 30000 | 4952 | 5669 | 19 % |
+| `packages/prove/test/sandbox.test.ts` | 3000 | 502 | 559 | 19 % |
+| `tests/e2e/canaries.http.test.ts` | 15000 | 2376 | 2697 | 18 % |
+| `packages/prove/test/assess-worker.test.ts` | 5000 | 802 | 803 | 16 % |
+| `packages/shield-node/test/transport.test.ts` | 1000 | 153 | 159 | 16 % |
+| `apps/api/test/prove-assessor.test.ts` | 2000 | 301 | 305 | 15 % |
+| `packages/prove/test/tamper.test.ts` | 3000 | 372 | 445 | 15 % |
+| `apps/api/test/smtp-client.test.ts` | 2000 | 253 | 252 | 13 % |
+| `packages/prove/test/logic.test.ts` | 3000 | 258 | 330 | 11 % |
+| `apps/api/test/prove-assessor.test.ts` | 3000 | 302 | 306 | 10 % |
+| `packages/prove/test/assess.test.ts` | 2000 | 201 | 202 | 10 % |
+| `apps/api/test/alert-channels.test.ts` | 1500 | 102 | 108 | 7 % |
+| `apps/api/test/campaign-review6-runner.test.ts` | 3000 | 209 | 211 | 7 % |
+| `tools/gate/test/run.test.ts` | 8000 | 505 | 509 | 6 % |
+| `packages/shield-node/test/counter-store.test.ts` | 0.01 | 0 | 0 | 5 % |
+| `tests/e2e/journey.http.test.ts` | 5000 | 229 | 227 | 5 % |
+| `apps/api/test/campaign-redact.test.ts` | 500 | 19.1 | 15.9 | 3 % |
+| `tests/e2e/detection.http.test.ts` | 10000 | 209 | 205 | 2 % |
+| `packages/shield-node/test/patches.test.ts` | 500 | 0.702 | 10 | 2 % |
+| `packages/protocol/test/patches.test.ts` | 500 | 1.7 | 9.6 | 2 % |
+| `packages/shield-node/test/block.test.ts` | 2000 | 12.4 | 35.9 | 2 % |
+| `packages/protocol/test/patches.test.ts` | 1000 | 2 | 17.3 | 2 % |
+| `packages/harden/test/leaks.test.ts` | 30000 | 228 | 388 | 1 % |
+| `packages/shield-node/test/patches-differential.test.ts` | 2000 | 9.9 | 16.3 | 1 % |
+| `packages/harden/test/leaks.test.ts` | 2000 | 6.3 | 12.6 | 1 % |
+| `apps/api/test/campaign-review2-transport.test.ts` | 1500 | 5.3 | 6.9 | 0 % |
+| `apps/api/test/campaign-review-redact.test.ts` | 100 | 0.324 | 0.453 | 0 % |
+| `apps/api/test/assessment-engine.test.ts` | 1000 | 3.4 | 4 | 0 % |
+| `tests/e2e/canaries.http.test.ts` | 60000 | 202 | 206 | 0 % |
+| `apps/range/test/main.test.ts` | 3000 | 5.7 | 9.4 | 0 % |
+| `apps/api/test/integrity.test.ts` | 2000 | 3.2 | 4.4 | 0 % |
+| `tests/e2e/campaign-scope.http.test.ts` | 5000 | 6 | 11 | 0 % |
+| `apps/api/test/assessment-engine.test.ts` | 2000 | 4.7 | 4.2 | 0 % |
+| `packages/shield-node/test/transport.test.ts` | 2000 | 1.3 | 3.5 | 0 % |
+| `packages/protocol/test/policy.test.ts` | 50 | 0.025 | 0.029 | 0 % |
+| `packages/shield-node/test/express.test.ts` | 5000 | 0.189 | 0.371 | 0 % |
+| `tests/e2e/clone-beacon.http.test.ts` | 60000 | 1 | 1 | 0 % |
+
+Rows that stay in the parallel phase are waits and guards: `cli-gate` 8,500 of 9,000 ms and `slo-service` 1,503 of 2,000 ms are timers (the same value alone and under load); the end-to-end budgets wait for poll intervals; the rest have five times or more of headroom in the full run. The browser journeys (`*.e2e.ts`, Playwright) hold budgets too and are not part of `npm test`.
+
+**Proof.**
+
+| What | Result |
+|---|---|
+| The order | `timing.test.ts` "a real run": in the JSON report every late file starts at or after the end of the last ordinary file, and no two late files overlap. Red first: the list, the twins and the matrix mapping did not exist |
+| The whole `npm test`, before | 401 files, 9,598 tests, 256 s; Guard's worst site 22.9 ms of 25 |
+| After, nothing else running | 402 files, 9,603 tests, 261 s (with the first eight files late); Guard 8.9 ms |
+| After, the final list of thirteen files, plain `npm test` twice | 402 files, 9,603 tests passed both times; 333 s and 307 s. The run is longer than before (256 s): the late files, Prove's with their deliberate waits among them, now run one after another, and the machine had been under load for an hour |
+| After, with a second `vitest run --project api` beside it, four runs | 434 s and 449 s (eight files), 394 s and 445 s (eleven files). Guard in the late phase: 8.7, 8.8, 8.1, 8.5 ms. In the same runs the order test's child ran Guard's late file during the busy phase and read 19.4, 22.5, 14.8 and 28.9 ms: the same code, the same machine, the only difference being when it ran |
+| What still failed under that extra load | First two runs (before the lighter order test): `mail-message` (a property test, 5 s test timeout), `kill-switch-drill` (20 s test timeout), `assess-worker` (since listed), and the order test itself, which then also judged whether its child's tests passed (it no longer does). Second run of the next pair: `logic.test.ts` (since listed). Third pair: none |
+| A real regression still fails | With `plan()` made to do its work three times (a temporary edit of `packages/guard/src/integrity.js`, restored; `git diff` empty afterwards) the two worst-case budget tests still passed alone — the budget has three to four times of headroom when nothing else runs — and a behaviour test failed instead (it counts reads). With five times the work both budget tests failed: 35.0 and 26.9 ms against 25 |
+
+**Commands run at the end (2026-11-28):** `npx tsc -b` exit 0; `npx biome check` on the changed files clean; `gate:release --only` the five SDK checks and `campaign-safety` → all pass (`campaign-safety` 483 tests in 32 files, two of them now in `api-timing`), 114 s for the six. The full gate and Playwright were not run. `apps/console/tsconfig.json` unchanged.
+
+**Jev on the change (`jev_gate`):** action `review` — composite 0.82, `safe_to_apply` 0.57; five claims verified, none contradicted (0.50 to 0.96). Not independently reviewed.
+
+**Limits.**
+
+- A budget on a developer's machine is a proxy: 25 ms here is not 25 ms on a phone. Running the tests alone makes the number repeatable; it does not make it a device measurement.
+- Run alone, the budget tests have headroom again, so a regression of less than about three times passes them. That was always so on a quiet machine; the full run had hidden it by eating the headroom.
+- The late phase is quiet only as far as this run goes. Another process on the machine still slows it: the gate should not run beside other work.
+- The list is kept by a rule and by hand. A new test with a CPU, ratio or start-up bound in a file that is not listed runs in the busy phase until someone lists the file. The search over logged assertions found four files the first reading had missed; it is not automated.
+- Two tests failed under the extra load only because of their test timeout (`mail-message`, 88 ms alone; `kill-switch-drill`): not time budgets, not moved.
+- About 900 tests without a time bound now run late with their files. It costs a few seconds.
+- `vitest run --project guard` alone no longer runs Guard's integrity tests; the twin has to be named. The README and the configuration's header say so.

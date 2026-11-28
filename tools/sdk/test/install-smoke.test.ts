@@ -313,9 +313,54 @@ describe("the installed packages on plain Node", () => {
     const direct = await exec(bin, ["--help"], { cwd: project, env: plainEnv() });
     expect(direct.code, direct.stderr).toBe(0);
     expect(direct.stdout).toBe(byNode.stdout);
+    // Slice 23b review: the packed command knows its own version, from the manifest it was installed with.
+    for (const flag of ["--version", "-v"]) {
+      const version = await node([bin, flag]);
+      expect(version.code, version.stderr).toBe(0);
+      expect(version.stdout).toBe(`${packed.manifest.packages[3]?.version}\n`);
+    }
     const usage = await node([bin, "gate", "--min-rrs", "5"]);
     expect(usage.code).toBe(2);
     expect(usage.stderr).toContain("gate: missing --assessment");
+  });
+
+  // Review B1 (D-146): the documented form. It runs the installed command; where the command is not installed it
+  // stops — also when a registry offers a package of that name. (npx may ask the registry whether the name exists;
+  // it downloads nothing and runs nothing.)
+  it("`npx --no-install antireverse` runs the installed command, and never a package of that name from a registry", async () => {
+    // A registry on which someone has published the unscoped name, with a command that says so when it runs.
+    const decoyDir = join(base, "unscoped-decoy");
+    mkdirSync(decoyDir, { recursive: true });
+    const decoyManifest = { name: "antireverse", version: "9.9.9", bin: { antireverse: "./bin.js" } };
+    writeFileSync(join(decoyDir, "package.json"), JSON.stringify(decoyManifest));
+    writeFileSync(join(decoyDir, "bin.js"), '#!/usr/bin/env node\nconsole.log("DECOY RAN");\n', { mode: 0o755 });
+    const [decoy] = await npmPack([decoyDir], join(base, "unscoped-out"), npmWork);
+    const hostile = await startRegistry([...thirdParty, { manifest: decoyManifest, tarball: decoy as PackedTarball }]);
+    const npx = (cwd: string, flags: string[], work: string) =>
+      exec("npx", [...flags, "antireverse", "--help"], {
+        cwd,
+        env: npmEnv(join(base, work), { registry: hostile.url }),
+      });
+    try {
+      const installed = await npx(project, ["--no-install"], "npm-npx");
+      expect(installed.code, installed.stderr).toBe(0);
+      expect(installed.stdout).toContain("antireverse harden <dir>");
+      expect(installed.stdout).not.toContain("DECOY RAN");
+      expect(hostile.requests).toEqual([]);
+      const empty = join(base, "no-harden");
+      mkdirSync(empty, { recursive: true });
+      writeFileSync(join(empty, "package.json"), JSON.stringify({ name: "empty", version: "1.0.0", private: true }));
+      const missing = await npx(empty, ["--no-install"], "npm-npx-missing");
+      expect(missing.code).not.toBe(0);
+      expect(missing.stdout).not.toContain("DECOY RAN");
+      expect(hostile.requests.filter((r) => r.path.startsWith("-/tarballs/"))).toEqual([]);
+      expect(existsSync(join(empty, "node_modules"))).toBe(false);
+      // The control: without --no-install the same npx downloads the registry's package and runs it.
+      const bare = await npx(empty, ["--yes"], "npm-npx-bare");
+      expect(bare.stdout).toContain("DECOY RAN");
+    } finally {
+      await hostile.close();
+    }
   });
 
   it("a real Harden run protects a small bundle, proves equivalence with --test, and the result behaves the same", async () => {

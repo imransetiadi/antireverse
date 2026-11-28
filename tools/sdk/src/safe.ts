@@ -1,8 +1,9 @@
 // The only code in the SDK tooling's source (tools/sdk/src) that removes a folder (slice 23, lesson L-009): every
 // command goes through it. (The tests remove the temporary folder they made with mkdtemp themselves, by the path
 // mkdtemp returned.) A build folder is one of:
-//   - in the repository: packages/{protocol,shield-node,guard,harden}/dist, dist/sdk, dist/sdk-work — nothing else;
-//   - in a test: a folder of the same three kinds — …/build/<package>, …/work, …/out — inside a folder named
+//   - in the repository: packages/{protocol,shield-node,guard,harden}/dist, dist/sdk, dist/sdk-work and
+//     dist/sdk-release — nothing else;
+//   - in a test: a folder of the same kinds — …/build/<package>, …/work, …/out, …/release — inside a folder named
 //     airverse-sdk-* directly under the operating system's temporary directory. The kinds are the same on purpose:
 //     code that would remove some other folder is refused in a test exactly as it would be in the repository.
 // The repository root comes from this file's own location, never from a caller. A target is refused when it is
@@ -25,18 +26,26 @@ const REPO_BUILD_DIRS: readonly string[] = [
   ...SDK_PACKAGES.map((pkg) => `packages/${pkg.short}/dist`),
   "dist/sdk",
   "dist/sdk-work",
+  "dist/sdk-release",
 ];
 
 /** The kinds of folder a temporary layout has (see tempLayout). */
-const TEMP_BUILD_DIRS: readonly string[] = [...SDK_PACKAGES.map((pkg) => `build/${pkg.short}`), "work", "out"];
+const TEMP_BUILD_DIRS: readonly string[] = [
+  ...SDK_PACKAGES.map((pkg) => `build/${pkg.short}`),
+  "work",
+  "out",
+  "release",
+];
 
 export interface Layout {
   /** Where a package's compiled files go. */
   dist(pkg: SdkPackage): string;
   /** Staging folders, the npm cache and the npm configuration files of the pack. */
   work: string;
-  /** The tarballs, the bills of materials and the manifest. */
+  /** The tarballs, the bills of materials and the manifest of the ordinary pack: private, not publishable. */
   out: string;
+  /** The same for a release build (slice 23b): the three publishable tarballs. Never the same folder as `out`. */
+  release: string;
 }
 
 /** The nearest existing ancestor's real path, with the missing rest appended. */
@@ -52,14 +61,22 @@ function realOf(path: string): string {
   return join(realpathSync.native(existing), ...rest);
 }
 
-/** Why `target` is not a build folder, or null when it is one. */
-function notABuildDir(target: string): string | null {
+/**
+ * Why `target` is not a build folder, or null when it is one. `roots.repoRoot` is for tests of the rule itself: the
+ * commands always use the repository this file is in.
+ */
+export function buildDirReason(target: string, roots: { repoRoot?: string } = {}): string | null {
   if (typeof target !== "string" || target === "" || !isAbsolute(target)) return "the path is not absolute";
   if (resolve(target) !== target) return "the path is not normalised";
   // The folder as the file system sees it: its parent's real path and its own name.
   const real = join(realOf(dirname(target)), basename(target));
-  const inRepo = relative(realpathSync.native(REPO_ROOT), real);
+  const inRepo = relative(realpathSync.native(roots.repoRoot ?? REPO_ROOT), real);
   if (REPO_BUILD_DIRS.includes(inRepo.split(sep).join("/"))) return null;
+  // Inside the repository nothing else is a build folder — also when the checkout itself lies in a temporary
+  // folder with our prefix, where the temporary kinds below would otherwise match (review S3).
+  if (inRepo === "" || (!inRepo.startsWith("..") && !isAbsolute(inRepo))) {
+    return "it is not a build folder of the SDK tooling";
+  }
   const inTemp = relative(realpathSync.native(tmpdir()), real);
   if (!inTemp.startsWith("..") && !isAbsolute(inTemp)) {
     const parts = inTemp.split(sep);
@@ -81,7 +98,7 @@ export interface CleanOptions {
 
 /** Removes a build folder, or throws naming it. A folder that does not exist is left alone. */
 export function cleanBuildDir(target: string, options: CleanOptions = {}): void {
-  const reason = notABuildDir(target);
+  const reason = buildDirReason(target);
   if (reason !== null) throw new Error(`refusing to remove ${JSON.stringify(target)}: ${reason}`);
   let stat: ReturnType<typeof lstatSync>;
   try {
@@ -112,6 +129,7 @@ export function repoLayout(): Layout {
     dist: (pkg) => join(REPO_ROOT, "packages", pkg.short, "dist"),
     work: join(REPO_ROOT, "dist/sdk-work"),
     out: join(REPO_ROOT, "dist/sdk"),
+    release: join(REPO_ROOT, "dist/sdk-release"),
   };
 }
 
@@ -121,9 +139,10 @@ export function tempLayout(base: string): Layout {
     dist: (pkg) => join(base, "build", pkg.short),
     work: join(base, "work"),
     out: join(base, "out"),
+    release: join(base, "release"),
   };
-  for (const target of [layout.work, layout.out, ...SDK_PACKAGES.map((pkg) => layout.dist(pkg))]) {
-    const reason = notABuildDir(target);
+  for (const target of [layout.work, layout.out, layout.release, ...SDK_PACKAGES.map((pkg) => layout.dist(pkg))]) {
+    const reason = buildDirReason(target);
     if (reason !== null || !inTemp(target)) {
       throw new Error(
         `refusing ${JSON.stringify(base)} as a build base: it is not inside a ${TEMP_PREFIX}* folder of the temporary directory`,

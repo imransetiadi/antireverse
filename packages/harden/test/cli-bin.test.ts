@@ -2,7 +2,7 @@
 // the symlink in node_modules/.bin, not the file itself. The CLI must still run — a silent exit 0 would pass every CI
 // gate. Importing cli.ts as a module must not run it. Each case runs a real Node child process (type stripping).
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -37,6 +37,22 @@ describe.each(bins)("the CLI started through %s", (_name, bin) => {
     expect(r.stderr).toBe("");
     expect(r.code).toBe(0);
     expect(r.stdout).toContain("antireverse gate --assessment <asm_id> --min-rrs <0-100>");
+    // Slice 23b review: equivalence is checked only when a test command is given; the help does not say more.
+    expect(r.stdout).not.toContain("the equivalence gate proves it");
+    expect(r.stdout).toContain(
+      "with --test, the equivalence gate checks that the protected bundle still passes your tests",
+    );
+    expect(r.stdout).toContain("antireverse -v ");
+  }, 30_000);
+
+  it("prints the package's version for --version and -v, read from its own manifest", async () => {
+    const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
+    for (const flag of ["--version", "-v"]) {
+      const r = await node([bin, flag]);
+      expect(r.stderr).toBe("");
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe(`${manifest.version}\n`);
+    }
   }, 30_000);
 
   it("exits 2 on a usage error (it never passes silently)", async () => {

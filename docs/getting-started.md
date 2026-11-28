@@ -10,7 +10,7 @@ From nothing to your first protected request, then Guard in the browser and Hard
 - A clone of this repository. The packages (`@antireverse/shield-node`, `@antireverse/guard`, `@antireverse/harden`) are not published to npm yet; inside the repository they are workspace packages, linked by `npm install`.
 - For a project of your own outside the repository, `npm run sdk:pack` in the clone writes installable tarballs (plain JavaScript) to `dist/sdk`; install them with `npm install --ignore-scripts <tarball>`. The README's "SDK packages" section says what comes with them. Using the clone's folders directly remains possible; keep the clone beside your project, not inside it.
 - The `@antireverse` scope on npm belongs to the project owner (since 2026-11-28) and holds no package yet, so `npm install @antireverse/<name>` finds nothing: use the tarballs or the clone. Neither asks a registry for an `@antireverse` name (a test checks both).
-- In the clone, Harden runs as `npx antireverse …` on Node 22.23 or newer. On Node 22.12 that fails with `ERR_UNKNOWN_FILE_EXTENSION`; use `npx tsx packages/harden/src/cli.ts …` instead, as the commands below do. Installed from its tarball, `npx antireverse …` works on every supported Node. See [Harden](harden.md#running-it).
+- In the clone, Harden runs as `npx --no-install antireverse …` on Node 22.23 or newer. On Node 22.12 that fails with `ERR_UNKNOWN_FILE_EXTENSION`; use `npx tsx packages/harden/src/cli.ts …` instead, as the commands below do. Installed from its tarball, `npx --no-install antireverse …` works on every supported Node. Always keep `--no-install`: it never downloads or runs a package named `antireverse` from the registry. See [Harden](harden.md#running-it).
 
 ## 1. Start Airverse
 

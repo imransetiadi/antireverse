@@ -88,12 +88,17 @@ export async function npmPack(folders: readonly string[], destination: string, w
   });
 }
 
-/** Packs the staged packages into the layout's output folder, which is emptied first. */
-export async function packStaged(staged: readonly StagedPackage[], layout: Layout): Promise<PackedTarball[]> {
-  prepareBuildDir(layout.out);
+/** Packs the staged packages into `out` — the layout's ordinary or release folder — which is emptied first. */
+export async function packStaged(
+  staged: readonly StagedPackage[],
+  layout: Layout,
+  out: string = layout.out,
+): Promise<PackedTarball[]> {
+  if (out !== layout.out && out !== layout.release) throw new Error(`${out} is not an output folder of the layout`);
+  prepareBuildDir(out);
   const packed = await npmPack(
     staged.map((entry) => entry.dir),
-    layout.out,
+    out,
     layout.work,
   );
   for (const [index, entry] of staged.entries()) {

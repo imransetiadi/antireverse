@@ -38,9 +38,12 @@ describe("the packed runtime closure", () => {
     const harden = ids("harden");
     expect(harden.filter((id) => id.startsWith("@antireverse/"))).toEqual([]);
     expect(harden).toContain("zod@4.6.7");
-    for (const name of ["core", "generator", "parser", "traverse", "types"])
-      expect(harden).toContain(`@babel/${name}@8.1.0`);
-    expect(harden.length).toBeGreaterThan(20);
+    for (const name of ["generator", "parser", "traverse", "types"]) expect(harden).toContain(`@babel/${name}@8.1.0`);
+    // Slice 23b review S1: @babel/core, which no code imported, is gone, and with it twenty packages.
+    expect(harden.filter((id) => /^(@babel\/core|browserslist|json5|gensync|convert-source-map)@/.test(id))).toEqual(
+      [],
+    );
+    expect(harden.length).toBe(18);
     expect(harden).toEqual([...harden].sort());
     expect(new Set(harden).size).toBe(harden.length);
   });
@@ -307,8 +310,8 @@ describe("the bill of materials", () => {
       licenses: [{ license: { id: "MIT" } }],
       externalReferences: [{ type: "distribution", url: "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz" }],
     });
-    const core = bom.components.find((c) => c.purl === "pkg:npm/%40babel/core@8.1.0");
-    expect(core).toMatchObject({ group: "@babel", name: "core" });
+    const parser = bom.components.find((c) => c.purl === "pkg:npm/%40babel/parser@8.1.0");
+    expect(parser).toMatchObject({ group: "@babel", name: "parser" });
     expect(bom.components.filter((c) => c.group === "@antireverse")).toEqual([]);
     expect(bom.metadata.component.components).toEqual([
       {
@@ -330,7 +333,6 @@ describe("the bill of materials", () => {
     const bom = sbom("harden");
     const of = (ref: string) => bom.dependencies.find((d) => d.ref === ref)?.dependsOn;
     expect(of(`pkg:npm/%40antireverse/harden@${version}`)).toEqual([
-      "pkg:npm/%40babel/core@8.1.0",
       "pkg:npm/%40babel/generator@8.1.0",
       "pkg:npm/%40babel/parser@8.1.0",
       "pkg:npm/%40babel/traverse@8.1.0",

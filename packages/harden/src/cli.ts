@@ -159,9 +159,10 @@ const SCAN_SKIP_DIRS = new Set(["node_modules", ".git"]);
 const HELP = `antireverse harden <dir> — defensive build-time protection for a bundle you own.
 antireverse gate — fail a CI step when a Build's Reverse Resistance Score is below your threshold.
 
-Responsible use: Harden protects software you own and never changes its behaviour (the equivalence gate proves it); it is not for evading detection or protecting software you do not own.
+Responsible use: Harden protects software you own and is built never to change its behaviour (with --test, the equivalence gate checks that the protected bundle still passes your tests); it is not for evading detection or protecting software you do not own.
 
 Usage:
+  antireverse -v       Print the version of this package.
   antireverse harden <dir> --profile <light|balanced|maximum> [options]
   antireverse gate --assessment <asm_id> --min-rrs <0-100> --endpoint <url> --key-env <VAR> [--wait <s>] [--on-no-score <fail|pass>] [--json]
 
@@ -466,7 +467,19 @@ function seedFromBuildId(buildId: string): number {
   return createHash("sha256").update(buildId).digest().readUInt32BE(0);
 }
 
+/** The version of the package this file belongs to: package.json is one folder up, in the source and when packed. */
+function packageVersion(): string {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+  };
+  return typeof manifest.version === "string" ? manifest.version : "unknown";
+}
+
 export async function main(argv: string[], io: CliIo): Promise<number> {
+  if (argv[0] === "--version" || argv[0] === "-v") {
+    io.stdout(`${packageVersion()}\n`);
+    return 0;
+  }
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
     io.stdout(HELP);
     return 0;

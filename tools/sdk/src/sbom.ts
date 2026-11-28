@@ -71,7 +71,7 @@ export function sbomOf(
   version: string,
   closure: Closure,
   tarballs: Readonly<Record<string, string>>,
-  vendored: ReadonlyArray<{ name: string; dir: string }> = [],
+  vendored: ReadonlyArray<{ name: string; dir: string; filesSha256?: string }> = [],
 ): Sbom {
   const own = (pkg: string): Pick<SbomComponent, "hashes"> => {
     const sha256 = tarballs[pkg];
@@ -84,11 +84,18 @@ export function sbomOf(
     if (found === undefined) throw new Error(`${id} is not in the closure`);
     return found;
   };
+  // The vendored package's own tarball digest when it was packed beside this one; in a release build, where it is
+  // not packed at all, a digest over the files that were copied.
   const inside = vendored.map((item) =>
     component(item.name, version, {
-      ...own(item.name),
+      ...(item.filesSha256 === undefined ? own(item.name) : {}),
       ...licenses("Apache-2.0"),
-      properties: [{ name: "airverse:vendored", value: `compiled files copied into ${item.dir}` }],
+      properties: [
+        { name: "airverse:vendored", value: `compiled files copied into ${item.dir}` },
+        ...(item.filesSha256 === undefined
+          ? []
+          : [{ name: "airverse:vendored-files-sha256", value: item.filesSha256 }]),
+      ],
     }),
   );
   const subject = component(name, version, {

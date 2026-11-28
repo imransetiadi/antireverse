@@ -447,7 +447,7 @@ export const CRITERIA: readonly Criterion[] = [
     gaps: [],
     requires: [],
     notes: [
-      'Nothing is published and nothing is released: the version is 0.0.0 and the packed manifests keep "private": true, so npm publish refuses them.',
+      "No command here publishes. The ordinary pack writes four tarballs whose manifests keep \"private\": true, so npm publish refuses them. The release build (slice 23b) writes the three publishable tarballs of Shield, Guard and Harden into a folder of its own, from a clean tree on origin/main, and stops: publishing is the owner's act, by hand, with their own npm login. These checks cover the release shape and the owner's two checks against a loopback registry: no network and no npm login. They do not show that anything is on the public registry.",
       "The manifest's signature is by the gate's local key: it shows that whoever holds that key signed these files on their machine. It is not provenance from a protected pipeline, and no second person approved anything.",
       "Reproducible here means two clean builds on this machine with the same Node and npm give the same bytes; another Node, npm or TypeScript version may compress or emit differently, and the manifest records the versions used.",
       "The install uses a loopback registry filled from the repository's own node_modules (installed against package-lock.json), with install scripts off: it shows that npm resolves the packed manifests, not what the public registry would serve on another day.",

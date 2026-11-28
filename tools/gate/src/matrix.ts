@@ -3,6 +3,7 @@
 // because a name filter (-t) skips the setup tests that later tests of the same file depend on.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { isTimingFile, timingProjectOf } from "../../../vitest.timing.ts";
 
 export interface Matrix {
   id:
@@ -131,7 +132,13 @@ export const MATRICES: readonly Matrix[] = [
   // The runtime closure, the CycloneDX documents and the dependency allowlist.
   { id: "sdk-sbom-allowlist", projects: ["sdk"], files: ["tools/sdk/test/sbom-allowlist.test.ts"] },
   // The signed manifest and sdk:verify.
-  { id: "sdk-signed-manifest", projects: ["sdk"], files: ["tools/sdk/test/manifest.test.ts"] },
+  // Slice 23b: with the release shape — the three publishable tarballs, their manifest and the owner's two checks
+  // against a loopback registry. No network, no npm login.
+  {
+    id: "sdk-signed-manifest",
+    projects: ["sdk"],
+    files: ["tools/sdk/test/manifest.test.ts", "tools/sdk/test/release.test.ts"],
+  },
 ];
 
 /** The literal names of `it`, `test` and `describe` calls (with modifiers such as `.skip` or `.each(...)`). */
@@ -168,11 +175,13 @@ export interface SelectedFile {
 
 export function selectMatrixFiles(matrix: Matrix, root: string): SelectedFile[] {
   const out: SelectedFile[] = [];
-  for (const project of matrix.projects) {
-    const dir = PROJECT_DIRS[project];
-    if (dir === undefined) throw new Error(`no test directory for project ${project}`);
+  for (const scanned of matrix.projects) {
+    const dir = PROJECT_DIRS[scanned];
+    if (dir === undefined) throw new Error(`no test directory for project ${scanned}`);
     for (const path of testFiles(join(root, dir))) {
       const file = relative(root, path);
+      // A file that runs late (vitest.timing.ts, D-147) belongs to its project's late twin: it is run there.
+      const project = isTimingFile(file) ? timingProjectOf(scanned) : scanned;
       const names = testNames(readFileSync(path, "utf8"));
       if (matrix.files) {
         if (matrix.files.includes(file)) out.push({ project, file, names });

@@ -25,8 +25,16 @@ export interface ArtifactFile {
   sha256: string;
 }
 
+/** What a release manifest says of itself (slice 23b). Still a local signature. */
+export const RELEASE_STATEMENT =
+  "Built and signed locally by the publisher, from a clean working tree at the commit named here, for publication to npm. The signature says that the holder of the signing key signed these files on their own machine; it is not provenance from a trusted builder, and nobody else approved the release. Whether a package is on the registry, and with these bytes, is what `npm run sdk:published-check` asks.";
+
 export interface SdkManifest {
   schema: typeof MANIFEST_SCHEMA;
+  /** local: the ordinary pack, four private tarballs. release: the three publishable ones (slice 23b). */
+  kind: "local" | "release";
+  /** A release only: the public repository the packages name. */
+  repository?: string;
   statement: string;
   created_at: string;
   /** The commit the working tree was at, and whether it had uncommitted changes; null when git could not say. */

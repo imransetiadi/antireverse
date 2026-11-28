@@ -8,12 +8,12 @@ Responsible use: Harden protects software you own. It is not for evading detecti
 
 The `antireverse` command is the `@antireverse/harden` package, which is not published to npm yet. There are two ways to run it.
 
-**Installed from its tarball** (`npm run sdk:pack` in the Airverse repository writes it; then, in your project, `npm install --save-dev --ignore-scripts <path>/antireverse-harden-<version>.tgz`): plain JavaScript, run as `npx antireverse …`. Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12. Where the commands below say `npx tsx packages/harden/src/cli.ts`, write `npx antireverse`.
+**Installed from its tarball** (`npm run sdk:pack` in the Airverse repository writes it; then, in your project, `npm install --save-dev --ignore-scripts <path>/antireverse-harden-<version>.tgz`): plain JavaScript, run as `npx --no-install antireverse …`. `--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry, a name this project does not hold. Babel 8, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11). On Node 22.12 npm warns when it installs Harden and the command was seen to work; with npm's `engine-strict` the install is refused. Shield and Guard need only Node 22.12. Where the commands below say `npx tsx packages/harden/src/cli.ts`, write `npx --no-install antireverse`.
 
 **From a clone of the repository:** its entry point there, `packages/harden/src/cli.ts`, is a TypeScript file. On Node 22.23 or newer (tested on 22.23.4), the bin works:
 
 ```bash
-npx antireverse --help
+npx --no-install antireverse --help
 ```
 
 On Node 22.12, the bin fails at once with `ERR_UNKNOWN_FILE_EXTENSION`. Run it through `tsx` instead:
@@ -33,7 +33,7 @@ Every command below uses the clone's `npx tsx` form, which works on both version
 ## Harden a bundle
 
 ```bash
-npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out <out-dir> --test "npm test"
+npx tsx packages/harden/src/cli.ts harden <bundle-dir> --profile balanced --out <out-dir> --test "node /absolute/path/to/test-bundle.mjs"
 ```
 
 In order, Harden:

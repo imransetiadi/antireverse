@@ -316,12 +316,14 @@ describe("slice 23: SDK artifacts", () => {
       expect(entry?.source.text).toMatch(part);
     }
     const notes = entry?.notes?.join(" ") ?? "";
-    expect(notes).toMatch(/Nothing is published/);
+    expect(notes).toMatch(/No command here publishes/);
+    expect(notes).toMatch(/release build/);
+    expect(notes).toMatch(/owner/);
+    expect(notes).toMatch(/no network and no npm login/);
     expect(notes).toMatch(/not provenance/);
     expect(notes).toMatch(/whoever holds/);
     expect(notes).toMatch(/loopback registry/);
     expect(notes).toMatch(/same Node and npm/);
-    expect(notes).toMatch(/0\.0\.0/);
     expect(notes).toMatch(/private/);
     // The titles say "local" or name the limit: none reads as a release check.
     for (const id of SDK_CHECKS) expect(CHECKS[id].title, id).toMatch(/slice 23/);
@@ -338,7 +340,12 @@ describe("slice 23: SDK artifacts", () => {
     expect(filesOf("sdk-install-smoke")).toEqual(["tools/sdk/test/install-smoke.test.ts"]);
     expect(filesOf("sdk-equivalence")).toEqual(["tools/sdk/test/equivalence.test.ts"]);
     expect(filesOf("sdk-sbom-allowlist")).toEqual(["tools/sdk/test/sbom-allowlist.test.ts"]);
-    expect(filesOf("sdk-signed-manifest")).toEqual(["tools/sdk/test/manifest.test.ts"]);
+    // Slice 23b: the release shape is part of the same check — the publishable tarballs, their manifest and the
+    // owner's two checks, against a loopback registry.
+    expect(filesOf("sdk-signed-manifest")).toEqual([
+      "tools/sdk/test/manifest.test.ts",
+      "tools/sdk/test/release.test.ts",
+    ]);
     for (const id of SDK_CHECKS) {
       for (const file of filesOf(id)) expect(existsSync(join(REPO_ROOT, file)), file).toBe(true);
       expect(CHECKS[id]).toMatchObject({ slow: false, online: false });

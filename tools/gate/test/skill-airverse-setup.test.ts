@@ -98,6 +98,7 @@ describe("skill airverse-setup", () => {
       "--tarballs",
       "--signer",
       "--integrity-only",
+      "--no-install",
       "--ignore-scripts",
       "--save-dev",
     ])
@@ -291,7 +292,8 @@ describe("skill airverse-setup: preflight with tarballs", () => {
       expect(existsSync(tarballs[name]), name).toBe(true);
     }
     expect(tarballs.shield).toContain("antireverse-shield-node-");
-    expect(tarballs.command).toEqual(["npx", "antireverse"]);
+    // D-146: never a bare `npx antireverse`, which would fetch an unscoped package the project does not hold.
+    expect(tarballs.command).toEqual(["npx", "--no-install", "antireverse"]);
     // AIRVERSE_SDK_DIR works like the flag; with a clone too, both are reported and the tarballs lead.
     expect(run(["--signer", key.fingerprint], { AIRVERSE_SDK_DIR: layout.out }).report).toMatchObject({
       ok: true,
@@ -448,5 +450,22 @@ describe("skill airverse-setup: preflight with tarballs", () => {
     // The clone path is still there.
     expect(body).toMatch(/--repo/);
     expect(body).toMatch(/AIRVERSE_REPO/);
+  });
+});
+
+// MEMORY §11 (slice 22): the guides showed `--test "npm test"`, which only works when the bundle folder itself holds
+// the tests: Harden runs the command inside a temporary copy of the bundle folder.
+describe("the guides' --test example", () => {
+  it("README and docs/harden.md show a command that tests the files in its current directory, and say why", () => {
+    for (const doc of ["README.md", "docs/harden.md", "docs/getting-started.md"]) {
+      const text = read(join(root, doc));
+      expect(text, doc).not.toMatch(/--test "npm test"/);
+    }
+    for (const doc of ["README.md", "docs/harden.md"]) {
+      const text = read(join(root, doc));
+      expect(text, doc).toMatch(/--test "node \/absolute\/path\/to\/test-bundle\.mjs"/);
+      expect(text, doc).toMatch(/temporary copy of (`<bundle-dir>`|the bundle folder)/);
+    }
+    expect(read(join(root, "README.md"))).toMatch(/not in your project root/);
   });
 });

@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { REPO_ROOT } from "../../gate/src/paths.ts";
 import { SDK_PACKAGES } from "../src/packages.ts";
-import { BUILD_MARKER, cleanBuildDir, prepareBuildDir, repoLayout, tempLayout } from "../src/safe.ts";
+import { BUILD_MARKER, buildDirReason, cleanBuildDir, prepareBuildDir, repoLayout, tempLayout } from "../src/safe.ts";
 
 const base = mkdtempSync(join(tmpdir(), "airverse-sdk-safe-"));
 const elsewhere = mkdtempSync(join(tmpdir(), "not-ours-"));
@@ -143,6 +143,12 @@ describe("layouts", () => {
     );
     expect(layout.out).toBe(join(REPO_ROOT, "dist/sdk"));
     expect(layout.work).toBe(join(REPO_ROOT, "dist/sdk-work"));
+    // Slice 23b: the release build has a folder of its own, so dist/sdk never holds a publishable tarball.
+    expect(layout.release).toBe(join(REPO_ROOT, "dist/sdk-release"));
+    expect(() => cleanBuildDir(join(REPO_ROOT, "dist/sdk-released"), { remove: recorder().remove })).toThrow(/refus/i);
+    if (!existsSync(layout.release))
+      expect(() => cleanBuildDir(layout.release, { remove: recorder().remove })).not.toThrow();
+    expect(tempLayout(join(base, "rel")).release).toBe(join(base, "rel/release"));
     // Each is a folder cleanBuildDir accepts: asked with a recorder, nothing is removed here.
     for (const target of [...SDK_PACKAGES.map((pkg) => layout.dist(pkg)), layout.out, layout.work]) {
       const { remove } = recorder();
@@ -164,6 +170,30 @@ describe("layouts", () => {
       expect(() => cleanBuildDir(join(target, "inner"), { remove })).toThrow(/refus/i);
       expect(asked).toEqual([]);
     }
+  });
+
+  // Review S3: a checkout may itself sit under <tmp>/airverse-sdk-*. Inside the repository only the repository's
+  // six folders count; the temporary kinds do not make a folder of the checkout removable.
+  it("inside the repository the temporary kinds do not apply, wherever the repository is", () => {
+    const fakeRepo = join(base, "checkout");
+    mkdirSync(join(fakeRepo, "dist"), { recursive: true });
+    const roots = { repoRoot: fakeRepo };
+    for (const inside of [
+      "dist/work",
+      "dist/out",
+      "dist/release",
+      "dist/build/harden",
+      "packages/harden/work",
+      "work",
+      "out",
+    ]) {
+      expect(buildDirReason(join(fakeRepo, inside), roots), inside).toMatch(/not a build folder/);
+    }
+    for (const own of ["dist/sdk", "dist/sdk-work", "dist/sdk-release", "packages/harden/dist"]) {
+      expect(buildDirReason(join(fakeRepo, own), roots), own).toBeNull();
+    }
+    // Outside that checkout the temporary kinds still hold.
+    expect(buildDirReason(join(base, "elsewhere/work"), roots)).toBeNull();
   });
 
   it("a temporary layout must lie in a temporary folder of ours", () => {

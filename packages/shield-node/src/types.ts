@@ -5,7 +5,7 @@ import type { CounterStore } from "./counters.ts";
 /** `sdk.name` of every batch Shield sends. */
 export const SDK_NAME = "shield-node";
 /** `sdk.version` of every batch Shield sends. Equal to the version in package.json (pinned by a test). */
-export const SDK_VERSION = "0.0.0";
+export const SDK_VERSION = "0.1.0";
 
 export const SHIELD_DEFAULTS = {
   /** Milliseconds between the first buffered Event and the flush that sends it. */

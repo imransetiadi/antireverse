@@ -32,7 +32,10 @@
     "sdk:build": "tsx tools/sdk/src/cli.ts build",
     "sdk:pack": "tsx tools/sdk/src/cli.ts pack",
     "sdk:verify": "tsx tools/sdk/src/cli.ts verify",
-    "sdk:allowlist": "tsx tools/sdk/src/cli.ts allowlist"
+    "sdk:allowlist": "tsx tools/sdk/src/cli.ts allowlist",
+    "sdk:release": "tsx tools/sdk/src/cli.ts release",
+    "sdk:release-check": "tsx tools/sdk/src/cli.ts release-check",
+    "sdk:published-check": "tsx tools/sdk/src/cli.ts published-check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.6",

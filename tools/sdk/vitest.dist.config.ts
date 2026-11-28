@@ -4,6 +4,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { TIMED_PROJECTS, timingFilesOf, timingProjectOf } from "../../vitest.timing.ts";
 import { DIST_EXCLUDED, DIST_PACKAGES, distRedirect } from "./src/dist-plugin.ts";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url)).replace(/\/$/, "");
@@ -23,18 +24,41 @@ export default defineConfig({
       AR_SDK_GUARD_ROOT: repoRoot,
       NODE_OPTIONS: `--import ${JSON.stringify(`${repoRoot}/tools/sdk/src/child-guard.mjs`)}`,
     },
-    projects: DIST_PACKAGES.map((pkg) => ({
-      extends: true as const,
-      test: {
-        name: `${pkg.short}-dist`,
-        root: `${repoRoot}/packages/${pkg.short}`,
-        environment: "node",
-        fsModuleCache: false,
-        include: ["test/**/*.test.{ts,tsx}"],
-        exclude: DIST_EXCLUDED.filter((entry) => entry.file.startsWith(`packages/${pkg.short}/`)).map((entry) =>
-          entry.file.slice(`packages/${pkg.short}/`.length),
-        ),
-      },
-    })),
+    // As in the root configuration (vitest.timing.ts, D-147): the files with a load-sensitive time bound run in a
+    // late twin of their project, one at a time, after every other file of this run.
+    projects: DIST_PACKAGES.flatMap((pkg) => {
+      const root = `${repoRoot}/packages/${pkg.short}`;
+      const excluded = DIST_EXCLUDED.filter((entry) => entry.file.startsWith(`packages/${pkg.short}/`)).map((entry) =>
+        entry.file.slice(`packages/${pkg.short}/`.length),
+      );
+      const late = timingFilesOf(pkg.short);
+      const shared = { root, environment: "node", fsModuleCache: false };
+      return [
+        {
+          extends: true as const,
+          test: {
+            name: `${pkg.short}-dist`,
+            ...shared,
+            include: ["test/**/*.test.{ts,tsx}"],
+            exclude: [...excluded, ...late],
+          },
+        },
+        ...(late.length === 0
+          ? []
+          : [
+              {
+                extends: true as const,
+                test: {
+                  name: `${timingProjectOf(pkg.short)}-dist`,
+                  ...shared,
+                  include: late,
+                  exclude: excluded,
+                  fileParallelism: false,
+                  sequence: { groupOrder: TIMED_PROJECTS.indexOf(pkg.short) + 1 },
+                },
+              },
+            ]),
+      ];
+    }),
   },
 });

@@ -100,7 +100,10 @@ describe("selectMatrixFiles", () => {
     expect(selected("sdk-install-smoke")).toEqual(["sdk:tools/sdk/test/install-smoke.test.ts"]);
     expect(selected("sdk-equivalence")).toEqual(["sdk:tools/sdk/test/equivalence.test.ts"]);
     expect(selected("sdk-sbom-allowlist")).toEqual(["sdk:tools/sdk/test/sbom-allowlist.test.ts"]);
-    expect(selected("sdk-signed-manifest")).toEqual(["sdk:tools/sdk/test/manifest.test.ts"]);
+    expect(selected("sdk-signed-manifest")).toEqual([
+      "sdk:tools/sdk/test/manifest.test.ts",
+      "sdk:tools/sdk/test/release.test.ts",
+    ]);
     for (const id of [
       "sdk-reproducible",
       "sdk-install-smoke",

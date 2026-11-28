@@ -11,16 +11,29 @@
 //   build      the four packages/<name>/dist folders
 //   allowlist  those four and dist/sdk-work (printed on the error stream: its output is the list)
 //   pack       those five and dist/sdk; it also creates the local gate key on first use (outside the repository)
-//   verify     nothing; it never creates a key
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+//   release    those five and dist/sdk-release; likewise the key (slice 23b, below)
+//   verify, release-check, published-check   nothing; they never create a key
+//
+// Slice 23b, for the owner:
+//   npm run sdk:release                              the three publishable tarballs → dist/sdk-release; refuses a
+//                                                    dirty tree and a HEAD that is not origin/main (nothing is fetched)
+//   npm run sdk:release-check -- <dir> [--expect <fingerprint>]     before publishing: verifies the folder, asks the
+//                                                    registry (read-only) that no version exists yet, prints the commands
+//   npm run sdk:published-check -- <dir> [--expect <fingerprint>]   after: the registry has the same bytes
+// None of them publishes, logs in or changes npm's configuration. Publishing is done by the owner, by hand.
+import { existsSync, mkdtempSync, rmdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { REPO_ROOT } from "../../gate/src/paths.ts";
 import { defaultKeyFile, loadOrCreateKey } from "../../gate/src/sign.ts";
 import { currentAllowlist } from "./allowlist.ts";
 import { buildAll } from "./build.ts";
 import { MANIFEST_FILE, verifyArtifacts } from "./manifest.ts";
 import { SDK_PACKAGES } from "./packages.ts";
 import { buildAndPack, stagedClosures } from "./pipeline.ts";
-import { type Layout, repoLayout, tempLayout } from "./safe.ts";
+import { type CheckResult, NPM_REGISTRY, publishedCheck, releaseCheck, shellQuote } from "./publish.ts";
+import { releaseState } from "./release.ts";
+import { cleanBuildDir, type Layout, prepareBuildDir, repoLayout, TEMP_PREFIX, tempLayout } from "./safe.ts";
 import { stageAll } from "./stage.ts";
 
 const USAGE = `usage:
@@ -28,6 +41,9 @@ const USAGE = `usage:
   npm run sdk:pack
   npm run sdk:verify -- <dir> [--expect <fingerprint>]
   npm run sdk:allowlist
+  npm run sdk:release                                            (owner: builds the publishable tarballs; publishes nothing)
+  npm run sdk:release-check -- <dir> [--expect <fingerprint>]    (before publishing; read-only)
+  npm run sdk:published-check -- <dir> [--expect <fingerprint>]  (after publishing; read-only)
 `;
 
 const out = (text: string) => void process.stdout.write(text);
@@ -107,7 +123,87 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  if (command !== "build" && command !== "pack" && command !== "allowlist") {
+  if (command === "release-check" || command === "published-check") {
+    let expect: string | undefined;
+    const paths: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i] as string;
+      if (arg === "--expect") {
+        expect = args[++i];
+        if (expect === undefined || !/^[0-9a-f]{64}$/.test(expect)) {
+          err(`--expect needs a 64-character hex fingerprint\n${USAGE}`);
+          return 2;
+        }
+      } else if (arg.startsWith("--")) {
+        err(USAGE);
+        return 2;
+      } else paths.push(arg);
+    }
+    if (paths.length !== 1) {
+      err(USAGE);
+      return 2;
+    }
+    const dir = resolve(cwd(), paths[0] as string);
+    const keyFile = defaultKeyFile(process.env);
+    let local: string | null = null;
+    if (existsSync(keyFile)) {
+      try {
+        local = loadOrCreateKey(keyFile).fingerprint;
+      } catch {}
+    }
+    // npm's cache and (empty) configuration for the read-only questions: a build folder of this run's own, in the
+    // temporary directory, removed through the same function as every other.
+    const base = mkdtempSync(join(tmpdir(), `${TEMP_PREFIX}check-`));
+    const work = tempLayout(base).work;
+    prepareBuildDir(work);
+    let result: CheckResult;
+    try {
+      const options = {
+        registry: NPM_REGISTRY,
+        work,
+        localFingerprint: local,
+        ...(expect === undefined ? {} : { expect }),
+      };
+      result = command === "release-check" ? await releaseCheck(dir, options) : await publishedCheck(dir, options);
+    } finally {
+      cleanBuildDir(work);
+      rmdirSync(base);
+    }
+    out(`${command}: ${dir}\n`);
+    out(
+      result.asked
+        ? `Registry asked (read-only): ${NPM_REGISTRY}\n\n`
+        : "No registry was asked: the folder itself was refused.\n\n",
+    );
+    for (const tarball of result.tarballs) {
+      out(
+        `${tarball.name}@${tarball.version}\n  file       ${tarball.file}\n  size       ${tarball.size} bytes\n  sha256     ${tarball.sha256}\n  integrity  ${tarball.integrity}\n  registry   ${tarball.registry}\n`,
+      );
+    }
+    if (!result.ok) {
+      out(`\nNOT READY:\n`);
+      for (const problem of result.problems) out(`  ${problem}\n`);
+      return 1;
+    }
+    if (command === "published-check") {
+      out(
+        `\npublished: the registry has ${result.tarballs.length} packages with exactly the bytes of the local tarballs (signed by ${result.fingerprint}).\n`,
+      );
+      return 0;
+    }
+    out(
+      `\nready: the folder verifies (signed by ${result.fingerprint}, a local signature, not provenance) and none of these versions is on the registry.\n` +
+        "This command published nothing. To publish, run these yourself, one by one, with your own npm login and one-time code:\n\n",
+    );
+    for (const line of result.commands) out(`${line}\n`);
+    out(
+      "\nA published version can never be used again, and unpublishing is restricted: check the list above first.\n" +
+        `Afterwards: npm run sdk:published-check -- ${shellQuote(dir)}\n`,
+    );
+    return 0;
+  }
+
+  if (command !== "build" && command !== "pack" && command !== "allowlist" && command !== "release") {
     err(USAGE);
     return 2;
   }
@@ -136,6 +232,35 @@ async function main(argv: string[]): Promise<number> {
     announce([...dists, layout.work], err);
     await buildAll(layout);
     out(`${JSON.stringify(currentAllowlist(stagedClosures(stageAll(layout))), null, 2)}\n`);
+    return 0;
+  }
+  if (command === "release") {
+    // Refused before anything is built or removed: a dirty tree, a HEAD that is not origin/main, a remote with
+    // credentials. The remote-tracking ref is read as it is; nothing is fetched.
+    let release: Awaited<ReturnType<typeof releaseState>>;
+    try {
+      release = await releaseState(REPO_ROOT);
+    } catch (error) {
+      err(`sdk:release refused: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
+    announce([...dists, layout.work, layout.release]);
+    const releaseKey = loadOrCreateKey(defaultKeyFile(process.env));
+    if (releaseKey.created)
+      out(`Created a gate key at ${releaseKey.file} (outside the repository; keep it private).\n`);
+    const built = await buildAndPack(layout, { key: releaseKey, release });
+    out(`\nRelease tarballs in ${layout.release}:\n`);
+    for (const pkg of built.manifest.packages) {
+      out(
+        `  ${pkg.name}@${pkg.version}  ${pkg.tarball.file}  ${pkg.tarball.size} bytes  sha256 ${pkg.tarball.sha256}\n`,
+      );
+    }
+    out(
+      `\nBuilt from commit ${release.commit} of ${release.repository} (clean tree, HEAD is origin/main as last fetched).\n` +
+        `${MANIFEST_FILE} is signed by the gate key ${releaseKey.fingerprint}: a local signature, not provenance.\n` +
+        "Nothing was published. Next, the owner runs:\n" +
+        `  npm run sdk:release-check -- ${shellQuote(layout.release)}\n`,
+    );
     return 0;
   }
   announce([...dists, layout.work, layout.out]);

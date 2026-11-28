@@ -13,10 +13,11 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { REPO_ROOT } from "../../gate/src/paths.ts";
-import { bareImports } from "./build.ts";
-import { SDK_NAMES, SDK_PACKAGES, type SdkPackage, sdkPackage } from "./packages.ts";
+import { bareImports, vendorDirOf } from "./build.ts";
+import { RELEASED_PACKAGES, SDK_NAMES, SDK_PACKAGES, type SdkPackage, sdkPackage } from "./packages.ts";
+import type { ReleaseInfo } from "./release.ts";
 import { BUILD_MARKER, type Layout, prepareBuildDir } from "./safe.ts";
 
 const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -69,6 +70,7 @@ export function stagedManifest(
   version: string,
   vendored: readonly SourceManifest[] = [],
   engines: string = REPO_NODE,
+  release?: ReleaseInfo,
 ): { manifest: Record<string, unknown>; dependencies: Record<string, string>; unused: string[] } {
   if (source.name !== pkg.name) throw new Error(`${pkg.short}: the source manifest is named ${source.name}`);
   if (source.private !== true) throw new Error(`${pkg.name}: the source manifest is not private`);
@@ -104,12 +106,15 @@ export function stagedManifest(
   for (const [subpath, entry] of Object.entries(pkg.entries)) {
     exports[subpath] = { types: `./dist/${entry}.d.ts`, default: `./dist/${entry}.js` };
   }
-  const manifest: Record<string, unknown> = {
-    name: pkg.name,
-    version,
-    private: true,
-    description: pkg.description,
-    license: source.license,
+  if (release !== undefined) {
+    // What may be published (slice 23b): a released package, at a real version, with a guide for its page.
+    if (!pkg.released) throw new Error(`${pkg.name} is not released: it stays private and unpublished`);
+    if (version === "0.0.0") throw new Error("0.0.0 is not a version to release");
+    if (pkg.guide === undefined || pkg.keywords === undefined) throw new Error(`${pkg.name} has no guide or keywords`);
+    if (source.license !== "Apache-2.0")
+      throw new Error(`${pkg.name}: the licence is ${source.license}, not Apache-2.0`);
+  }
+  const shape = {
     type: source.type,
     ...(source.sideEffects === undefined ? {} : { sideEffects: source.sideEffects }),
     engines: { node: engines },
@@ -119,8 +124,33 @@ export function stagedManifest(
       ? { bin: Object.fromEntries(Object.entries(pkg.bin).map(([name, entry]) => [name, `./dist/${entry}.js`])) }
       : {}),
     files: ["dist", "NOTICE"],
-    dependencies: sorted,
   };
+  // The ordinary pack keeps "private": true, so `npm publish` refuses its tarballs. Only a release build leaves it
+  // out, and adds the public metadata of the project.
+  const manifest: Record<string, unknown> =
+    release === undefined
+      ? {
+          name: pkg.name,
+          version,
+          private: true,
+          description: pkg.description,
+          license: source.license,
+          ...shape,
+          dependencies: sorted,
+        }
+      : {
+          name: pkg.name,
+          version,
+          description: pkg.description,
+          keywords: [...(pkg.keywords ?? [])],
+          license: source.license,
+          repository: { type: "git", url: `git+${release.repository}.git`, directory: `packages/${pkg.short}` },
+          homepage: `${release.repository}/blob/main/${pkg.guide}`,
+          bugs: { url: `${release.repository}/issues` },
+          ...shape,
+          publishConfig: { access: "public" },
+          dependencies: sorted,
+        };
   return { manifest, dependencies: sorted, unused: Object.keys(declared).filter((name) => !imports.includes(name)) };
 }
 
@@ -150,15 +180,23 @@ function dependencyEngines(pkg: SdkPackage, name: string): string | undefined {
   throw new Error(`${pkg.name}: the dependency ${name} is not installed, so its Node range cannot be read`);
 }
 
+/** One sentence on why every documented command says `--no-install` (D-146). */
+export const NO_INSTALL_REASON =
+  "`--no-install` makes npx run only the copy installed in your project: it never downloads or runs a package named `antireverse` from the registry, a name this project does not hold.";
+
 const MD_LINK = /\[([^\]]+)\]\((?!#|https?:)([^)#\s]+)(?:#[^)]*)?\)/g;
+const MD_LINK_WITH_ANCHOR = /\[([^\]]+)\]\((?!#|https?:)([^)#\s]+)(#[^)]*)?\)/g;
 
 /**
  * A guide from docs/ as it goes into a tarball (D-137, review L8). The guides are written for the repository; a
  * packed README must not need it: what is said about getting the package becomes one sentence, the clone's commands
  * and paths become the installed package's, and a link to another file becomes its text and where that file is.
  * Each replacement must find its text: when a guide changes so that one does not, staging fails.
+ *
+ * For a release (slice 23b) the reader is on the package's npm page: the package is installed by name, links are
+ * absolute URLs into the repository's docs, and the guide's own title goes (the page already has one).
  */
-export function packedGuide(pkg: SdkPackage, guide: string): string {
+export function packedGuide(pkg: SdkPackage, guide: string, release?: ReleaseInfo): string {
   let text = guide;
   const must = (pattern: RegExp, replacement: string): void => {
     const next = text.replace(pattern, replacement);
@@ -167,32 +205,90 @@ export function packedGuide(pkg: SdkPackage, guide: string): string {
     text = next;
   };
   if (pkg.short === "shield-node") {
+    // The table of variables names the repository's own reference target, which a reader of the package does not have.
+    must(/ and the reference target \|/g, " |");
+    must(/^\| `AR_API_URL` \| the reference target \|.*\n/m, "");
     must(
       /^`@antireverse\/shield-node` is not published to npm yet;.*$/m,
-      "This is `@antireverse/shield-node`, installed from its tarball: plain JavaScript with no dependency, for Node 22.12 and newer.",
+      release
+        ? "`@antireverse/shield-node` is plain JavaScript with no dependency, for Node 22.12 and newer."
+        : "This is `@antireverse/shield-node`, installed from its tarball: plain JavaScript with no dependency, for Node 22.12 and newer.",
     );
   } else if (pkg.short === "guard") {
     must(
       /^`@antireverse\/guard` is not published to npm yet\..*$/m,
-      "This is `@antireverse/guard`, installed from its tarball. Its files are in `node_modules/@antireverse/guard/dist`.",
+      release
+        ? "Once installed, the files of `@antireverse/guard` are in `node_modules/@antireverse/guard/dist`."
+        : "This is `@antireverse/guard`, installed from its tarball. Its files are in `node_modules/@antireverse/guard/dist`.",
     );
     must(/packages\/guard\/src/g, "node_modules/@antireverse/guard/dist");
   } else if (pkg.short === "harden") {
+    const node =
+      "Babel, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11): on Node 22.12 npm warns at install and the command was seen to work.";
+    const run = `Run it as \`npx --no-install antireverse …\`. ${NO_INSTALL_REASON} \`npx --no-install antireverse --help\` prints the full list of options and exit codes, \`--version\` the version.`;
     must(
       /^## Running it\n[\s\S]*?(?=^## )/m,
-      "## Running it\n\nRun it as `npx antireverse …` in the project where this package is installed. `npx antireverse --help` prints the full list of options and exit codes. Babel, which Harden depends on, supports Node 22.18 and newer (not 23, and 24 from 24.11): on Node 22.12 npm warns at install and the command was seen to work.\n\n",
+      release
+        ? `## Running it\n\nInstall it as a development dependency of the project whose bundle you protect. ${run} ${node}\n\n`
+        : `## Running it\n\nThis package is installed in your project from its tarball. ${run} ${node}\n\n`,
     );
-    must(/npx tsx packages\/harden\/src\/cli\.ts/g, "npx antireverse");
+    must(/npx tsx packages\/harden\/src\/cli\.ts/g, "npx --no-install antireverse");
+    must(/not a commit of this repository/, "not a commit of the Airverse repository");
   }
-  text = text.replace(MD_LINK, (_all, label: string, file: string) => {
+  if (release === undefined) {
+    return text.replace(MD_LINK, (_all, label: string, file: string) => {
+      const name = file.replace(/^(\.\.\/)+/, "").replace(/^docs\//, "");
+      return `${label} (\`${/^[A-Z]+\.md$/.test(name) ? name : `docs/${name}`}\` in the Airverse repository)`;
+    });
+  }
+  must(/^# .*\n+/, "");
+  return text.replace(MD_LINK_WITH_ANCHOR, (_all, label: string, file: string, anchor: string | undefined) => {
     const name = file.replace(/^(\.\.\/)+/, "").replace(/^docs\//, "");
-    return `${label} (\`${/^[A-Z]+\.md$/.test(name) ? name : `docs/${name}`}\` in the Airverse repository)`;
+    const path = /^[A-Z]+\.md$/.test(name) ? name : `docs/${name}`;
+    return `[${label}](${release.repository}/blob/main/${path}${anchor ?? ""})`;
   });
-  return text;
+}
+
+/** Why the reader should not take a release for more than it is: the same for the three packages. */
+function releaseStatus(version: string, release: ReleaseInfo): string {
+  return [
+    `> **Early release (${version}).** This is one part of [Airverse](${release.repository}), published early so that it can be installed by name. Read this before you rely on it:`,
+    ">",
+    `> - **There is no hosted Airverse service.** This package talks to the Airverse API and Console, and you run them yourself, from the repository. Today they are a local, single-process system without user accounts: fine for a pilot on your own machines, not a production service.`,
+    `> - **Airverse's own release gate is still blocked**: several of its criteria need real engines and a staging environment that do not exist yet.`,
+    `> - **Scores are from a scripted stand-in.** The Reverse Resistance Score that Airverse reports measures the pipeline, not real resistance, until a real adversary model is configured.`,
+    `> - **What you can check:** this package was built from commit ${release.commit} of the repository and is listed, with its SHA-256, in a manifest signed by the publisher's own key. That is a local signature: there is no provenance attestation from a build service, and nobody else approved the release.`,
+    `> - The limits of this part are at the end, under "Honest limits".`,
+  ].join("\n");
+}
+
+/** The README of a released package: what an npm page needs, then the guide. */
+function releaseReadme(pkg: SdkPackage, version: string, release: ReleaseInfo): string {
+  if (pkg.guide === undefined) throw new Error(`${pkg.name} has no guide`);
+  const install =
+    pkg.short === "harden"
+      ? ["npm install --save-dev @antireverse/harden", "npx --no-install antireverse --help"]
+      : [`npm install ${pkg.name}`];
+  return [
+    `# ${pkg.name}`,
+    "",
+    pkg.description,
+    "",
+    releaseStatus(version, release),
+    "",
+    "## Install",
+    "",
+    "```bash",
+    ...install,
+    "```",
+    "",
+    packedGuide(pkg, readFileSync(join(REPO_ROOT, pkg.guide), "utf8"), release),
+  ].join("\n");
 }
 
 /** The README of a tarball (D-137): a generated header, then the package's guide from docs/, made to fit. */
-export function stagedReadme(pkg: SdkPackage, version: string): string {
+export function stagedReadme(pkg: SdkPackage, version: string, release?: ReleaseInfo): string {
+  if (release !== undefined) return releaseReadme(pkg, version, release);
   const header = [
     `# ${pkg.name}`,
     "",
@@ -220,7 +316,13 @@ export function stageDir(layout: Layout, pkg: SdkPackage): string {
 }
 
 /** Writes the staging folder of one package from its compiled files. */
-export function stagePackage(pkg: SdkPackage, distDir: string, dir: string, version: string): StagedPackage {
+export function stagePackage(
+  pkg: SdkPackage,
+  distDir: string,
+  dir: string,
+  version: string,
+  release?: ReleaseInfo,
+): StagedPackage {
   const files = walk(distDir).filter((file) => relative(distDir, file) !== BUILD_MARKER);
   const imports = new Set<string>();
   for (const file of files)
@@ -236,7 +338,25 @@ export function stagePackage(pkg: SdkPackage, distDir: string, dir: string, vers
     version,
     vendored,
     engines,
+    release,
   );
+  if (release !== undefined) {
+    // What ships is what the release commit tracks (review S2): every compiled or copied file must come from a
+    // tracked source file of its package — or, inside a vendored copy, of the vendored package.
+    const tracked = new Set(release.tracked);
+    for (const file of files) {
+      const rel = relative(distDir, file).split(sep).join("/");
+      const inside = (pkg.vendors ?? [])
+        .map((name) => sdkPackage(name))
+        .find((v) => rel.startsWith(`${vendorDirOf(v)}/`));
+      const owner = inside ?? pkg;
+      const own = inside ? rel.slice(vendorDirOf(inside).length + 1) : rel;
+      const source = `packages/${owner.short}/src/${owner.kind === "copy" ? own : own.replace(/\.d\.ts$|\.js$/, ".ts")}`;
+      if (!tracked.has(source)) {
+        throw new Error(`${pkg.name}: dist/${rel} would ship, but ${source} is not tracked at the release commit`);
+      }
+    }
+  }
   const executables = new Set(Object.values(pkg.bin ?? {}).map((entry) => `${entry}.js`));
   // Inside the work folder, which stageAll has just emptied: nothing is removed here.
   if (existsSync(dir)) throw new Error(`the staging folder ${dir} exists already`);
@@ -253,7 +373,7 @@ export function stagePackage(pkg: SdkPackage, distDir: string, dir: string, vers
   }
   for (const name of ["LICENSE", "NOTICE"])
     put(join(dir, name), () => copyFileSync(join(REPO_ROOT, name), join(dir, name)), 0o644);
-  put(join(dir, "README.md"), () => writeFileSync(join(dir, "README.md"), stagedReadme(pkg, version)), 0o644);
+  put(join(dir, "README.md"), () => writeFileSync(join(dir, "README.md"), stagedReadme(pkg, version, release)), 0o644);
   put(
     join(dir, "package.json"),
     () => writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`),
@@ -262,9 +382,13 @@ export function stagePackage(pkg: SdkPackage, distDir: string, dir: string, vers
   return { pkg, version, dir, manifest, dependencies, vendored: [...(pkg.vendors ?? [])], unusedDependencies: unused };
 }
 
-/** Stages the four packages below the layout's work folder, which is emptied first. */
-export function stageAll(layout: Layout): StagedPackage[] {
+/**
+ * Stages the packages below the layout's work folder, which is emptied first: all four for the ordinary pack, and
+ * for a release only the three that are released, in their publishable shape.
+ */
+export function stageAll(layout: Layout, release?: ReleaseInfo): StagedPackage[] {
   const version = sdkVersion();
   prepareBuildDir(layout.work);
-  return SDK_PACKAGES.map((pkg) => stagePackage(pkg, layout.dist(pkg), stageDir(layout, pkg), version));
+  const packages = release === undefined ? SDK_PACKAGES : RELEASED_PACKAGES;
+  return packages.map((pkg) => stagePackage(pkg, layout.dist(pkg), stageDir(layout, pkg), version, release));
 }

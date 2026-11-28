@@ -139,7 +139,6 @@ describe("the packed shape", () => {
     });
     // Babel from its own manifest, zod from the protocol it carries; no @antireverse package (D-140).
     expect(staged("harden").manifest.dependencies).toEqual({
-      "@babel/core": "8.1.0",
       "@babel/generator": "8.1.0",
       "@babel/parser": "8.1.0",
       "@babel/traverse": "8.1.0",
@@ -158,6 +157,11 @@ describe("the packed shape", () => {
       // The packed manifest is the staged one, byte for byte.
       expect(JSON.parse(readFileSync(join(entry.dir, "package.json"), "utf8"))).toEqual(entry.manifest);
     }
+  });
+
+  // Review S1 (slice 23b): every declared dependency is imported by the compiled code — nothing is installed for nothing.
+  it("no packed package declares a dependency its compiled code does not import", () => {
+    for (const entry of stagedA) expect(entry.unusedDependencies, entry.pkg.short).toEqual([]);
   });
 
   it("refuses a dependency that is a range, an import that is not declared, and any dependency of Shield or Guard", () => {
@@ -209,8 +213,10 @@ describe("the packed shape", () => {
       expect(readme, pkg.short).not.toMatch(/\]\((?!#|https?:)[^)]*\)/);
     }
     const guide = (short: string) => readFileSync(join(staged(short).dir, "README.md"), "utf8");
-    expect(guide("harden")).toMatch(/npx antireverse harden <bundle-dir> --profile balanced/);
-    expect(guide("harden")).toMatch(/## Running it\n\nRun it as `npx antireverse/);
+    expect(guide("harden")).toMatch(/npx --no-install antireverse harden <bundle-dir> --profile balanced/);
+    expect(guide("harden")).toMatch(
+      /## Running it\n\nThis package is installed in your project from its tarball\. Run it as `npx --no-install antireverse/,
+    );
     expect(guide("harden")).toMatch(/`docs\/reverse-assessment\.md` in the Airverse repository/);
     expect(guide("guard")).toMatch(/node_modules\/@antireverse\/guard\/dist/);
     expect(guide("shield-node")).toMatch(/app\.use\(shield\.express\(\)\)/);
@@ -227,7 +233,7 @@ describe("the packed shape", () => {
 
   // Review L2: a package does not promise more than what it depends on supports.
   it("Harden declares the Node versions Babel declares; the others the repository's own minimum", () => {
-    const babel = JSON.parse(readFileSync(join(REPO_ROOT, "node_modules/@babel/core/package.json"), "utf8")) as {
+    const babel = JSON.parse(readFileSync(join(REPO_ROOT, "node_modules/@babel/parser/package.json"), "utf8")) as {
       engines: { node: string };
     };
     expect(babel.engines.node).toBe("^22.18.0 || >=24.11.0");
